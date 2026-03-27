@@ -66,9 +66,9 @@ export function AdminRescueConsole() {
           <p className="text-xs uppercase tracking-[0.28em] text-cyan-300">Admin Rescue Console</p>
           <h1 className="mt-3 text-3xl font-semibold text-white">稳定 Benchmark 入口</h1>
           <p className="mt-3 text-sm leading-7 text-slate-400">
-            这里优先保证 benchmark 能发起和拿到结果。完整后台仍保留在
-            <a className="ml-2 text-cyan-300 underline" href="/admin/full">
-              /admin/full
+            这里优先保证 benchmark 能发起和拿到结果。正常后台已恢复到
+            <a className="ml-2 text-cyan-300 underline" href="/admin">
+              /admin
             </a>
             。
           </p>

@@ -1,5 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import path from "path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "fs";
 import type {
   AgentBenchmarkMode,
   AgentBenchmarkProfileBatchScope,
@@ -7,15 +6,16 @@ import type {
   AgentProviderProfile,
   AgentThinkingMode
 } from "@/lib/agent/types";
+import { getLocalAgentDataPath } from "@/lib/agent/data-dir";
 
-const PROGRESS_DIR = path.join(process.cwd(), "data", "agent-observability", "benchmark-progress");
+const PROGRESS_DIR = getLocalAgentDataPath("benchmark-progress");
 
 function ensureProgressDir() {
   mkdirSync(PROGRESS_DIR, { recursive: true });
 }
 
 function getProgressPath(runId: string) {
-  return path.join(PROGRESS_DIR, `${runId}.json`);
+  return getLocalAgentDataPath("benchmark-progress", `${runId}.json`);
 }
 
 function writeProgress(progress: AgentBenchmarkProgress) {
@@ -64,6 +64,34 @@ export function readBenchmarkProgress(runId: string) {
   } catch {
     return null;
   }
+}
+
+export function readLatestBenchmarkProgress(options?: { unfinishedOnly?: boolean }) {
+  ensureProgressDir();
+  const progresses = readdirSync(PROGRESS_DIR)
+    .filter((entry) => entry.endsWith(".json"))
+    .map((file) => {
+      try {
+        return JSON.parse(
+          readFileSync(getProgressPath(file.replace(/\.json$/, "")), "utf8")
+        ) as AgentBenchmarkProgress;
+      } catch {
+        return null;
+      }
+    })
+    .filter((progress): progress is AgentBenchmarkProgress => Boolean(progress))
+    .filter((progress) =>
+      options?.unfinishedOnly
+        ? progress.status === "pending" || progress.status === "running"
+        : true
+    )
+    .sort((left, right) => {
+      const leftTime = new Date(left.updatedAt || left.startedAt).getTime();
+      const rightTime = new Date(right.updatedAt || right.startedAt).getTime();
+      return rightTime - leftTime;
+    });
+
+  return progresses[0] || null;
 }
 
 export function updateBenchmarkProgress(

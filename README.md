@@ -105,9 +105,16 @@ npm run dev
 - 版本号规则：`SemVer`，例如 `v0.1.0`
 - 当前版本文件：[`/Users/chenhaorui/Documents/New project/VERSION`](/Users/chenhaorui/Documents/New%20project/VERSION)
 - 发布记录目录：[`/Users/chenhaorui/Documents/New project/docs/releases`](/Users/chenhaorui/Documents/New%20project/docs/releases)
+- 发布流程说明：[`/Users/chenhaorui/Documents/New project/docs/release-process.md`](/Users/chenhaorui/Documents/New%20project/docs/release-process.md)
 - 推荐命名：
   - Git tag：`v0.1.0`
   - 发布记录：`v0.1.0_2026-03-26.md`
+
+快速生成当前版本的 release note 骨架：
+
+```bash
+./scripts/prepare-release.sh
+```
 
 ### 2. 启动本地网关 Supervisor
 

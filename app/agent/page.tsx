@@ -1,5 +1,5 @@
-import { AgentRescueConsole } from "@/components/agent/AgentRescueConsole";
+import { AgentPageShell } from "@/components/agent/AgentPageShell";
 
 export default function AgentPage() {
-  return <AgentRescueConsole />;
+  return <AgentPageShell />;
 }

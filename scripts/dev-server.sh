@@ -16,6 +16,8 @@ PORT="${PORT:-3011}"
 LOGFILE="${LOGFILE:-/tmp/local-agent-lab-dev.log}"
 PIDFILE="${PIDFILE:-/tmp/local-agent-lab-dev.pid}"
 MODE="${MODE:-prod}"
+SCREEN_NAME="${SCREEN_NAME:-local-agent-lab-$PORT}"
+AUTO_START_LOCAL_GATEWAY="${AUTO_START_LOCAL_GATEWAY:-1}"
 
 if [[ "$MODE" == "dev" ]]; then
   pattern="node_modules/next/dist/bin/next dev -p $PORT"
@@ -52,6 +54,7 @@ stop_processes() {
     sleep 1
     kill -9 "$pidfile_pid" >/dev/null 2>&1 || true
   fi
+  screen -S "$SCREEN_NAME" -X quit >/dev/null 2>&1 || true
   pids="$(pgrep -f "$pattern" || true)"
   if [[ -n "$pids" ]]; then
     echo "$pids" | xargs kill >/dev/null 2>&1 || true
@@ -79,10 +82,14 @@ case "${1:-start}" in
         exit 1
       fi
     fi
-    nohup bash -lc "cd \"$ROOT\" && $start_cmd" >>"$LOGFILE" 2>&1 &
-    echo $! > "$PIDFILE"
+    screen -S "$SCREEN_NAME" -X quit >/dev/null 2>&1 || true
+    screen -dmS "$SCREEN_NAME" bash -lc "cd \"$ROOT\" && $start_cmd >>\"$LOGFILE\" 2>&1"
     for _ in $(seq 1 45); do
       if pid="$(listener_pid)"; [[ -n "${pid:-}" ]]; then
+        echo "$pid" > "$PIDFILE"
+        if [[ "$AUTO_START_LOCAL_GATEWAY" == "1" && -x "$ROOT/scripts/start-local-gateway.sh" ]]; then
+          bash -lc "cd \"$ROOT\" && \"$ROOT/scripts/start-local-gateway.sh\"" >>"$LOGFILE" 2>&1 || true
+        fi
         curl --max-time 20 -sS "http://127.0.0.1:$PORT/agent" >/dev/null 2>&1 || true
         curl --max-time 20 -sS "http://127.0.0.1:$PORT/admin" >/dev/null 2>&1 || true
         echo "started $pid"

@@ -5,20 +5,28 @@ import subprocess
 import sys
 import time
 import urllib.request
+import fcntl
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = PROJECT_ROOT / "data" / "agent-observability"
+DATA_DIR = Path(
+    os.getenv(
+        "LOCAL_AGENT_DATA_DIR",
+        str(Path.home() / "Library" / "Application Support" / "local-agent-lab" / "observability"),
+    )
+)
 SUPERVISOR_PID_FILE = DATA_DIR / "local-gateway-supervisor.pid"
 CHILD_PID_FILE = DATA_DIR / "local-gateway.pid"
 LOG_FILE = DATA_DIR / "local-gateway.log"
 STATE_FILE = DATA_DIR / "local-gateway-supervisor-state.json"
+LOCK_FILE = DATA_DIR / "local-gateway-supervisor.lock"
 GATEWAY_SCRIPT = PROJECT_ROOT / "scripts" / "local_model_gateway.py"
 
 RESTART_DELAY_SECONDS = 1.5
 stopping = False
 child_process: subprocess.Popen[str] | None = None
+lock_handle = None
 
 
 def read_state() -> dict:
@@ -55,6 +63,37 @@ def remove_file(path: Path):
         pass
 
 
+def acquire_single_instance_lock() -> bool:
+    global lock_handle
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    lock_handle = LOCK_FILE.open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    lock_handle.seek(0)
+    lock_handle.truncate()
+    lock_handle.write(f"{os.getpid()}\n")
+    lock_handle.flush()
+    return True
+
+
+def release_single_instance_lock():
+    global lock_handle
+    if lock_handle is None:
+        return
+    try:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+    except Exception:
+        pass
+    try:
+        lock_handle.close()
+    except Exception:
+        pass
+    lock_handle = None
+    remove_file(LOCK_FILE)
+
+
 def gateway_healthy() -> bool:
     try:
         with urllib.request.urlopen("http://127.0.0.1:4000/health", timeout=1.2) as response:
@@ -84,6 +123,16 @@ def main():
     global child_process
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
+
+    if not acquire_single_instance_lock():
+        write_state(
+            {
+                "last_event": "duplicate_supervisor_exit",
+                "supervisor_pid": os.getpid(),
+                "child_pid": None,
+            }
+        )
+        return
 
     write_text(SUPERVISOR_PID_FILE, str(os.getpid()))
     write_state(
@@ -159,6 +208,7 @@ def main():
         )
         remove_file(CHILD_PID_FILE)
         remove_file(SUPERVISOR_PID_FILE)
+        release_single_instance_lock()
 
 
 if __name__ == "__main__":

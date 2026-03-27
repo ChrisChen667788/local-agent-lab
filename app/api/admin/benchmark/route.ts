@@ -1,7 +1,11 @@
 import crypto from "crypto";
 import { NextResponse } from "next/server";
 import { agentTargets } from "@/lib/agent/catalog";
-import { ensureLocalGatewayAvailableDetailed, restartLocalGateway } from "@/lib/agent/local-gateway";
+import {
+  ensureLocalGatewayAvailableDetailed,
+  probeLocalGateway,
+  restartLocalGateway
+} from "@/lib/agent/local-gateway";
 import {
   calculateTokenThroughputTps,
   clampContextWindowForTarget,
@@ -44,6 +48,11 @@ import type {
 } from "@/lib/agent/types";
 
 export const runtime = "nodejs";
+const LOCAL_BENCHMARK_STREAM_TIMEOUT_MS = 300000;
+const LOCAL_BENCHMARK_WARMUP_WAIT_MS = 300000;
+const LOCAL_BENCHMARK_PREWARM_TIMEOUT_MS = 360000;
+const LOCAL_BENCHMARK_MAX_CONSECUTIVE_FATAL_FAILURES = 3;
+const LOCAL_BENCHMARK_MAX_CONSECUTIVE_FATAL_FAILURES_PER_WORKLOAD = 2;
 
 type BenchmarkRequestBody = {
   runId?: string;
@@ -425,6 +434,29 @@ function deriveComparisonSubsetTasks(tasks: PlannedSampleTask[]) {
   return subset.length ? subset : tasks.slice(0, Math.min(tasks.length, 12));
 }
 
+function groupBenchmarkTasksByWorkload(tasks: PlannedSampleTask[]) {
+  const groups: Array<{
+    workloadId: string;
+    workloadLabel: string;
+    tasks: PlannedSampleTask[];
+  }> = [];
+
+  for (const task of tasks) {
+    const lastGroup = groups[groups.length - 1];
+    if (lastGroup && lastGroup.workloadId === task.workloadId) {
+      lastGroup.tasks.push(task);
+      continue;
+    }
+    groups.push({
+      workloadId: task.workloadId,
+      workloadLabel: task.workloadLabel,
+      tasks: [task]
+    });
+  }
+
+  return groups;
+}
+
 function buildPlan(body: BenchmarkRequestBody, runs: number): BenchmarkPlan | { error: string } {
   const benchmarkMode = body.benchmarkMode || (body.suiteId ? "suite" : body.datasetId ? "dataset" : "prompt");
   const datasetSampleLimit = Math.max(1, Math.min(Math.trunc(body.datasetSampleLimit || 5), 50));
@@ -576,6 +608,7 @@ function computeComparisonsToLast(
       targetLabel: result.targetLabel,
       providerProfile: result.providerProfile || "balanced",
       thinkingMode: result.thinkingMode || "standard",
+      execution: result.execution,
       resolvedModel: result.resolvedModel,
       previousGeneratedAt: previousMatch?.generatedAt,
       previousSuccessRate,
@@ -630,7 +663,9 @@ async function readNdjsonStream(
 }
 
 async function ensureLocalBenchmarkGateway(baseUrl: string) {
-  const firstAttempt = await ensureLocalGatewayAvailableDetailed(baseUrl, { waitMs: 25000 });
+  const firstAttempt = await ensureLocalGatewayAvailableDetailed(baseUrl, {
+    waitMs: LOCAL_BENCHMARK_WARMUP_WAIT_MS
+  });
   if (firstAttempt.ok) {
     return {
       ok: true,
@@ -638,7 +673,7 @@ async function ensureLocalBenchmarkGateway(baseUrl: string) {
     };
   }
 
-  const restarted = await restartLocalGateway(baseUrl, { waitMs: 30000 });
+  const restarted = await restartLocalGateway(baseUrl, { waitMs: LOCAL_BENCHMARK_WARMUP_WAIT_MS });
   if (!restarted) {
     return {
       ok: false,
@@ -646,7 +681,9 @@ async function ensureLocalBenchmarkGateway(baseUrl: string) {
     };
   }
 
-  const secondAttempt = await ensureLocalGatewayAvailableDetailed(baseUrl, { waitMs: 10000 });
+  const secondAttempt = await ensureLocalGatewayAvailableDetailed(baseUrl, {
+    waitMs: LOCAL_BENCHMARK_WARMUP_WAIT_MS
+  });
   return {
     ok: secondAttempt.ok,
     reason: secondAttempt.ok
@@ -676,7 +713,7 @@ async function runSingleBenchmarkSample(
 
   async function requestLocalStream() {
     try {
-      return await fetch(`${target.resolvedBaseUrl.replace(/\/v1$/, "")}/v1/chat/completions/stream`, {
+      return await fetchWithTimeout(`${target.resolvedBaseUrl.replace(/\/v1$/, "")}/v1/chat/completions/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -688,13 +725,31 @@ async function runSingleBenchmarkSample(
           max_tokens: effectiveMaxTokens,
           context_window: contextWindow
         })
-      });
+      }, LOCAL_BENCHMARK_STREAM_TIMEOUT_MS);
     } catch {
-      const restarted = await restartLocalGateway(target.resolvedBaseUrl, { waitMs: 30000 });
+      const reachable = await probeLocalGateway(target.resolvedBaseUrl, 5000);
+      if (reachable) {
+        return fetchWithTimeout(`${target.resolvedBaseUrl.replace(/\/v1$/, "")}/v1/chat/completions/stream`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: target.resolvedModel,
+            messages: [
+              { role: "system", content: "Reply directly and keep the answer concise." },
+              { role: "user", content: prompt }
+            ],
+            max_tokens: effectiveMaxTokens,
+            context_window: contextWindow
+          })
+        }, LOCAL_BENCHMARK_STREAM_TIMEOUT_MS);
+      }
+      const restarted = await restartLocalGateway(target.resolvedBaseUrl, {
+        waitMs: LOCAL_BENCHMARK_WARMUP_WAIT_MS
+      });
       if (!restarted) {
         throw new Error("Local gateway restart timed out before retrying benchmark.");
       }
-      return fetch(`${target.resolvedBaseUrl.replace(/\/v1$/, "")}/v1/chat/completions/stream`, {
+      return fetchWithTimeout(`${target.resolvedBaseUrl.replace(/\/v1$/, "")}/v1/chat/completions/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -706,7 +761,7 @@ async function runSingleBenchmarkSample(
           max_tokens: effectiveMaxTokens,
           context_window: contextWindow
         })
-      });
+      }, LOCAL_BENCHMARK_STREAM_TIMEOUT_MS);
     }
   }
 
@@ -1009,13 +1064,17 @@ async function prewarmTarget(targetId: string) {
       errors.push(`attempt ${attempt}: ${ensureResult.reason}`);
     } else {
       try {
-        const response = await fetch(prewarmUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model: target.resolvedModel
-          })
-        });
+        const response = await fetchWithTimeout(
+          prewarmUrl,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              model: target.resolvedModel
+            })
+          },
+          LOCAL_BENCHMARK_PREWARM_TIMEOUT_MS
+        );
 
         if (response.ok) {
           await response.json();
@@ -1031,7 +1090,7 @@ async function prewarmTarget(targetId: string) {
     }
 
     if (attempt < 3) {
-      await restartLocalGateway(target.resolvedBaseUrl, { waitMs: 30000 });
+      await restartLocalGateway(target.resolvedBaseUrl, { waitMs: LOCAL_BENCHMARK_WARMUP_WAIT_MS });
       await sleep(400);
     }
   }
@@ -1052,6 +1111,18 @@ function isRetryableLocalSampleFailure(sample: AgentBenchmarkSample) {
   );
 }
 
+function isFatalLocalBenchmarkFailure(sample: AgentBenchmarkSample) {
+  if (sample.ok) return false;
+  const warning = (sample.warning || "").toLowerCase();
+  return (
+    warning.includes("still loading") ||
+    warning.includes("prewarm failed") ||
+    warning.includes("gateway unavailable") ||
+    warning.includes("request timed out") ||
+    warning.includes("offline")
+  );
+}
+
 export async function POST(request: Request) {
   let requestRunId = "";
   try {
@@ -1068,6 +1139,7 @@ export async function POST(request: Request) {
     if ("error" in plan) {
       return NextResponse.json({ error: plan.error }, { status: 400 });
     }
+    const resolvedPlan = plan;
 
     const benchmarkTargets = agentTargets;
     const selectedTargets = (body.targetIds?.length
@@ -1081,9 +1153,9 @@ export async function POST(request: Request) {
     const runId = requestRunId || crypto.randomUUID();
     const profileBatchScope: AgentBenchmarkProfileBatchScope =
       body.profileBatchScope === "comparison-subset" ? "comparison-subset" : "full-suite";
-    const plannedTasks = expandPlanTasks(plan, contextWindow, maxTokens);
+    const plannedTasks = expandPlanTasks(resolvedPlan, contextWindow, maxTokens);
     const remoteComparisonTasks =
-      plan.benchmarkMode === "suite" && profileBatchScope === "comparison-subset"
+      resolvedPlan.benchmarkMode === "suite" && profileBatchScope === "comparison-subset"
         ? deriveComparisonSubsetTasks(plannedTasks)
         : plannedTasks;
     const results: AgentBenchmarkResult[] = [];
@@ -1141,7 +1213,9 @@ export async function POST(request: Request) {
         );
 
         if (target.execution === "local" && isRetryableLocalSampleFailure(sample)) {
-          const restarted = await restartLocalGateway(resolvedTarget.resolvedBaseUrl, { waitMs: 30000 });
+          const restarted = await restartLocalGateway(resolvedTarget.resolvedBaseUrl, {
+            waitMs: LOCAL_BENCHMARK_WARMUP_WAIT_MS
+          });
           if (restarted) {
             try {
               await prewarmTarget(target.id);
@@ -1197,14 +1271,126 @@ export async function POST(request: Request) {
         return finalSample;
       };
 
-      const samples =
-        target.execution === "remote"
-          ? await runBenchmarkTasksWithConcurrency(
-              tasksForGroup,
-              REMOTE_BENCHMARK_SAMPLE_CONCURRENCY,
-              runner
-            )
-          : await runBenchmarkTasksSequentially(tasksForGroup, runner);
+      let samples: AgentBenchmarkSample[];
+      if (target.execution === "remote") {
+        samples = await runBenchmarkTasksWithConcurrency(
+          tasksForGroup,
+          REMOTE_BENCHMARK_SAMPLE_CONCURRENCY,
+          runner
+        );
+      } else {
+        let localSamples: AgentBenchmarkSample[] | null = null;
+        const collected: AgentBenchmarkSample[] = [];
+        const workloadGroups =
+          resolvedPlan.benchmarkMode === "suite" ? groupBenchmarkTasksByWorkload(tasksForGroup) : [{ workloadId: "default", workloadLabel: "default", tasks: tasksForGroup }];
+        let consecutiveFatalFailures = 0;
+
+        for (let groupIndex = 0; groupIndex < workloadGroups.length; groupIndex += 1) {
+          const workloadGroup = workloadGroups[groupIndex];
+          let consecutiveFatalFailuresInWorkload = 0;
+
+          if (groupIndex > 0 && resolvedPlan.benchmarkMode === "suite") {
+            try {
+              await prewarmTarget(target.id);
+            } catch {
+              // Let the first sample in the next workload surface the failure; do not abort the whole run here.
+            }
+          }
+
+          for (let taskIndex = 0; taskIndex < workloadGroup.tasks.length; taskIndex += 1) {
+            const task = workloadGroup.tasks[taskIndex];
+            const sample = await runner(task);
+            collected.push(sample);
+
+            if (isFatalLocalBenchmarkFailure(sample)) {
+              consecutiveFatalFailures += 1;
+              consecutiveFatalFailuresInWorkload += 1;
+            } else {
+              consecutiveFatalFailures = 0;
+              consecutiveFatalFailuresInWorkload = 0;
+            }
+
+            if (
+              resolvedPlan.benchmarkMode === "suite" &&
+              consecutiveFatalFailuresInWorkload >= LOCAL_BENCHMARK_MAX_CONSECUTIVE_FATAL_FAILURES_PER_WORKLOAD
+            ) {
+              const remainingTasksInWorkload = workloadGroup.tasks.slice(taskIndex + 1);
+              const warning = `Skipped remaining ${workloadGroup.workloadLabel} samples after repeated fatal local runtime failures.`;
+              for (const skippedTask of remainingTasksInWorkload) {
+                const skippedSample: AgentBenchmarkSample = {
+                  run: skippedTask.sampleRun,
+                  workloadId: skippedTask.workloadId,
+                  workloadLabel: skippedTask.workloadLabel,
+                  itemId: skippedTask.itemId,
+                  expectedAnswerPreview: skippedTask.expectedAnswerPreview,
+                  firstTokenLatencyMs: null,
+                  latencyMs: 0,
+                  completionTokens: 0,
+                  totalTokens: 0,
+                  tokenThroughputTps: null,
+                  outputPreview: "",
+                  ok: false,
+                  warning
+                };
+                collected.push(skippedSample);
+                advanceBenchmarkProgress(runId, {
+                  ok: false,
+                  targetLabel: target.label,
+                  providerProfile: mode.providerProfile,
+                  thinkingMode: mode.thinkingMode,
+                  workloadLabel: skippedTask.workloadLabel
+                });
+              }
+              consecutiveFatalFailures = 0;
+              consecutiveFatalFailuresInWorkload = 0;
+              break;
+            }
+
+            if (consecutiveFatalFailures >= LOCAL_BENCHMARK_MAX_CONSECUTIVE_FATAL_FAILURES) {
+              const remainingWorkloadTasks = workloadGroup.tasks.slice(taskIndex + 1);
+              const remainingTasks = [
+                ...remainingWorkloadTasks,
+                ...workloadGroups.slice(groupIndex + 1).flatMap((group) => group.tasks)
+              ];
+              const warning =
+                "Local benchmark group stopped early after repeated fatal local runtime failures.";
+              for (const skippedTask of remainingTasks) {
+                const skippedSample: AgentBenchmarkSample = {
+                  run: skippedTask.sampleRun,
+                  workloadId: skippedTask.workloadId,
+                  workloadLabel: skippedTask.workloadLabel,
+                  itemId: skippedTask.itemId,
+                  expectedAnswerPreview: skippedTask.expectedAnswerPreview,
+                  firstTokenLatencyMs: null,
+                  latencyMs: 0,
+                  completionTokens: 0,
+                  totalTokens: 0,
+                  tokenThroughputTps: null,
+                  outputPreview: "",
+                  ok: false,
+                  warning
+                };
+                collected.push(skippedSample);
+                advanceBenchmarkProgress(runId, {
+                  ok: false,
+                  targetLabel: target.label,
+                  providerProfile: mode.providerProfile,
+                  thinkingMode: mode.thinkingMode,
+                  workloadLabel: skippedTask.workloadLabel
+                  });
+              }
+              localSamples = collected;
+              break;
+            }
+          }
+
+          if (localSamples) {
+            break;
+          }
+        }
+
+        samples = localSamples || collected;
+      }
 
       const okSamples = samples.filter((sample) => sample.ok);
       const scoredSamples = samples.filter((sample) => typeof sample.score === "number");
@@ -1293,20 +1479,20 @@ export async function POST(request: Request) {
     const payload: AgentBenchmarkResponse = {
       ok: results.some((result) => result.okRuns > 0),
       generatedAt: new Date().toISOString(),
-      benchmarkMode: plan.benchmarkMode,
-      prompt: plan.prompt,
-      promptSetId: plan.promptSetId,
-      promptSetLabel: plan.promptSetLabel,
-      promptSetPromptCount: plan.promptSetPromptCount,
-      datasetId: plan.datasetId,
-      datasetLabel: plan.datasetLabel,
-      datasetSourceLabel: plan.datasetSourceLabel,
-      datasetSourceUrl: plan.datasetSourceUrl,
-      datasetSampleCount: plan.datasetSampleCount,
-      suiteId: plan.suiteId,
-      suiteLabel: plan.suiteLabel,
-      suiteWorkloadCount: plan.suiteWorkloadCount,
-      workloads: plan.workloads,
+      benchmarkMode: resolvedPlan.benchmarkMode,
+      prompt: resolvedPlan.prompt,
+      promptSetId: resolvedPlan.promptSetId,
+      promptSetLabel: resolvedPlan.promptSetLabel,
+      promptSetPromptCount: resolvedPlan.promptSetPromptCount,
+      datasetId: resolvedPlan.datasetId,
+      datasetLabel: resolvedPlan.datasetLabel,
+      datasetSourceLabel: resolvedPlan.datasetSourceLabel,
+      datasetSourceUrl: resolvedPlan.datasetSourceUrl,
+      datasetSampleCount: resolvedPlan.datasetSampleCount,
+      suiteId: resolvedPlan.suiteId,
+      suiteLabel: resolvedPlan.suiteLabel,
+      suiteWorkloadCount: resolvedPlan.suiteWorkloadCount,
+      workloads: resolvedPlan.workloads,
       contextWindow,
       runs,
       providerProfile: profileModes.length === 1 ? profileModes[0].providerProfile : undefined,
@@ -1315,7 +1501,7 @@ export async function POST(request: Request) {
       profileBatchScope: profileModes.length > 1 ? profileBatchScope : undefined,
       profileModes: profileModes.length > 1 ? profileModes : undefined,
       comparisonsToLast: computeComparisonsToLast(results, contextWindow, {
-        ...plan,
+        ...resolvedPlan,
         profileBatchScope: profileModes.length > 1 ? profileBatchScope : undefined
       }),
       results

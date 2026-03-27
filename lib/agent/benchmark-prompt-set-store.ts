@@ -1,10 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import path from "path";
 import { defaultBenchmarkPromptSets } from "@/lib/agent/benchmark-presets";
+import { getLocalAgentDataDir, getLocalAgentDataPath } from "@/lib/agent/data-dir";
 import type { AgentBenchmarkPromptSet } from "@/lib/agent/types";
 
-const DATA_DIR = path.join(process.cwd(), "data", "agent-observability");
-const PROMPT_SET_FILE = path.join(DATA_DIR, "benchmark-prompt-sets.json");
+const DATA_DIR = getLocalAgentDataDir();
+const PROMPT_SET_FILE = getLocalAgentDataPath("benchmark-prompt-sets.json");
 
 function ensureDataDir() {
   mkdirSync(DATA_DIR, { recursive: true });

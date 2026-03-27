@@ -140,6 +140,9 @@ export async function GET(request: Request) {
           queueDepth: 0,
           activeRequests: 0,
           loadedAlias: null,
+          loadingAlias: null,
+          loadingElapsedMs: null,
+          loadingError: null,
           supervisorPid: supervisor.supervisorPid ?? null,
           supervisorAlive: supervisor.supervisorAlive,
           gatewayPid: supervisor.gatewayPid ?? null,
@@ -164,7 +167,7 @@ export async function GET(request: Request) {
       targetId,
       targetLabel: target.label,
       execution: target.execution,
-      available: true,
+      available: typeof data.loading_alias === "string" ? false : true,
       resolvedModel: resolvedTarget.resolvedModel,
       resolvedBaseUrl: resolvedTarget.resolvedBaseUrl,
       standardResolvedModel: standardResolvedTarget.resolvedModel,
@@ -175,6 +178,12 @@ export async function GET(request: Request) {
       queueDepth: typeof data.queue_depth === "number" ? data.queue_depth : 0,
       activeRequests: typeof data.active_requests === "number" ? data.active_requests : 0,
       loadedAlias: typeof data.loaded_alias === "string" || data.loaded_alias === null ? (data.loaded_alias as string | null) : null,
+      loadingAlias:
+        typeof data.loading_alias === "string" || data.loading_alias === null
+          ? (data.loading_alias as string | null)
+          : null,
+      loadingElapsedMs: typeof data.loading_elapsed_ms === "number" ? data.loading_elapsed_ms : null,
+      loadingError: typeof data.loading_error === "string" ? data.loading_error : null,
       workspaceRoot: typeof data.workspace_root === "string" ? data.workspace_root : undefined,
       supervisorPid: supervisor.supervisorPid ?? null,
       supervisorAlive: supervisor.supervisorAlive,
@@ -187,7 +196,9 @@ export async function GET(request: Request) {
       lastEvent: supervisor.lastEvent,
       logFile: supervisor.logFile,
       message:
-        typeof data.status === "string"
+        typeof data.loading_alias === "string"
+          ? `Loading ${data.loading_alias}${typeof data.loading_elapsed_ms === "number" ? ` · ${Math.round(data.loading_elapsed_ms / 1000)}s` : ""}`
+          : typeof data.status === "string"
           ? supervisor.supervisorAlive
             ? `${data.status} · supervisor:${supervisor.supervisorPid}`
             : data.status
@@ -210,6 +221,9 @@ export async function GET(request: Request) {
       queueDepth: 0,
       activeRequests: 0,
       loadedAlias: null,
+      loadingAlias: null,
+      loadingElapsedMs: null,
+      loadingError: null,
       supervisorPid: supervisor.supervisorPid ?? null,
       supervisorAlive: supervisor.supervisorAlive,
       gatewayPid: supervisor.gatewayPid ?? null,

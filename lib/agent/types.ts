@@ -280,6 +280,9 @@ export type AgentRuntimeStatus = {
   queueDepth?: number;
   activeRequests?: number;
   loadedAlias?: string | null;
+  loadingAlias?: string | null;
+  loadingElapsedMs?: number | null;
+  loadingError?: string | null;
   workspaceRoot?: string;
   message?: string;
   supervisorPid?: number | null;
@@ -405,6 +408,7 @@ export type AgentBenchmarkResponse = {
     targetLabel: string;
     providerProfile: AgentProviderProfile;
     thinkingMode: AgentThinkingMode;
+    execution?: AgentExecution;
     resolvedModel: string;
     previousGeneratedAt?: string;
     previousSuccessRate?: number | null;

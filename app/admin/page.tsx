@@ -1,5 +1,5 @@
-import { AdminRescueConsole } from "@/components/admin/AdminRescueConsole";
+import { AdminPageShell } from "@/components/admin/AdminPageShell";
 
 export default function AdminPage() {
-  return <AdminRescueConsole />;
+  return <AdminPageShell />;
 }

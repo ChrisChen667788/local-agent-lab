@@ -12,10 +12,12 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+print("[boot] local_model_gateway importing framework dependencies", flush=True)
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 import uvicorn
+print("[boot] framework dependencies imported", flush=True)
 
 
 def load_env_file(filename: str):
@@ -35,6 +37,48 @@ def load_env_file(filename: str):
 load_env_file(".env.local")
 load_env_file(".env")
 
+
+def ensure_writable_directory(path_value: str | None, fallback_path: Path):
+    fallback_path.mkdir(parents=True, exist_ok=True)
+    if path_value:
+        candidate = Path(path_value).expanduser()
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            probe = candidate / ".write-test"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            return candidate
+        except Exception:
+            pass
+
+    probe = fallback_path / ".write-test"
+    probe.write_text("ok", encoding="utf-8")
+    probe.unlink(missing_ok=True)
+    return fallback_path
+
+
+DEFAULT_DATA_DIR = Path(
+    os.getenv(
+        "LOCAL_AGENT_DATA_DIR",
+        str(Path.home() / "Library" / "Application Support" / "local-agent-lab" / "observability"),
+    )
+)
+DEFAULT_CACHE_ROOT = DEFAULT_DATA_DIR.parent / "hf-cache"
+hf_home = ensure_writable_directory(os.getenv("HF_HOME"), DEFAULT_CACHE_ROOT)
+hf_hub_cache = ensure_writable_directory(
+    os.getenv("HF_HUB_CACHE") or os.getenv("HUGGINGFACE_HUB_CACHE"),
+    hf_home / "hub",
+)
+transformers_cache = ensure_writable_directory(
+    os.getenv("TRANSFORMERS_CACHE"),
+    hf_home / "transformers",
+)
+
+os.environ["HF_HOME"] = str(hf_home)
+os.environ["HF_HUB_CACHE"] = str(hf_hub_cache)
+os.environ["HUGGINGFACE_HUB_CACHE"] = str(hf_hub_cache)
+os.environ["TRANSFORMERS_CACHE"] = str(transformers_cache)
+
 app = FastAPI(title="Local MLX Agent Gateway", version="0.5.0")
 load_lock = threading.Lock()
 inference_lock = threading.Lock()
@@ -44,6 +88,9 @@ mlx_import_lock = threading.Lock()
 loaded_alias = None
 loaded_model = None
 loaded_tokenizer = None
+loading_alias = None
+loading_started_at = None
+loading_error = None
 queued_requests = 0
 active_requests = 0
 pending_confirmations: dict[str, dict[str, Any]] = {}
@@ -209,21 +256,34 @@ def get_mlx_runtime():
         if mlx_generate and mlx_load and mlx_stream_generate:
             return mlx_generate, mlx_load, mlx_stream_generate
 
+        started_at = time.time()
         try:
-            from mlx_lm import generate as imported_generate, load as imported_load
-            from mlx_lm.generate import stream_generate as imported_stream_generate
+            print("[runtime] importing mlx_lm runtime", flush=True)
+            from mlx_lm.generate import (
+                generate as imported_generate,
+                stream_generate as imported_stream_generate,
+            )
+            from mlx_lm.utils import load as imported_load
+
+            mlx_generate = imported_generate
+            mlx_load = imported_load
+            mlx_stream_generate = imported_stream_generate
+            mlx_import_error = None
+            print(
+                f"[runtime] mlx_lm runtime ready elapsed_ms={round((time.time() - started_at) * 1000, 1)}",
+                flush=True,
+            )
+            return mlx_generate, mlx_load, mlx_stream_generate
         except ImportError as exc:  # pragma: no cover - runtime guard
             mlx_import_error = str(exc)
+            print(f"[runtime] mlx_lm import failed error={exc}", flush=True)
             raise RuntimeError(
                 "mlx_lm is required. Install it with `pip install mlx mlx-lm fastapi uvicorn`."
             ) from exc
-
-        mlx_generate = imported_generate
-        mlx_load = imported_load
-        mlx_stream_generate = imported_stream_generate
-        mlx_import_error = None
-
-    return mlx_generate, mlx_load, mlx_stream_generate
+        except Exception as exc:
+            mlx_import_error = str(exc)
+            print(f"[runtime] mlx_lm runtime bootstrap failed error={exc}", flush=True)
+            raise
 
 
 def truncate_output(value: str, max_chars: int = MAX_COMMAND_OUTPUT_CHARS) -> str:
@@ -983,14 +1043,34 @@ TOOL_HANDLERS = {
 
 
 def get_loaded_runtime(alias: str):
-    global loaded_alias, loaded_model, loaded_tokenizer
+    global loaded_alias, loaded_model, loaded_tokenizer, loading_alias, loading_started_at, loading_error
 
     repo = MODEL_REPOS.get(alias)
     if not repo:
         raise HTTPException(status_code=404, detail=f"Unsupported local model alias: {alias}")
 
-    with load_lock:
+    if loaded_alias == alias and loaded_model is not None and loaded_tokenizer is not None:
+        return repo, loaded_model, loaded_tokenizer
+
+    if not load_lock.acquire(blocking=False):
+        current_loading_alias = loading_alias
+        current_loading_started_at = loading_started_at
+        elapsed_ms = (
+            round((time.time() - current_loading_started_at) * 1000, 1)
+            if current_loading_alias and current_loading_started_at
+            else None
+        )
+        detail = (
+            f"Local model '{current_loading_alias or alias}' is still loading."
+            + (f" elapsed_ms={elapsed_ms}" if elapsed_ms is not None else "")
+        )
+        raise HTTPException(status_code=409, detail=detail)
+
+    try:
         if loaded_alias != alias or loaded_model is None or loaded_tokenizer is None:
+            loading_alias = alias
+            loading_started_at = time.time()
+            loading_error = None
             if loaded_alias != alias:
                 loaded_model = None
                 loaded_tokenizer = None
@@ -1003,25 +1083,46 @@ def get_loaded_runtime(alias: str):
                         mx.metal.clear_cache()
                 except Exception:
                     pass
-            _, load_fn, _ = get_mlx_runtime()
-            loaded_model, loaded_tokenizer = load_fn(repo)
-            loaded_alias = alias
+            try:
+                _, load_fn, _ = get_mlx_runtime()
+                print(
+                    f"[load] starting alias={alias} repo={repo}",
+                    flush=True,
+                )
+                loaded_model, loaded_tokenizer = load_fn(repo)
+                loaded_alias = alias
+                print(
+                    f"[load] finished alias={alias} elapsed_ms={round((time.time() - loading_started_at) * 1000, 1)}",
+                    flush=True,
+                )
+            except Exception as exc:
+                loading_error = str(exc)
+                print(f"[load] failed alias={alias} error={exc}", flush=True)
+                raise
+            finally:
+                loading_alias = None
+                loading_started_at = None
 
-    return repo, loaded_model, loaded_tokenizer
+        return repo, loaded_model, loaded_tokenizer
+    finally:
+        load_lock.release()
 
 
 def release_loaded_runtime():
-    global loaded_alias, loaded_model, loaded_tokenizer
+    global loaded_alias, loaded_model, loaded_tokenizer, loading_alias, loading_started_at, loading_error
 
     with load_lock:
         released_alias = loaded_alias
         loaded_alias = None
         loaded_model = None
         loaded_tokenizer = None
+        loading_alias = None
+        loading_started_at = None
+        loading_error = None
         gc.collect()
 
         try:
-            ensure_mlx_imported()
+            get_mlx_runtime()
             import mlx.core as mx  # type: ignore
 
             mx.clear_cache()
@@ -1628,9 +1729,15 @@ def health():
     return {
         "status": "ok",
         "loaded_alias": loaded_alias,
+        "loading_alias": loading_alias,
+        "loading_elapsed_ms": round((time.time() - loading_started_at) * 1000, 1) if loading_started_at else None,
+        "loading_error": loading_error,
+        "runtime_import_error": mlx_import_error,
         "available_models": list(MODEL_REPOS.keys()),
         "workspace_root": str(WORKSPACE_ROOT),
-        "busy": current_active_requests > 0 or current_queue_depth > 0,
+        "busy": current_active_requests > 0
+        or current_queue_depth > 0
+        or loading_alias is not None,
         "queue_depth": current_queue_depth,
         "active_requests": current_active_requests,
         "pending_confirmations": len(pending_confirmations),

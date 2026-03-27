@@ -42,6 +42,10 @@ type AgentTurn = {
   providerProfile?: AgentProviderProfile;
   thinkingMode?: AgentThinkingMode;
   thinkingFallbackToStandard?: boolean;
+  localFallbackUsed?: boolean;
+  localFallbackTargetId?: string;
+  localFallbackTargetLabel?: string;
+  localFallbackReason?: string;
   cacheHit?: boolean;
   cacheMode?: AgentCacheMode;
   plannerSteps?: string[];
@@ -83,6 +87,10 @@ type AgentStreamEvent =
       providerProfile?: AgentProviderProfile;
       thinkingMode?: AgentThinkingMode;
       thinkingFallbackToStandard?: boolean;
+      localFallbackUsed?: boolean;
+      localFallbackTargetId?: string;
+      localFallbackTargetLabel?: string;
+      localFallbackReason?: string;
       cacheHit?: boolean;
       cacheMode?: AgentCacheMode;
       plannerSteps?: string[];
@@ -98,6 +106,10 @@ type AgentStreamEvent =
       providerProfile?: AgentProviderProfile;
       thinkingMode?: AgentThinkingMode;
       thinkingFallbackToStandard?: boolean;
+      localFallbackUsed?: boolean;
+      localFallbackTargetId?: string;
+      localFallbackTargetLabel?: string;
+      localFallbackReason?: string;
       cacheHit?: boolean;
       cacheMode?: AgentCacheMode;
       plannerSteps?: string[];
@@ -135,6 +147,32 @@ function sortSessions(sessions: StoredAgentSession[]) {
     }
     return b.updatedAt.localeCompare(a.updatedAt);
   });
+}
+
+function filterSessionsForExport(
+  sessions: StoredAgentSession[],
+  options: {
+    scope: "visible" | "pinned";
+    sessionTargetFilter: string;
+    sessionSearch: string;
+  }
+) {
+  const normalizedSearch = options.sessionSearch.trim().toLowerCase();
+  return sortSessions(
+    sessions.filter((session) => {
+      if (options.scope === "pinned") {
+        return Boolean(session.pinned);
+      }
+      if (options.sessionTargetFilter !== "all" && session.selectedTargetId !== options.sessionTargetFilter) {
+        return false;
+      }
+      if (!normalizedSearch) return true;
+      return (
+        session.title.toLowerCase().includes(normalizedSearch) ||
+        session.selectedTargetId.toLowerCase().includes(normalizedSearch)
+      );
+    })
+  );
 }
 
 function createSessionTitle(turns: AgentTurn[], fallback = "New session") {
@@ -290,6 +328,42 @@ function formatGroundedNote(
   }
 }
 
+function formatLocalFallbackReason(
+  reason: string | undefined,
+  labels: {
+    loading: string;
+    health: string;
+    empty: string;
+    failure: string;
+    simple: string;
+  }
+) {
+  switch (reason) {
+    case "primary-local-still-loading":
+      return labels.loading;
+    case "primary-local-health-warning":
+      return labels.health;
+    case "empty-visible-answer":
+      return labels.empty;
+    case "primary-local-failure":
+      return labels.failure;
+    case "simple-local-route":
+      return labels.simple;
+    default:
+      return reason || "";
+  }
+}
+
+function formatTargetModelVersion(
+  modelDefault: string,
+  thinkingModelDefault?: string
+) {
+  if (thinkingModelDefault && thinkingModelDefault !== modelDefault) {
+    return `${modelDefault} · Thinking ${thinkingModelDefault}`;
+  }
+  return modelDefault;
+}
+
 function getConnectionStageBadgeClass(ok: boolean) {
   return ok
     ? "bg-emerald-400/15 text-emerald-200"
@@ -332,6 +406,15 @@ function buildTurnMarkdownLines(turns: AgentTurn[]) {
     if (turn.thinkingMode) {
       lines.push(`- Thinking mode used: ${turn.thinkingMode}`);
     }
+    if (turn.localFallbackUsed) {
+      lines.push(`- Local fallback used: yes`);
+      if (turn.localFallbackTargetLabel) {
+        lines.push(`- Fallback target: ${turn.localFallbackTargetLabel}`);
+      }
+      if (turn.localFallbackReason) {
+        lines.push(`- Fallback reason: ${turn.localFallbackReason}`);
+      }
+    }
     if (turn.retrieval) {
       lines.push(`- Retrieval hits: ${turn.retrieval.hitCount}`);
       lines.push(`- Retrieval confidence: ${turn.retrieval.lowConfidence ? "low" : "ok"}`);
@@ -347,7 +430,7 @@ function buildTurnMarkdownLines(turns: AgentTurn[]) {
     if (turn.plannerSteps?.length) {
       lines.push(`- Planner steps: ${turn.plannerSteps.length}`);
     }
-    if (turn.providerProfile || turn.thinkingMode || turn.retrieval || turn.verification) {
+    if (turn.providerProfile || turn.thinkingMode || turn.localFallbackUsed || turn.retrieval || turn.verification) {
       lines.push("");
     }
     lines.push("### User");
@@ -559,6 +642,15 @@ export function AgentWorkbench() {
           : true
       );
   }, [savedSessions, sessionId, sessionSearch, sessionTargetFilter]);
+  const exportableSessions = useMemo(
+    () =>
+      filterSessionsForExport(savedSessions, {
+        scope: sessionExportScope,
+        sessionTargetFilter,
+        sessionSearch
+      }),
+    [savedSessions, sessionExportScope, sessionTargetFilter, sessionSearch]
+  );
   const sessionGroups = useMemo(() => {
     const groups = new Map<string, StoredAgentSession[]>();
     for (const session of filteredHistorySessions) {
@@ -712,7 +804,19 @@ export function AgentWorkbench() {
           fallbackBadge: "已回退",
           thinkingModelFallback: "未配置专用 Thinking 模型，当前回退到标准模型。",
           latencySplit: "上游首字 vs 应用总耗时",
-          appOverhead: "应用层额外耗时"
+          appOverhead: "应用层额外耗时",
+          runtimeLoading: "运行中加载",
+          runtimeLoadingElapsed: "已等待",
+          runtimeLoadingError: "加载错误",
+          runtimeDowngradeHint: "本地 4B 仍在冷加载时，简单问答会自动降到 0.6B 以先给出结果。",
+          localFallbackUsed: "本地自动降级",
+          localFallbackTarget: "降级目标",
+          localFallbackReason: "降级原因",
+          localFallbackReasonLoading: "本地 4B 仍在加载",
+          localFallbackReasonHealth: "本地 4B 运行时告警",
+          localFallbackReasonEmpty: "本地 4B 返回空可见答案",
+          localFallbackReasonFailure: "本地 4B 请求失败",
+          localFallbackReasonSimple: "简单问答优先走已预热 0.6B"
         };
       case "ko":
         return {
@@ -848,7 +952,19 @@ export function AgentWorkbench() {
           fallbackBadge: "폴백",
           thinkingModelFallback: "전용 Thinking 모델이 없어 현재 표준 모델로 대체됩니다.",
           latencySplit: "업스트림 첫 토큰 vs 앱 총 지연",
-          appOverhead: "앱 추가 지연"
+          appOverhead: "앱 추가 지연",
+          runtimeLoading: "로딩 중",
+          runtimeLoadingElapsed: "대기 시간",
+          runtimeLoadingError: "로딩 오류",
+          runtimeDowngradeHint: "로컬 4B가 아직 콜드 로딩 중이면 간단한 질문은 0.6B로 자동 낮춰 먼저 응답합니다.",
+          localFallbackUsed: "로컬 자동 강등",
+          localFallbackTarget: "강등 대상",
+          localFallbackReason: "강등 사유",
+          localFallbackReasonLoading: "로컬 4B가 아직 로딩 중",
+          localFallbackReasonHealth: "로컬 4B 런타임 경고",
+          localFallbackReasonEmpty: "로컬 4B가 빈 가시 응답을 반환",
+          localFallbackReasonFailure: "로컬 4B 요청 실패",
+          localFallbackReasonSimple: "간단한 질문을 위해 미리 예열된 0.6B 사용"
         };
       case "ja":
         return {
@@ -984,7 +1100,19 @@ export function AgentWorkbench() {
           fallbackBadge: "フォールバック",
           thinkingModelFallback: "専用 Thinking モデルが未設定のため、現在は標準モデルにフォールバックしています。",
           latencySplit: "上流の初回トークン vs アプリ総遅延",
-          appOverhead: "アプリ追加遅延"
+          appOverhead: "アプリ追加遅延",
+          runtimeLoading: "読み込み中",
+          runtimeLoadingElapsed: "経過",
+          runtimeLoadingError: "読み込みエラー",
+          runtimeDowngradeHint: "ローカル 4B のコールドロード中は、簡単な質問を 0.6B に自動で落として先に応答します。",
+          localFallbackUsed: "ローカル自動フォールバック",
+          localFallbackTarget: "フォールバック先",
+          localFallbackReason: "フォールバック理由",
+          localFallbackReasonLoading: "ローカル 4B がまだ読み込み中",
+          localFallbackReasonHealth: "ローカル 4B のランタイム警告",
+          localFallbackReasonEmpty: "ローカル 4B が可視回答を返さなかった",
+          localFallbackReasonFailure: "ローカル 4B リクエスト失敗",
+          localFallbackReasonSimple: "簡単な質問は予熱済み 0.6B を優先"
         };
       case "en":
         return {
@@ -1120,7 +1248,19 @@ export function AgentWorkbench() {
           fallbackBadge: "Fallback",
           thinkingModelFallback: "No dedicated thinking model is configured. Falling back to the standard model.",
           latencySplit: "Upstream first token vs app total latency",
-          appOverhead: "App overhead"
+          appOverhead: "App overhead",
+          runtimeLoading: "Loading",
+          runtimeLoadingElapsed: "Elapsed",
+          runtimeLoadingError: "Loading error",
+          runtimeDowngradeHint: "If local 4B is still cold-loading, simple questions automatically downgrade to 0.6B so we can answer sooner.",
+          localFallbackUsed: "Local auto-fallback",
+          localFallbackTarget: "Fallback target",
+          localFallbackReason: "Fallback reason",
+          localFallbackReasonLoading: "Local 4B is still loading",
+          localFallbackReasonHealth: "Local 4B runtime warning",
+          localFallbackReasonEmpty: "Local 4B returned no visible answer",
+          localFallbackReasonFailure: "Local 4B request failed",
+          localFallbackReasonSimple: "Simple Q&A routed to prewarmed 0.6B"
         };
       case "zh-CN":
       default:
@@ -1257,10 +1397,29 @@ export function AgentWorkbench() {
           fallbackBadge: "已回退",
           thinkingModelFallback: "未配置专用 Thinking 模型，当前回退到标准模型。",
           latencySplit: "上游首字 vs 应用总耗时",
-          appOverhead: "应用层额外耗时"
+          appOverhead: "应用层额外耗时",
+          runtimeLoading: "运行中加载",
+          runtimeLoadingElapsed: "已等待",
+          runtimeLoadingError: "加载错误",
+          runtimeDowngradeHint: "本地 4B 仍在冷加载时，简单问答会自动降到 0.6B 以先给出结果。",
+          localFallbackUsed: "本地自动降级",
+          localFallbackTarget: "降级目标",
+          localFallbackReason: "降级原因",
+          localFallbackReasonLoading: "本地 4B 仍在加载",
+          localFallbackReasonHealth: "本地 4B 运行时告警",
+          localFallbackReasonEmpty: "本地 4B 返回空可见答案",
+          localFallbackReasonFailure: "本地 4B 请求失败",
+          localFallbackReasonSimple: "简单问答优先走已预热 0.6B"
         };
-    }
+      }
   }, [locale]);
+  const activeSessionTargetLabel = useMemo(
+    () =>
+      sessionTargetFilter === "all"
+        ? uiText.allTargets
+        : sessionTargetOptions.find((option) => option.id === sessionTargetFilter)?.label || sessionTargetFilter,
+    [sessionTargetFilter, sessionTargetOptions, uiText.allTargets]
+  );
 
   function restoreSession(session: StoredAgentSession) {
     setSessionId(session.id);
@@ -1376,18 +1535,11 @@ export function AgentWorkbench() {
   }
 
   function handleExportSessions(format: "markdown" | "json") {
-    const normalizedSearch = sessionSearch.trim().toLowerCase();
-    const sessions = sortSessions(savedSessions.filter((session) => {
-      if (sessionExportScope === "pinned") {
-        return Boolean(session.pinned);
-      }
-      if (sessionTargetFilter !== "all" && session.selectedTargetId !== sessionTargetFilter) return false;
-      if (!normalizedSearch) return true;
-      return (
-        session.title.toLowerCase().includes(normalizedSearch) ||
-        session.selectedTargetId.toLowerCase().includes(normalizedSearch)
-      );
-    }));
+    const sessions = filterSessionsForExport(savedSessions, {
+      scope: sessionExportScope,
+      sessionTargetFilter,
+      sessionSearch
+    });
     if (!sessions.length) return;
 
     const content =
@@ -1669,6 +1821,10 @@ export function AgentWorkbench() {
         providerProfile: selectedTarget.execution === "remote" ? providerProfile : undefined,
         thinkingMode: selectedTarget.execution === "remote" ? thinkingMode : undefined,
         thinkingFallbackToStandard: false,
+        localFallbackUsed: false,
+        localFallbackTargetId: undefined,
+        localFallbackTargetLabel: undefined,
+        localFallbackReason: undefined,
         cacheHit: false,
         cacheMode: undefined,
         plannerSteps: undefined,
@@ -1736,6 +1892,10 @@ export function AgentWorkbench() {
                         providerProfile: event.providerProfile,
                         thinkingMode: event.thinkingMode,
                         thinkingFallbackToStandard: event.thinkingFallbackToStandard,
+                        localFallbackUsed: event.localFallbackUsed,
+                        localFallbackTargetId: event.localFallbackTargetId,
+                        localFallbackTargetLabel: event.localFallbackTargetLabel,
+                        localFallbackReason: event.localFallbackReason,
                         cacheHit: event.cacheHit,
                         cacheMode: event.cacheMode,
                         plannerSteps: event.plannerSteps,
@@ -1772,6 +1932,10 @@ export function AgentWorkbench() {
                         providerProfile: event.providerProfile || turn.providerProfile,
                         thinkingMode: event.thinkingMode || turn.thinkingMode,
                         thinkingFallbackToStandard: event.thinkingFallbackToStandard ?? turn.thinkingFallbackToStandard,
+                        localFallbackUsed: event.localFallbackUsed ?? turn.localFallbackUsed,
+                        localFallbackTargetId: event.localFallbackTargetId || turn.localFallbackTargetId,
+                        localFallbackTargetLabel: event.localFallbackTargetLabel || turn.localFallbackTargetLabel,
+                        localFallbackReason: event.localFallbackReason || turn.localFallbackReason,
                         cacheHit: event.cacheHit ?? turn.cacheHit,
                         cacheMode: event.cacheMode || turn.cacheMode,
                         plannerSteps: event.plannerSteps || turn.plannerSteps,
@@ -1882,6 +2046,10 @@ export function AgentWorkbench() {
           providerProfile: data.providerProfile,
           thinkingMode: data.thinkingMode,
           thinkingFallbackToStandard: data.thinkingFallbackToStandard,
+          localFallbackUsed: data.localFallbackUsed,
+          localFallbackTargetId: data.localFallbackTargetId,
+          localFallbackTargetLabel: data.localFallbackTargetLabel,
+          localFallbackReason: data.localFallbackReason,
           cacheHit: data.cacheHit,
           cacheMode: data.cacheMode,
           plannerSteps: data.plannerSteps,
@@ -2202,20 +2370,23 @@ export function AgentWorkbench() {
                       key={target.id}
                       type="button"
                       onClick={() => setSelectedTargetId(target.id)}
-                      className={`w-full rounded-2xl border px-3 py-3 text-left transition ${
+                      className={`w-full rounded-[22px] border px-3 py-2.5 text-left transition ${
                         active
-                          ? "border-cyan-400/50 bg-cyan-400/10 shadow-[0_0_0_1px_rgba(34,211,238,0.12)]"
-                          : "border-white/10 bg-white/5 hover:border-white/20 hover:bg-white/[0.07]"
+                          ? "border-cyan-400/45 bg-cyan-400/[0.08] shadow-[0_0_0_1px_rgba(34,211,238,0.1)]"
+                          : "border-white/10 bg-white/[0.035] hover:border-white/20 hover:bg-white/[0.06]"
                       }`}
                     >
                       <div className="flex items-center justify-between gap-3">
                         <div>
-                          <p className="text-sm font-semibold text-white">{target.label}</p>
-                          <p className="mt-1 text-xs text-slate-400">{target.providerLabel}</p>
+                          <p className="text-[15px] font-semibold text-white">{target.label}</p>
+                          <p className="mt-0.5 line-clamp-1 text-[11px] text-slate-500">{target.providerLabel}</p>
+                          <p className="mt-1 line-clamp-1 text-[10px] text-slate-500">
+                            {dictionary.common.model}: {formatTargetModelVersion(target.modelDefault, target.thinkingModelDefault)}
+                          </p>
                         </div>
                         <div className="flex flex-col items-end gap-1">
                           <span
-                            className={`rounded-full px-2.5 py-1 text-[10px] uppercase tracking-[0.22em] ${
+                            className={`rounded-full px-2 py-[3px] text-[10px] uppercase tracking-[0.2em] ${
                               target.execution === "local"
                                 ? "bg-emerald-400/10 text-emerald-300"
                                 : "bg-violet-400/10 text-violet-300"
@@ -2225,7 +2396,7 @@ export function AgentWorkbench() {
                           </span>
                           {target.execution === "remote" ? (
                             <span
-                              className={`rounded-full px-2.5 py-1 text-[10px] uppercase tracking-[0.22em] ${healthBadge.className}`}
+                              className={`rounded-full px-2 py-[3px] text-[10px] uppercase tracking-[0.2em] ${healthBadge.className}`}
                             >
                               {healthBadge.label === "healthy"
                                 ? dictionary.agent.healthHealthy
@@ -2238,7 +2409,7 @@ export function AgentWorkbench() {
                           ) : null}
                         </div>
                       </div>
-                      <p className="mt-2 text-sm leading-6 text-slate-400">
+                      <p className="mt-2 line-clamp-2 text-[12.5px] leading-6 text-slate-400">
                         {getLocalizedTargetDescription(locale, target.id, target.description)}
                       </p>
                     </button>
@@ -2247,19 +2418,19 @@ export function AgentWorkbench() {
               </div>
             </section>
 
-            <section className="rounded-2xl border border-white/10 bg-white/5 p-4">
-              <p className="text-xs uppercase tracking-[0.22em] text-slate-500">{dictionary.agent.selectedProfile}</p>
-              <div className="mt-3 space-y-3 text-sm text-slate-300">
+            <section className="rounded-[24px] border border-white/8 bg-white/[0.035] px-4 py-3.5">
+              <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{dictionary.agent.selectedProfile}</p>
+              <div className="mt-2.5 space-y-2.5 text-sm text-slate-300">
                 <div>
                   <p className="text-slate-500">{dictionary.agent.context}</p>
-                  <p className="mt-1 font-medium text-white">{selectedTarget.recommendedContext}</p>
+                  <p className="mt-1 text-[13px] leading-6 text-white">{selectedTarget.recommendedContext}</p>
                 </div>
                 <div>
                   <p className="text-slate-500">{uiText.contextWindow}</p>
                   <select
                     value={contextWindow}
                     onChange={(event) => setContextWindow(Number(event.target.value))}
-                    className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 outline-none"
+                    className="mt-1.5 w-full rounded-xl border border-white/10 bg-slate-950/70 px-3 py-2 text-sm text-slate-100 outline-none"
                   >
                     {CONTEXT_WINDOW_OPTIONS.map((value) => (
                       <option key={value} value={value}>
@@ -2275,14 +2446,14 @@ export function AgentWorkbench() {
                       value={providerProfile}
                       onChange={(event) => setProviderProfile(event.target.value as AgentProviderProfile)}
                       disabled={thinkingMode === "thinking"}
-                      className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 outline-none"
+                      className="mt-1.5 w-full rounded-xl border border-white/10 bg-slate-950/70 px-3 py-2 text-sm text-slate-100 outline-none"
                     >
                       <option value="speed">{uiText.providerProfileSpeed}</option>
                       <option value="balanced">{uiText.providerProfileBalanced}</option>
                       <option value="tool-first">{uiText.providerProfileToolFirst}</option>
                     </select>
                     {thinkingMode !== "thinking" ? (
-                      <p className="mt-2 text-xs leading-5 text-slate-500">{uiText.autoSpeedHint}</p>
+                      <p className="mt-1.5 text-xs leading-5 text-slate-500">{uiText.autoSpeedHint}</p>
                     ) : null}
                   </div>
                 ) : null}
@@ -2292,7 +2463,7 @@ export function AgentWorkbench() {
                     <select
                       value={thinkingMode}
                       onChange={(event) => setThinkingMode(event.target.value as AgentThinkingMode)}
-                      className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 outline-none"
+                      className="mt-1.5 w-full rounded-xl border border-white/10 bg-slate-950/70 px-3 py-2 text-sm text-slate-100 outline-none"
                     >
                       <option value="standard">{uiText.thinkingModeStandard}</option>
                       <option value="thinking">{uiText.thinkingModeThinking}</option>
@@ -2302,20 +2473,37 @@ export function AgentWorkbench() {
                 {selectedTarget.execution === "remote" ? (
                   <div>
                     <p className="text-slate-500">{uiText.actualResolvedModel}</p>
-                    <p className="mt-1 break-all text-sm leading-6 text-white">
-                      {runtimeStatus?.resolvedModel || lastChatTurn?.resolvedModel || selectedTarget.modelDefault}
-                    </p>
-                    <p className="mt-3 text-slate-500">{uiText.actualProviderProfile}</p>
-                    <p className="mt-1 break-all text-sm leading-6 text-white">
+                    <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                      <span className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2.5 py-1 text-[11px] uppercase tracking-[0.18em] text-cyan-100">
+                        live
+                      </span>
+                      <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 font-mono text-[12px] leading-5 text-white">
+                        {runtimeStatus?.resolvedModel || lastChatTurn?.resolvedModel || selectedTarget.modelDefault}
+                      </span>
+                    </div>
+                    <p className="mt-2.5 text-slate-500">{uiText.actualProviderProfile}</p>
+                    <p className="mt-1 break-all text-[13px] leading-6 text-white">
                       {lastChatTurn?.providerProfile || (thinkingMode === "thinking" ? "tool-first" : providerProfile)}
                     </p>
-                    <p className="mt-3 text-slate-500">{uiText.actualThinkingMode}</p>
-                    <p className="mt-1 break-all text-sm leading-6 text-white">
+                    <p className="mt-2.5 text-slate-500">{uiText.actualThinkingMode}</p>
+                    <p className="mt-1 break-all text-[13px] leading-6 text-white">
                       {lastChatTurn?.thinkingMode || thinkingMode}
                     </p>
+                    <p className="mt-2.5 text-slate-500">{uiText.thinkingModeStandard}</p>
+                    <div className="mt-1.5">
+                      <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 font-mono text-[12px] leading-5 text-white">
+                        {runtimeStatus?.standardResolvedModel || selectedTarget.modelDefault}
+                      </span>
+                    </div>
+                    <p className="mt-2.5 text-slate-500">{uiText.thinkingModeThinking}</p>
+                    <div className="mt-1.5">
+                      <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 font-mono text-[12px] leading-5 text-white">
+                        {runtimeStatus?.thinkingResolvedModel || selectedTarget.thinkingModelDefault || selectedTarget.modelDefault}
+                      </span>
+                    </div>
                     {(lastChatTurn?.thinkingFallbackToStandard ||
                       (thinkingMode === "thinking" && runtimeStatus?.thinkingModelConfigured === false)) ? (
-                        <p className="mt-2 text-xs leading-5 text-amber-200">
+                        <p className="mt-1.5 text-xs leading-5 text-amber-200">
                           {uiText.thinkingModelFallback} {runtimeStatus?.resolvedModel || lastChatTurn?.resolvedModel || selectedTarget.modelDefault}
                         </p>
                       ) : null}
@@ -2323,11 +2511,11 @@ export function AgentWorkbench() {
                 ) : null}
                 <div>
                   <p className="text-slate-500">{dictionary.agent.memory}</p>
-                  <p className="mt-1 leading-6">{selectedTarget.memoryProfile}</p>
+                  <p className="mt-1 text-[13px] leading-6">{selectedTarget.memoryProfile}</p>
                 </div>
                 <div>
                   <p className="text-slate-500">{dictionary.agent.toolMode}</p>
-                  <p className="mt-1 leading-6">
+                  <p className="mt-1 text-[13px] leading-6">
                     {selectedTarget.supportsTools
                       ? dictionary.agent.toolsAvailable
                       : dictionary.agent.toolsUnavailable}
@@ -2335,26 +2523,30 @@ export function AgentWorkbench() {
                 </div>
                 <div>
                   <p className="text-slate-500">{uiText.enableRetrieval}</p>
-                  <p className="mt-1 leading-6 text-slate-300">
+                  <p className="mt-1 text-[13px] leading-6 text-slate-300">
                     {enableRetrieval ? uiText.enabled : uiText.disabled}
                   </p>
-                  <p className="mt-2 text-xs leading-5 text-slate-500">{uiText.retrievalHint}</p>
+                  <p className="mt-1.5 text-xs leading-5 text-slate-500">{uiText.retrievalHint}</p>
                 </div>
               </div>
             </section>
 
-            <section className="rounded-2xl border border-white/10 bg-white/5 p-4">
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-xs uppercase tracking-[0.22em] text-slate-500">{uiText.sessions}</p>
-                <button
-                  type="button"
-                  onClick={startNewSession}
-                  className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:bg-white/10"
-                >
-                  {uiText.newSession}
-                </button>
-              </div>
-              <div className="mt-3 space-y-2">
+            <details className="rounded-2xl border border-white/10 bg-white/5 p-4">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.22em] text-slate-500">{uiText.sessions}</p>
+                  <p className="mt-2 text-sm leading-6 text-slate-400">{uiText.sessionSaved}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-slate-300">
+                    {savedSessions.length}
+                  </span>
+                  <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] font-semibold text-slate-200">
+                    {uiText.newSession}
+                  </span>
+                </div>
+              </summary>
+              <div className="mt-4 space-y-2">
                 <div className="rounded-2xl border border-cyan-400/20 bg-cyan-400/10 px-3 py-3">
                   <div className="flex items-center justify-between gap-3">
                     <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-300">{uiText.currentSession}</p>
@@ -2395,6 +2587,19 @@ export function AgentWorkbench() {
                   ) : null}
                 </div>
                 <div className="rounded-2xl border border-white/10 bg-black/20 p-3">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-white/10 bg-slate-950/60 px-3 py-2">
+                    <div className="flex flex-wrap gap-2 text-[11px] text-slate-400">
+                      <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1">
+                        {uiText.sessionTargetFilter} · {activeSessionTargetLabel}
+                      </span>
+                      <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1">
+                        {uiText.sessionExportScope} · {sessionExportScope === "visible" ? uiText.exportVisibleSessions : uiText.exportPinnedSessions}
+                      </span>
+                    </div>
+                    <span className="text-[11px] text-slate-500">
+                      {uiText.sessions} · {exportableSessions.length}/{savedSessions.length}
+                    </span>
+                  </div>
                   <input
                     value={sessionSearch}
                     onChange={(event) => setSessionSearch(event.target.value)}
@@ -2425,6 +2630,7 @@ export function AgentWorkbench() {
                     <button
                       type="button"
                       onClick={() => handleExportSessions("markdown")}
+                      disabled={!exportableSessions.length}
                       className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:bg-white/10"
                     >
                       {uiText.exportSessionsMarkdown}
@@ -2432,6 +2638,7 @@ export function AgentWorkbench() {
                     <button
                       type="button"
                       onClick={() => handleExportSessions("json")}
+                      disabled={!exportableSessions.length}
                       className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:bg-white/10"
                     >
                       {uiText.exportSessionsJson}
@@ -2514,11 +2721,26 @@ export function AgentWorkbench() {
                   </p>
                 )}
               </div>
-            </section>
+              <button
+                type="button"
+                onClick={startNewSession}
+                className="mt-4 w-full rounded-full border border-white/10 bg-white/5 px-3 py-2 text-[11px] font-semibold text-slate-200 transition hover:bg-white/10"
+              >
+                {uiText.newSession}
+              </button>
+            </details>
 
-            <section className="rounded-2xl border border-white/10 bg-white/5 p-4">
-              <p className="text-xs uppercase tracking-[0.22em] text-slate-500">{dictionary.agent.toolRegistry}</p>
-              <div className="mt-3 space-y-3">
+            <details className="rounded-2xl border border-white/10 bg-white/5 p-4">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.22em] text-slate-500">{dictionary.agent.toolRegistry}</p>
+                  <p className="mt-2 text-sm leading-6 text-slate-400">{dictionary.agent.toolsAvailable}</p>
+                </div>
+                <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-slate-300">
+                  {agentToolSpecs.length}
+                </span>
+              </summary>
+              <div className="mt-4 space-y-3">
                 {agentToolSpecs.map((tool) => (
                   <div key={tool.name} className="rounded-2xl border border-white/10 bg-black/20 p-3">
                     <p className="font-mono text-xs text-cyan-300">{tool.name}</p>
@@ -2528,7 +2750,7 @@ export function AgentWorkbench() {
                   </div>
                 ))}
               </div>
-            </section>
+            </details>
           </div>
         </aside>
 
@@ -2536,14 +2758,14 @@ export function AgentWorkbench() {
           <header className="border-b border-white/10 px-5 py-4">
             <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
               <div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="rounded-full bg-cyan-400/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.24em] text-cyan-300">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="rounded-full bg-cyan-400/[0.07] px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] text-cyan-300">
                     {selectedTarget.providerLabel}
                   </span>
-                  <span className="rounded-full bg-white/5 px-2.5 py-1 text-[10px] uppercase tracking-[0.24em] text-slate-300">
+                  <span className="rounded-full bg-white/[0.03] px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] text-slate-300">
                     {selectedTarget.transport}
                   </span>
-                  <span className="rounded-full bg-white/5 px-2.5 py-1 text-[10px] uppercase tracking-[0.24em] text-slate-300">
+                  <span className="rounded-full bg-white/[0.03] px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] text-slate-300">
                     {selectedTarget.execution === "local" ? dictionary.common.local : dictionary.common.remote}
                   </span>
                 </div>
@@ -2551,18 +2773,18 @@ export function AgentWorkbench() {
                 <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">{dictionary.agent.subtitle}</p>
               </div>
 
-              <div className="grid gap-3 sm:grid-cols-3 xl:min-w-[360px]">
-                <div className="rounded-2xl border border-white/10 bg-white/5 px-3 py-3">
-                  <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">{dictionary.agent.messages}</p>
-                  <p className="mt-2 text-xl font-semibold text-white">{historyMessages.length}</p>
+              <div className="grid gap-2 sm:grid-cols-3 xl:min-w-[318px]">
+                <div className="rounded-[20px] border border-white/8 bg-white/[0.035] px-3 py-2.5">
+                  <p className="text-[10px] uppercase tracking-[0.22em] text-slate-500">{dictionary.agent.messages}</p>
+                  <p className="mt-1.5 text-lg font-semibold text-white">{historyMessages.length}</p>
                 </div>
-                <div className="rounded-2xl border border-white/10 bg-white/5 px-3 py-3">
-                  <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">{dictionary.agent.turns}</p>
-                  <p className="mt-2 text-xl font-semibold text-white">{turns.length}</p>
+                <div className="rounded-[20px] border border-white/8 bg-white/[0.035] px-3 py-2.5">
+                  <p className="text-[10px] uppercase tracking-[0.22em] text-slate-500">{dictionary.agent.turns}</p>
+                  <p className="mt-1.5 text-lg font-semibold text-white">{turns.length}</p>
                 </div>
-                <div className="rounded-2xl border border-white/10 bg-white/5 px-3 py-3">
-                  <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">{dictionary.agent.tools}</p>
-                  <p className="mt-2 text-xl font-semibold text-white">
+                <div className="rounded-[20px] border border-white/8 bg-white/[0.035] px-3 py-2.5">
+                  <p className="text-[10px] uppercase tracking-[0.22em] text-slate-500">{dictionary.agent.tools}</p>
+                  <p className="mt-1.5 text-lg font-semibold text-white">
                     {turns.reduce((count, turn) => count + turn.toolRuns.length, 0)}
                   </p>
                 </div>
@@ -2570,33 +2792,30 @@ export function AgentWorkbench() {
             </div>
           </header>
 
-          <div className="border-b border-white/10 bg-black/20 px-5 py-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-200">
-                {uiText.runtimeSnapshot}
-              </span>
-              <span className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-1.5 text-xs text-cyan-100">
+          <div className="border-b border-white/10 bg-black/20 px-5 py-2.5">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2.5 py-1 text-[11px] text-cyan-100">
                 {uiText.selectedTargetLabel}: {selectedTarget.label}
               </span>
-              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-200">
+              <span className="rounded-full border border-white/8 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-300">
                 {uiText.executionMode}: {selectedTarget.execution === "local" ? dictionary.common.local : dictionary.common.remote}
               </span>
-              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-200">
+              <span className="rounded-full border border-white/8 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-300">
                 {uiText.contextWindow}: {formatContextWindowLabel(contextWindow)}
               </span>
-              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-200">
+              <span className="rounded-full border border-white/8 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-300">
                 {uiText.toolLoopState}: {enableTools ? uiText.enabled : uiText.disabled}
               </span>
-              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-200">
+              <span className="rounded-full border border-white/8 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-300">
                 {uiText.enableRetrieval}: {enableRetrieval ? uiText.enabled : uiText.disabled}
               </span>
-              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-200">
+              <span className="rounded-full border border-white/8 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-300">
                 {uiText.loadedAlias}: {runtimeStatus?.loadedAlias || runtimeStatus?.resolvedModel || lastTurn?.resolvedModel || selectedTarget.modelDefault}
               </span>
               {selectedTarget.execution === "local" && runtimeStatus ? (
                 <>
                   <span
-                    className={`rounded-full border px-3 py-1.5 text-xs ${
+                    className={`rounded-full border px-2.5 py-1 text-[11px] ${
                       runtimeStatus.available
                         ? runtimeStatus.busy
                           ? "border-amber-400/20 bg-amber-400/10 text-amber-100"
@@ -2610,13 +2829,26 @@ export function AgentWorkbench() {
                         : dictionary.agent.runtimeIdle
                       : dictionary.agent.runtimeOffline}
                   </span>
-                  <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-200">
+                  <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-slate-300">
                     {uiText.queueLabel}: {runtimeStatus.queueDepth ?? 0}
                   </span>
+                  {runtimeStatus.loadingAlias ? (
+                    <span className="rounded-full border border-amber-400/20 bg-amber-400/10 px-2.5 py-1 text-[11px] text-amber-100">
+                      {uiText.runtimeLoading}: {runtimeStatus.loadingAlias}
+                      {typeof runtimeStatus.loadingElapsedMs === "number"
+                        ? ` · ${uiText.runtimeLoadingElapsed} ${Math.max(1, Math.round(runtimeStatus.loadingElapsedMs / 1000))}s`
+                        : ""}
+                    </span>
+                  ) : null}
+                  {runtimeStatus.loadingError ? (
+                    <span className="rounded-full border border-rose-400/20 bg-rose-400/10 px-2.5 py-1 text-[11px] text-rose-100">
+                      {uiText.runtimeLoadingError}
+                    </span>
+                  ) : null}
                 </>
               ) : null}
               {prewarmMessage ? (
-                <span className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-1.5 text-xs text-cyan-100">
+                <span className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2.5 py-1 text-[11px] text-cyan-100">
                   {uiText.prewarmModel}: {prewarmMessage}
                 </span>
               ) : null}
@@ -2625,14 +2857,14 @@ export function AgentWorkbench() {
 
           <div className="grid gap-0 xl:grid-cols-[minmax(0,1fr)_320px]">
             <div className="border-b border-white/10 xl:border-b-0 xl:border-r xl:border-white/10">
-              <div className="border-b border-white/10 bg-black/20 px-5 py-3">
-                <div className="flex flex-wrap items-center gap-2">
+              <div className="border-b border-white/10 bg-black/20 px-5 py-2.5">
+                <div className="flex flex-wrap items-center gap-1.5">
                   {starterPrompts.map((prompt) => (
                     <button
                       key={prompt}
                       type="button"
                       onClick={() => setInput(prompt)}
-                      className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-300 transition hover:border-cyan-400/30 hover:bg-cyan-400/10 hover:text-white"
+                      className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-300 transition hover:border-cyan-400/30 hover:bg-cyan-400/10 hover:text-white"
                     >
                       {prompt}
                     </button>
@@ -2674,6 +2906,11 @@ export function AgentWorkbench() {
                             {turn.thinkingFallbackToStandard ? (
                               <span className="rounded-full bg-amber-500/15 px-2.5 py-1 text-[10px] uppercase tracking-[0.24em] text-amber-100">
                                 {uiText.fallbackBadge}
+                              </span>
+                            ) : null}
+                            {turn.localFallbackUsed ? (
+                              <span className="rounded-full bg-emerald-500/15 px-2.5 py-1 text-[10px] uppercase tracking-[0.24em] text-emerald-100">
+                                {uiText.localFallbackUsed}
                               </span>
                             ) : null}
                             {turn.cacheHit ? (
@@ -3028,11 +3265,11 @@ export function AgentWorkbench() {
                               <p className="mt-2 text-xs leading-6 text-amber-100">{uiText.retrievalLowConfidence}</p>
                             ) : null}
                             {turn.retrieval.results.length ? (
-                              <div className="mt-3 space-y-3">
-                                {turn.retrieval.results.map((result) => (
+                              <div className="mt-3 space-y-2.5">
+                                {turn.retrieval.results.slice(0, 2).map((result) => (
                                   <div
                                     key={`${turn.id}:${result.chunkId}`}
-                                    className="rounded-xl border border-white/10 bg-slate-950/60 px-3 py-3"
+                                    className="rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2.5"
                                   >
                                     <div className="flex flex-wrap items-center justify-between gap-2">
                                       <p className="text-xs font-semibold text-white">
@@ -3046,11 +3283,16 @@ export function AgentWorkbench() {
                                       {result.sectionPath.length ? result.sectionPath.join(" > ") : "--"}
                                       {result.source ? ` · ${result.source}` : ""}
                                     </p>
-                                    <pre className="mt-2 whitespace-pre-wrap break-words text-xs leading-6 text-slate-200">
-                                      {result.content}
-                                    </pre>
+                                    <p className="mt-2 text-xs leading-6 text-slate-200">
+                                      {result.content.length > 220 ? `${result.content.slice(0, 220)}…` : result.content}
+                                    </p>
                                   </div>
                                 ))}
+                                {turn.retrieval.results.length > 2 ? (
+                                  <p className="px-1 text-xs leading-6 text-slate-400">
+                                    +{turn.retrieval.results.length - 2} 条额外证据已命中
+                                  </p>
+                                ) : null}
                               </div>
                             ) : (
                               <p className="mt-2 text-xs leading-6 text-slate-400">{uiText.retrievalNoEvidence}</p>
@@ -3128,7 +3370,7 @@ export function AgentWorkbench() {
                                   {uiText.groundedNotes}
                                 </p>
                                 <ul className="mt-2 space-y-1 text-xs leading-6 text-slate-200">
-                                  {turn.verification.notes.map((note, noteIndex) => (
+                                  {turn.verification.notes.slice(0, 2).map((note, noteIndex) => (
                                     <li key={`${turn.id}:verification-note:${noteIndex}`}>
                                       -{" "}
                                       {formatGroundedNote(note, {
@@ -3141,6 +3383,9 @@ export function AgentWorkbench() {
                                       })}
                                     </li>
                                   ))}
+                                  {turn.verification.notes.length > 2 ? (
+                                    <li className="text-slate-500">+{turn.verification.notes.length - 2} 条补充说明</li>
+                                  ) : null}
                                 </ul>
                               </div>
                             ) : null}
@@ -3150,6 +3395,27 @@ export function AgentWorkbench() {
                         {turn.thinkingFallbackToStandard ? (
                           <div className="rounded-2xl border border-amber-300/25 bg-amber-300/10 px-3 py-3 text-sm leading-6 text-amber-100">
                             {uiText.thinkingModelFallback} {turn.resolvedModel}
+                          </div>
+                        ) : null}
+
+                        {turn.localFallbackUsed ? (
+                          <div className="rounded-2xl border border-emerald-300/25 bg-emerald-300/10 px-3 py-3 text-sm leading-6 text-emerald-50">
+                            <p>
+                              {uiText.localFallbackUsed}
+                              {turn.localFallbackTargetLabel ? ` · ${uiText.localFallbackTarget}: ${turn.localFallbackTargetLabel}` : ""}
+                            </p>
+                            {turn.localFallbackReason ? (
+                              <p className="mt-1 text-emerald-100/90">
+                                {uiText.localFallbackReason}:{" "}
+                                {formatLocalFallbackReason(turn.localFallbackReason, {
+                                  loading: uiText.localFallbackReasonLoading,
+                                  health: uiText.localFallbackReasonHealth,
+                                  empty: uiText.localFallbackReasonEmpty,
+                                  failure: uiText.localFallbackReasonFailure,
+                                  simple: uiText.localFallbackReasonSimple
+                                })}
+                              </p>
+                            ) : null}
                           </div>
                         ) : null}
 
@@ -3365,6 +3631,24 @@ export function AgentWorkbench() {
                           : uiText.runtimeReady
                         : runtimeStatus.message || uiText.runtimeUnavailable}
                     </p>
+                    {runtimeStatus.loadingAlias ? (
+                      <div className="mt-2 rounded-2xl border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-xs leading-6 text-amber-100">
+                        <p>
+                          {uiText.runtimeLoading}: {runtimeStatus.loadingAlias}
+                          {typeof runtimeStatus.loadingElapsedMs === "number"
+                            ? ` · ${uiText.runtimeLoadingElapsed} ${Math.max(1, Math.round(runtimeStatus.loadingElapsedMs / 1000))}s`
+                            : ""}
+                        </p>
+                        {selectedTarget.id === "local-qwen3-4b-4bit" ? (
+                          <p className="mt-1 text-amber-50/90">{uiText.runtimeDowngradeHint}</p>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {runtimeStatus.loadingError ? (
+                      <div className="mt-2 rounded-2xl border border-rose-400/20 bg-rose-400/10 px-3 py-2 text-xs leading-6 text-rose-100">
+                        {uiText.runtimeLoadingError}: {runtimeStatus.loadingError}
+                      </div>
+                    ) : null}
                     {prewarmMessage ? (
                       <p className="mt-1 text-xs leading-6 text-cyan-200">{prewarmMessage}</p>
                     ) : null}
@@ -3394,26 +3678,26 @@ export function AgentWorkbench() {
             </div>
 
             <aside className="bg-white/[0.03]">
-              <div className="border-b border-white/10 px-5 py-4">
-                <p className="text-xs uppercase tracking-[0.22em] text-slate-500">{dictionary.nav.agent}</p>
-                <h3 className="mt-2 text-lg font-semibold text-white">
+              <div className="border-b border-white/10 px-5 py-3.5">
+                <p className="text-[11px] uppercase tracking-[0.2em] text-slate-500">{dictionary.nav.agent}</p>
+                <h3 className="mt-1.5 text-base font-semibold text-white">
                   {dictionary.agent.localRuntime} / {dictionary.agent.promptFrame}
                 </h3>
               </div>
 
               <div className="space-y-4 px-5 py-4">
-                <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
-                  <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{dictionary.agent.resolvedEndpoint}</p>
-                  <p className="mt-2 break-all text-sm leading-6 text-slate-200">
+                <div className="rounded-2xl border border-white/10 bg-black/25 px-4 py-3">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{dictionary.agent.resolvedEndpoint}</p>
+                  <p className="mt-1.5 break-all text-[13px] leading-6 text-slate-200">
                     {lastTurn?.resolvedBaseUrl || selectedTarget.baseUrlDefault}
                   </p>
                 </div>
 
-                <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
+                <div className="rounded-2xl border border-white/10 bg-black/25 px-4 py-3">
                   <div className="flex items-center justify-between gap-3">
                     <div>
-                      <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{dictionary.agent.providerSelfCheck}</p>
-                      <p className="mt-2 text-sm leading-6 text-slate-300">
+                      <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{dictionary.agent.providerSelfCheck}</p>
+                      <p className="mt-1.5 text-[13px] leading-6 text-slate-300">
                         {dictionary.agent.selfCheckDescription}
                       </p>
                     </div>
@@ -3422,19 +3706,19 @@ export function AgentWorkbench() {
                         type="button"
                         disabled={!supportsConnectionCheck || connectionCheckPending || pending}
                         onClick={handleConnectionCheck}
-                        className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1.5 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-400/20 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
+                        className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
                       >
                         {connectionCheckPending ? dictionary.agent.checking : dictionary.agent.runCheck}
                       </button>
                       <a
                         href={`/api/agent/check-history/export?targetId=${encodeURIComponent(selectedTargetId)}&format=markdown`}
-                        className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/10"
+                        className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/10"
                       >
                         {dictionary.agent.exportMarkdown}
                       </a>
                       <a
                         href={`/api/agent/check-history/export?targetId=${encodeURIComponent(selectedTargetId)}&format=json`}
-                        className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/10"
+                        className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/10"
                       >
                         {dictionary.agent.exportJson}
                       </a>
@@ -3454,10 +3738,10 @@ export function AgentWorkbench() {
                   ) : null}
 
                   {connectionCheck ? (
-                    <div className="mt-4 space-y-3">
+                    <div className="mt-3.5 space-y-2.5">
                       <div className="flex flex-wrap items-center gap-2">
                         <span
-                          className={`rounded-full px-2.5 py-1 text-[10px] uppercase tracking-[0.22em] ${
+                          className={`rounded-full px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] ${
                             connectionCheck.ok
                               ? "bg-emerald-400/15 text-emerald-200"
                               : "bg-amber-400/15 text-amber-200"
@@ -3465,12 +3749,12 @@ export function AgentWorkbench() {
                         >
                           {connectionCheck.ok ? dictionary.agent.allChecksPassed : dictionary.agent.checkAttention}
                         </span>
-                        <span className="rounded-full bg-white/5 px-2.5 py-1 text-[10px] uppercase tracking-[0.22em] text-slate-300">
+                        <span className="rounded-full bg-white/[0.04] px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] text-slate-300">
                           {new Date(connectionCheck.checkedAt).toLocaleTimeString()}
                         </span>
                       </div>
 
-                      <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-3 text-xs leading-6 text-slate-300">
+                      <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-2.5 text-xs leading-6 text-slate-300">
                         <p>{dictionary.common.model}: {connectionCheck.resolvedModel}</p>
                         <p className="break-all">{dictionary.common.endpoint}: {connectionCheck.resolvedBaseUrl}</p>
                         {connectionCheck.docsUrl ? (
@@ -3491,115 +3775,155 @@ export function AgentWorkbench() {
                       {connectionCheck.stages.map((stage) => (
                         <div
                           key={stage.id}
-                          className="rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-3"
+                          className="rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-2.5"
                         >
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <div className="flex flex-wrap items-center gap-2">
                               <span
-                                className={`rounded-full px-2.5 py-1 text-[10px] uppercase tracking-[0.22em] ${getConnectionStageBadgeClass(stage.ok)}`}
+                                className={`rounded-full px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] ${getConnectionStageBadgeClass(stage.ok)}`}
                               >
                                 {formatConnectionStageLabel(stage.id)}
                               </span>
-                              <span className="rounded-full bg-white/5 px-2.5 py-1 text-[10px] uppercase tracking-[0.22em] text-slate-300">
+                              <span className="rounded-full bg-white/[0.04] px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] text-slate-300">
                                 {stage.ok ? dictionary.common.ok : dictionary.common.failed}
                               </span>
                               {typeof stage.httpStatus === "number" ? (
-                                <span className="rounded-full bg-white/5 px-2.5 py-1 text-[10px] uppercase tracking-[0.22em] text-slate-300">
+                                <span className="rounded-full bg-white/[0.04] px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] text-slate-300">
                                   http {stage.httpStatus}
                                 </span>
                               ) : null}
                             </div>
-                            <span className="text-[11px] uppercase tracking-[0.22em] text-slate-500">
+                            <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
                               {stage.latencyMs} ms
                             </span>
                           </div>
-                          <p className="mt-2 text-sm leading-6 text-slate-300">{stage.summary}</p>
+                          <p className="mt-1.5 text-[13px] leading-6 text-slate-300">{stage.summary}</p>
                         </div>
                       ))}
                     </div>
                   ) : null}
                 </div>
 
+                <div className="rounded-2xl border border-white/10 bg-black/25 px-4 py-3">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{dictionary.agent.resolvedModel}</p>
+                  <div className="mt-2.5 space-y-2.5 text-sm text-slate-300">
+                    <div>
+                      <p className="text-slate-500">{dictionary.common.model}</p>
+                      <p className="mt-1 break-all text-[13px] leading-6 text-slate-200">
+                        {runtimeStatus?.resolvedModel || lastTurn?.resolvedModel || selectedTarget.modelDefault}
+                      </p>
+                    </div>
+                    {selectedTarget.execution === "remote" ? (
+                      <>
+                        <div>
+                          <p className="text-slate-500">{uiText.thinkingModeStandard}</p>
+                          <p className="mt-1 break-all text-[13px] leading-6 text-slate-200">
+                            {runtimeStatus?.standardResolvedModel || selectedTarget.modelDefault}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-slate-500">{uiText.thinkingModeThinking}</p>
+                          <p className="mt-1 break-all text-[13px] leading-6 text-slate-200">
+                            {runtimeStatus?.thinkingResolvedModel || selectedTarget.thinkingModelDefault || selectedTarget.modelDefault}
+                          </p>
+                        </div>
+                      </>
+                    ) : null}
+                    <div>
+                      <p className="text-slate-500">{dictionary.common.endpoint}</p>
+                      <p className="mt-1 break-all text-[13px] leading-6 text-slate-200">
+                        {lastTurn?.resolvedBaseUrl || selectedTarget.baseUrlDefault}
+                      </p>
+                    </div>
+                    {connectionCheck?.docsUrl ? (
+                      <div>
+                        <a
+                          href={connectionCheck.docsUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-block text-cyan-300 underline decoration-cyan-300/40 underline-offset-4"
+                        >
+                          {dictionary.agent.openDocs}
+                        </a>
+                      </div>
+                    ) : null}
+                    <div>
+                      <p className="text-slate-500">{dictionary.agent.historySavedAt}</p>
+                      <p className="mt-1 text-xs leading-6 text-slate-400">data/agent-observability</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-white/10 bg-black/25 px-4 py-3">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{dictionary.agent.promptFrame}</p>
+                  <textarea
+                    value={systemPrompt}
+                    onChange={(event) => setSystemPrompt(event.target.value)}
+                    rows={14}
+                    className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 font-mono text-xs leading-6 text-slate-200 outline-none transition focus:border-cyan-400/40"
+                  />
+                </div>
+
+                <div className="rounded-2xl border border-white/10 bg-black/25 px-4 py-3">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{dictionary.agent.launchHints}</p>
+                  <div className="mt-2 space-y-2">
+                    {(selectedTarget.launchHints || [uiText.fallbackLaunchHint]).map(
+                      (hint) => (
+                        <pre
+                          key={hint}
+                          className="overflow-x-auto whitespace-pre-wrap break-words rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-2 font-mono text-xs leading-6 text-slate-200"
+                        >
+                          {hint}
+                        </pre>
+                      )
+                    )}
+                  </div>
+                </div>
+
                 <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
                   <div className="flex items-center justify-between gap-3">
                     <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{dictionary.agent.localRuntime}</p>
                     {selectedTarget.execution === "local" ? (
-                      <div className="flex flex-wrap items-center gap-2">
-                        <button
-                          type="button"
-                          disabled={prewarmAllPending || prewarmPending || pending || Boolean(runtimeActionPending)}
-                          onClick={handlePrewarmAll}
-                          className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
-                        >
-                          {prewarmAllPending ? uiText.prewarmingAll : uiText.prewarmAllModels}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={prewarmAllPending || prewarmPending || pending || Boolean(runtimeActionPending)}
-                          onClick={handlePrewarm}
-                          className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1.5 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-400/20 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
-                        >
-                          {prewarmPending ? uiText.prewarming : uiText.prewarmModel}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={prewarmAllPending || prewarmPending || pending || Boolean(runtimeActionPending)}
-                          onClick={() => void handleRuntimeAction("release")}
-                          className="rounded-full border border-amber-400/30 bg-amber-400/10 px-3 py-1.5 text-xs font-semibold text-amber-100 transition hover:bg-amber-400/20 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
-                        >
-                          {runtimeActionPending === "release" ? uiText.releasingModel : uiText.releaseModel}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={prewarmAllPending || prewarmPending || pending || Boolean(runtimeActionPending)}
-                          onClick={() => void handleRuntimeAction("restart")}
-                          className="rounded-full border border-rose-400/30 bg-rose-400/10 px-3 py-1.5 text-xs font-semibold text-rose-100 transition hover:bg-rose-400/20 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
-                        >
-                          {runtimeActionPending === "restart" ? uiText.restartingGateway : uiText.restartGateway}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={prewarmAllPending || prewarmPending || pending || Boolean(runtimeActionPending)}
-                          onClick={() => void handleRuntimeAction("read_log")}
-                          className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
-                        >
-                          {runtimeActionPending === "read_log" ? uiText.loadingRuntimeLog : uiText.viewRuntimeLog}
-                        </button>
-                      </div>
+                      <span
+                        className={`rounded-full px-2 py-[3px] text-[10px] uppercase tracking-[0.2em] ${
+                          runtimeStatus?.available
+                            ? runtimeStatus.busy
+                              ? "bg-amber-400/15 text-amber-200"
+                              : "bg-emerald-400/15 text-emerald-200"
+                            : "bg-rose-400/15 text-rose-200"
+                        }`}
+                      >
+                        {runtimeStatus?.available
+                          ? runtimeStatus.busy
+                            ? dictionary.agent.runtimeBusy
+                            : dictionary.agent.runtimeIdle
+                          : dictionary.agent.runtimeOffline}
+                      </span>
                     ) : null}
                   </div>
                   {runtimeStatus ? (
                     <div className="mt-3 space-y-3 text-sm text-slate-200">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span
-                          className={`rounded-full px-2.5 py-1 text-[10px] uppercase tracking-[0.22em] ${
-                            runtimeStatus.available
-                              ? runtimeStatus.busy
-                                ? "bg-amber-400/15 text-amber-200"
-                                : "bg-emerald-400/15 text-emerald-200"
-                              : "bg-rose-400/15 text-rose-200"
-                          }`}
-                        >
-                          {runtimeStatus.available
-                            ? runtimeStatus.busy
-                              ? dictionary.agent.runtimeBusy
-                              : dictionary.agent.runtimeIdle
-                            : dictionary.agent.runtimeOffline}
-                        </span>
                         {typeof runtimeStatus.queueDepth === "number" ? (
-                          <span className="rounded-full bg-white/5 px-2.5 py-1 text-[10px] uppercase tracking-[0.22em] text-slate-300">
+                          <span className="rounded-full bg-white/[0.04] px-2 py-[3px] text-[10px] uppercase tracking-[0.2em] text-slate-300">
                             {uiText.queueLabel} {runtimeStatus.queueDepth}
                           </span>
                         ) : null}
                         {typeof runtimeStatus.activeRequests === "number" ? (
-                          <span className="rounded-full bg-white/5 px-2.5 py-1 text-[10px] uppercase tracking-[0.22em] text-slate-300">
+                          <span className="rounded-full bg-white/[0.04] px-2 py-[3px] text-[10px] uppercase tracking-[0.2em] text-slate-300">
                             {uiText.activeLabel} {runtimeStatus.activeRequests}
                           </span>
                         ) : null}
-                      </div>
-                      <div>
-                        <p className="text-slate-500">{uiText.loadedAlias}</p>
-                        <p className="mt-1 break-all text-white">{runtimeStatus.loadedAlias || dictionary.common.unknown}</p>
+                        {runtimeStatus.loadedAlias ? (
+                          <span className="rounded-full bg-cyan-400/10 px-2 py-[3px] text-[10px] uppercase tracking-[0.2em] text-cyan-300">
+                            {runtimeStatus.loadedAlias}
+                          </span>
+                        ) : null}
+                        {runtimeStatus.loadingAlias ? (
+                          <span className="rounded-full bg-amber-400/10 px-2 py-[3px] text-[10px] uppercase tracking-[0.2em] text-amber-200">
+                            {uiText.runtimeLoading}: {runtimeStatus.loadingAlias}
+                          </span>
+                        ) : null}
                       </div>
                       <div>
                         <p className="text-slate-500">{uiText.runtimeMessage}</p>
@@ -3621,10 +3945,25 @@ export function AgentWorkbench() {
                           </p>
                         </div>
                       </div>
-                      {runtimeStatus.logFile ? (
-                        <div>
-                          <p className="text-slate-500">{uiText.logExcerpt}</p>
-                          <p className="mt-1 break-all text-xs leading-6 text-slate-400">{runtimeStatus.logFile}</p>
+                      {runtimeStatus.loadingAlias || runtimeStatus.loadingError ? (
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          {runtimeStatus.loadingAlias ? (
+                            <div>
+                              <p className="text-slate-500">{uiText.runtimeLoading}</p>
+                              <p className="mt-1 break-all text-white">
+                                {runtimeStatus.loadingAlias}
+                                {typeof runtimeStatus.loadingElapsedMs === "number"
+                                  ? ` · ${uiText.runtimeLoadingElapsed} ${Math.max(1, Math.round(runtimeStatus.loadingElapsedMs / 1000))}s`
+                                  : ""}
+                              </p>
+                            </div>
+                          ) : null}
+                          {runtimeStatus.loadingError ? (
+                            <div>
+                              <p className="text-slate-500">{uiText.runtimeLoadingError}</p>
+                              <p className="mt-1 break-all text-rose-200">{runtimeStatus.loadingError}</p>
+                            </div>
+                          ) : null}
                         </div>
                       ) : null}
                       {prewarmMessage ? (
@@ -3641,43 +3980,52 @@ export function AgentWorkbench() {
                           </pre>
                         </div>
                       ) : null}
+                      <div className="flex flex-wrap gap-2 border-t border-white/10 pt-3">
+                        <button
+                          type="button"
+                          disabled={prewarmAllPending || prewarmPending || pending || Boolean(runtimeActionPending)}
+                          onClick={handlePrewarmAll}
+                          className="rounded-full border border-white/10 bg-transparent px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
+                        >
+                          {prewarmAllPending ? uiText.prewarmingAll : uiText.prewarmAllModels}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={prewarmAllPending || prewarmPending || pending || Boolean(runtimeActionPending)}
+                          onClick={handlePrewarm}
+                          className="rounded-full border border-white/10 bg-transparent px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
+                        >
+                          {prewarmPending ? uiText.prewarming : uiText.prewarmModel}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={prewarmAllPending || prewarmPending || pending || Boolean(runtimeActionPending)}
+                          onClick={() => void handleRuntimeAction("release")}
+                          className="rounded-full border border-white/10 bg-transparent px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
+                        >
+                          {runtimeActionPending === "release" ? uiText.releasingModel : uiText.releaseModel}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={prewarmAllPending || prewarmPending || pending || Boolean(runtimeActionPending)}
+                          onClick={() => void handleRuntimeAction("restart")}
+                          className="rounded-full border border-white/10 bg-transparent px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
+                        >
+                          {runtimeActionPending === "restart" ? uiText.restartingGateway : uiText.restartGateway}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={prewarmAllPending || prewarmPending || pending || Boolean(runtimeActionPending)}
+                          onClick={() => void handleRuntimeAction("read_log")}
+                          className="rounded-full border border-white/10 bg-transparent px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
+                        >
+                          {runtimeActionPending === "read_log" ? uiText.loadingRuntimeLog : uiText.viewRuntimeLog}
+                        </button>
+                      </div>
                     </div>
                   ) : (
                     <p className="mt-3 text-sm leading-6 text-slate-400">{dictionary.agent.checking}</p>
                   )}
-                </div>
-
-                <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
-                  <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{dictionary.agent.resolvedModel}</p>
-                  <p className="mt-2 break-all text-sm leading-6 text-slate-200">
-                    {runtimeStatus?.resolvedModel || lastTurn?.resolvedModel || selectedTarget.modelDefault}
-                  </p>
-                </div>
-
-                <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
-                  <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{dictionary.agent.promptFrame}</p>
-                  <textarea
-                    value={systemPrompt}
-                    onChange={(event) => setSystemPrompt(event.target.value)}
-                    rows={14}
-                    className="mt-3 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 font-mono text-xs leading-6 text-slate-200 outline-none transition focus:border-cyan-400/40"
-                  />
-                </div>
-
-                <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
-                  <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{dictionary.agent.launchHints}</p>
-                  <div className="mt-3 space-y-3">
-                    {(selectedTarget.launchHints || [uiText.fallbackLaunchHint]).map(
-                      (hint) => (
-                        <pre
-                          key={hint}
-                          className="overflow-x-auto whitespace-pre-wrap break-words rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 font-mono text-xs leading-6 text-slate-200"
-                        >
-                          {hint}
-                        </pre>
-                      )
-                    )}
-                  </div>
                 </div>
               </div>
             </aside>

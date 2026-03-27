@@ -1,14 +1,20 @@
-import { existsSync, mkdirSync, readFileSync, unlinkSync } from "fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import path from "path";
 import { execFileSync, spawn } from "child_process";
+import { getLocalAgentDataDir, getLocalAgentDataPath } from "@/lib/agent/data-dir";
 
-const DATA_DIR = path.join(process.cwd(), "data", "agent-observability");
-const SUPERVISOR_PID_FILE = path.join(DATA_DIR, "local-gateway-supervisor.pid");
-const CHILD_PID_FILE = path.join(DATA_DIR, "local-gateway.pid");
-const SUPERVISOR_LOG_FILE = path.join(DATA_DIR, "local-gateway.log");
-const SUPERVISOR_STATE_FILE = path.join(DATA_DIR, "local-gateway-supervisor-state.json");
+const DATA_DIR = getLocalAgentDataDir();
+const SUPERVISOR_PID_FILE = getLocalAgentDataPath("local-gateway-supervisor.pid");
+const CHILD_PID_FILE = getLocalAgentDataPath("local-gateway.pid");
+const SUPERVISOR_LOG_FILE = getLocalAgentDataPath("local-gateway.log");
+const SUPERVISOR_STATE_FILE = getLocalAgentDataPath("local-gateway-supervisor-state.json");
 const VENV_PYTHON = path.join(process.cwd(), ".venv", "bin", "python");
 const SUPERVISOR_SCRIPT = path.join(process.cwd(), "scripts", "local_model_gateway_supervisor.py");
+const GATEWAY_SCRIPT = path.join(process.cwd(), "scripts", "local_model_gateway.py");
+const GATEWAY_START_HELPER = path.join(process.cwd(), "scripts", "start-local-gateway.sh");
+const GATEWAY_HEALTH_PROBE_TIMEOUT_MS = 4000;
+const GATEWAY_STARTUP_GRACE_MS = 300000;
+const GATEWAY_DIRECT_STARTUP_GRACE_MS = 180000;
 
 type SupervisorState = {
   restart_count?: number;
@@ -107,6 +113,11 @@ export async function probeLocalGateway(baseUrl: string, timeoutMs = 1200) {
   }
 }
 
+function hasGatewayLifecycleEvidence() {
+  const info = getLocalGatewaySupervisorInfo();
+  return info.supervisorAlive || info.gatewayAlive || Boolean(findGatewayListenPid());
+}
+
 function cleanupStaleSupervisorPid() {
   const pid = readPid(SUPERVISOR_PID_FILE);
   if (!pid) return;
@@ -136,6 +147,11 @@ function spawnSupervisorProcess() {
   cleanupStaleSupervisorPid();
   cleanupStaleChildPid();
 
+  const listenPid = findGatewayListenPid();
+  if (listenPid && isPidAlive(listenPid)) {
+    return listenPid;
+  }
+
   const existingPid = readPid(SUPERVISOR_PID_FILE);
   if (existingPid && isPidAlive(existingPid)) {
     return existingPid;
@@ -147,6 +163,59 @@ function spawnSupervisorProcess() {
     stdio: "ignore"
   });
   child.unref();
+  return child.pid ?? null;
+}
+
+function spawnGatewayProcessDirect() {
+  ensureDataDir();
+  cleanupStaleChildPid();
+
+  const listenPid = findGatewayListenPid();
+  if (listenPid && isPidAlive(listenPid)) {
+    writeFileSync(CHILD_PID_FILE, `${listenPid}\n`, "utf8");
+    return listenPid;
+  }
+
+  const existingPid = readPid(CHILD_PID_FILE);
+  if (existingPid && isPidAlive(existingPid)) {
+    return existingPid;
+  }
+
+  const helperEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: process.env.HOME || "",
+    PATH: process.env.PATH || "",
+    SHELL: process.env.SHELL || "/bin/zsh",
+    TMPDIR: process.env.TMPDIR || "/tmp",
+    LOCAL_AGENT_DATA_DIR: DATA_DIR,
+    LOCAL_AGENT_PYTHON_BIN: choosePythonExecutable()
+  };
+
+  try {
+    const output = execFileSync("/bin/bash", [GATEWAY_START_HELPER], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: helperEnv
+    }).trim();
+    const pid = Number(output.split("\n").pop() || "");
+    if (Number.isFinite(pid) && pid > 0) {
+      writeFileSync(CHILD_PID_FILE, `${pid}\n`, "utf8");
+      return pid;
+    }
+  } catch {
+    // fall through to detached spawn as a last resort
+  }
+
+  const logFd = openSync(SUPERVISOR_LOG_FILE, "a");
+  const child = spawn(choosePythonExecutable(), ["-u", GATEWAY_SCRIPT], {
+    cwd: process.cwd(),
+    detached: true,
+    stdio: ["ignore", logFd, logFd],
+    env: helperEnv
+  });
+  closeSync(logFd);
+  child.unref();
+  writeFileSync(CHILD_PID_FILE, `${child.pid ?? ""}\n`, "utf8");
   return child.pid ?? null;
 }
 
@@ -183,7 +252,7 @@ export async function ensureLocalGatewayAvailable(baseUrl: string, options?: { w
 }
 
 export async function ensureLocalGatewayAvailableDetailed(baseUrl: string, options?: { waitMs?: number }): Promise<GatewayEnsureResult> {
-  if (await probeLocalGateway(baseUrl)) {
+  if (await probeLocalGateway(baseUrl, GATEWAY_HEALTH_PROBE_TIMEOUT_MS)) {
     return {
       ok: true,
       reason: "Gateway health endpoint is already reachable.",
@@ -193,25 +262,54 @@ export async function ensureLocalGatewayAvailableDetailed(baseUrl: string, optio
 
   if (!ensurePromise) {
     ensurePromise = (async () => {
+      const waitMs = options?.waitMs ?? GATEWAY_STARTUP_GRACE_MS;
       let spawnAttempts = 0;
-      spawnSupervisorProcess();
-      spawnAttempts += 1;
-      const waitMs = options?.waitMs ?? 20000;
+      let lastSpawnAt = 0;
+      let directFallbackUsed = false;
+
+      const maybeSpawn = () => {
+        if (hasGatewayLifecycleEvidence()) {
+          return false;
+        }
+        spawnGatewayProcessDirect();
+        spawnAttempts += 1;
+        lastSpawnAt = Date.now();
+        return true;
+      };
+
+      maybeSpawn();
       const startedAt = Date.now();
       while (Date.now() - startedAt < waitMs) {
-        if (await probeLocalGateway(baseUrl, 1500)) {
+        if (await probeLocalGateway(baseUrl, GATEWAY_HEALTH_PROBE_TIMEOUT_MS)) {
           return {
             ok: true,
-            reason: spawnAttempts > 0 ? "Gateway became ready after supervisor bootstrap." : "Gateway became ready.",
+            reason: directFallbackUsed
+              ? "Gateway became ready after direct bootstrap fallback."
+              : spawnAttempts > 0
+                ? "Gateway became ready after supervisor bootstrap."
+                : "Gateway became ready.",
             attempts: spawnAttempts
           };
         }
+
+        const evidence = hasGatewayLifecycleEvidence();
+        const elapsedMs = Date.now() - startedAt;
         const info = getLocalGatewaySupervisorInfo();
-        if (!info.supervisorAlive && Date.now() - startedAt > 2500 && spawnAttempts < 2) {
-          spawnSupervisorProcess();
-          spawnAttempts += 1;
+        // On some Macs, Python dependency imports can take multiple minutes before the
+        // gateway binds port 4000. If the process is still alive, avoid restarting it
+        // prematurely because that resets the warmup clock and causes infinite flapping.
+        if (
+          !directFallbackUsed &&
+          elapsedMs > GATEWAY_DIRECT_STARTUP_GRACE_MS &&
+          info.gatewayAlive &&
+          !findGatewayListenPid()
+        ) {
+          directFallbackUsed = true;
         }
-        await sleep(500);
+        if (!evidence && Date.now() - lastSpawnAt > 2500 && spawnAttempts < 2) {
+          maybeSpawn();
+        }
+        await sleep(evidence ? 800 : 450);
       }
       const info = getLocalGatewaySupervisorInfo();
       if (info.supervisorAlive && !info.gatewayAlive) {
@@ -224,7 +322,7 @@ export async function ensureLocalGatewayAvailableDetailed(baseUrl: string, optio
       if (info.gatewayAlive) {
         return {
           ok: false,
-          reason: "Gateway process is alive but the health endpoint did not become ready in time.",
+          reason: "Gateway process is alive and still warming/importing dependencies; the health endpoint did not become ready before the startup deadline.",
           attempts: spawnAttempts
         };
       }
@@ -274,32 +372,14 @@ export function stopLocalGatewayChild() {
 }
 
 export async function restartLocalGateway(baseUrl: string, options?: { waitMs?: number }) {
-  const waitMs = options?.waitMs ?? 30000;
+  return restartLocalGatewayDirect(baseUrl, { waitMs: options?.waitMs ?? GATEWAY_STARTUP_GRACE_MS });
+}
+
+export async function restartLocalGatewayDirect(baseUrl: string, options?: { waitMs?: number }) {
+  const waitMs = options?.waitMs ?? GATEWAY_STARTUP_GRACE_MS;
   stopLocalGatewaySupervisor();
   stopLocalGatewayChild();
-  const stoppedGracefully = await waitForCondition(() => {
-    const info = getLocalGatewaySupervisorInfo();
-    return !info.supervisorAlive && !info.gatewayAlive;
-  }, 4000);
-  if (!stoppedGracefully) {
-    const info = getLocalGatewaySupervisorInfo();
-    const pids = [
-      info.supervisorPid,
-      info.gatewayPid,
-      findGatewayListenPid(),
-      ...findMatchingPids("scripts/local_model_gateway.py"),
-      ...findMatchingPids("scripts/local_model_gateway_supervisor.py")
-    ].filter(
-      (value, index, all): value is number => typeof value === "number" && all.indexOf(value) === index
-    );
-    for (const pid of pids) {
-      forceStopPid(pid);
-    }
-    await waitForCondition(() => {
-      const currentInfo = getLocalGatewaySupervisorInfo();
-      return !currentInfo.supervisorAlive && !currentInfo.gatewayAlive;
-    }, 5000);
-  }
+  await waitForCondition(() => !findGatewayListenPid(), 4000);
   const remainingPids = [
     ...findMatchingPids("scripts/local_model_gateway.py"),
     ...findMatchingPids("scripts/local_model_gateway_supervisor.py"),
@@ -308,13 +388,16 @@ export async function restartLocalGateway(baseUrl: string, options?: { waitMs?: 
   for (const pid of remainingPids) {
     forceStopPid(pid);
   }
-  await waitForCondition(() => {
-    const info = getLocalGatewaySupervisorInfo();
-    return !info.supervisorAlive && !info.gatewayAlive;
-  }, 5000);
-  spawnSupervisorProcess();
-  const result = await ensureLocalGatewayAvailableDetailed(baseUrl, { waitMs });
-  return result.ok;
+  await waitForCondition(() => !findGatewayListenPid(), 5000);
+  spawnGatewayProcessDirect();
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < waitMs) {
+    if (await probeLocalGateway(baseUrl, GATEWAY_HEALTH_PROBE_TIMEOUT_MS)) {
+      return true;
+    }
+    await sleep(400);
+  }
+  return probeLocalGateway(baseUrl, GATEWAY_HEALTH_PROBE_TIMEOUT_MS);
 }
 
 export function readLocalGatewayRecentLog(lines = 40) {

@@ -55,15 +55,15 @@ export const agentTargets: AgentTarget[] = [
   {
     id: "openai-codex",
     label: "OpenAI Codex",
-    providerLabel: "OpenAI",
+    providerLabel: "OpenAI via Aipro",
     transport: "openai-compatible",
     execution: "remote",
     description:
-      "Remote coding target for Codex-like agent loops. Tool calling stays enabled in this app for OpenAI-compatible providers.",
-    modelEnv: "OPENAI_MODEL",
-    modelDefault: "gpt-5.2-codex",
-    thinkingModelEnv: "OPENAI_THINKING_MODEL",
-    thinkingModelDefault: "gpt-5.2-codex",
+      "Remote coding target for Codex-like agent loops. This target stays pinned to the codex-oriented OpenAI model exposed by your gateway.",
+    modelEnv: "OPENAI_CODEX_MODEL",
+    modelDefault: "gpt-5.3-codex",
+    thinkingModelEnv: "OPENAI_CODEX_THINKING_MODEL",
+    thinkingModelDefault: "gpt-5.3-codex",
     baseUrlEnv: "OPENAI_BASE_URL",
     baseUrlDefault: "https://api.openai.com/v1",
     apiKeyEnv: "OPENAI_API_KEY",
@@ -71,8 +71,31 @@ export const agentTargets: AgentTarget[] = [
     recommendedContext: "Server-side",
     memoryProfile: "Offloaded to API provider.",
     notes: [
-      "Use this when you want the strongest coding agent behaviour.",
+      "Use this when you want codex-style coding behaviour from the OpenAI family.",
       "Model id stays configurable in .env.local so you can swap to another OpenAI coding model later."
+    ]
+  },
+  {
+    id: "openai-gpt54",
+    label: "OpenAI GPT-5.4",
+    providerLabel: "OpenAI via Aipro",
+    transport: "openai-compatible",
+    execution: "remote",
+    description:
+      "Remote flagship OpenAI target for strongest general reasoning and agent responses through your current Aipro gateway.",
+    modelEnv: "OPENAI_GPT54_MODEL",
+    modelDefault: "gpt-5.4",
+    thinkingModelEnv: "OPENAI_GPT54_THINKING_MODEL",
+    thinkingModelDefault: "gpt-5.4",
+    baseUrlEnv: "OPENAI_BASE_URL",
+    baseUrlDefault: "https://api.openai.com/v1",
+    apiKeyEnv: "OPENAI_API_KEY",
+    supportsTools: true,
+    recommendedContext: "Server-side",
+    memoryProfile: "Offloaded to API provider.",
+    notes: [
+      "Use this when you want the strongest OpenAI general-purpose model currently exposed by your Aipro gateway.",
+      "Model id stays configurable in .env.local so you can move to a newer flagship later."
     ]
   },
   {
@@ -84,9 +107,9 @@ export const agentTargets: AgentTarget[] = [
     description:
       "Claude target backed by Aipro's OpenAI-compatible endpoint. This path is more reliable for tool calls than Anthropic Messages on Aipro.",
     modelEnv: "ANTHROPIC_MODEL",
-    modelDefault: "claude-sonnet-4-6",
+    modelDefault: "claude-opus-4-6",
     thinkingModelEnv: "ANTHROPIC_THINKING_MODEL",
-    thinkingModelDefault: "claude-sonnet-4-6",
+    thinkingModelDefault: "claude-opus-4-6-thinking",
     baseUrlEnv: "ANTHROPIC_BASE_URL",
     baseUrlDefault: "https://vip.aipro.love/v1",
     apiKeyEnv: "ANTHROPIC_API_KEY",
@@ -95,7 +118,8 @@ export const agentTargets: AgentTarget[] = [
     memoryProfile: "Offloaded to API provider.",
     notes: [
       "The provided sk-prefixed key works against Aipro's gateway, not Anthropic's official console.",
-      "For claude-sonnet-4-6 on Aipro, OpenAI-compatible chat completions is more reliable than Anthropic Messages when tools are enabled."
+      "This target is pinned to the strongest Claude variant currently advertised by your Aipro gateway.",
+      "For Claude on Aipro, OpenAI-compatible chat completions is more reliable than Anthropic Messages when tools are enabled."
     ]
   },
   {
@@ -107,9 +131,9 @@ export const agentTargets: AgentTarget[] = [
     description:
       "OpenAI-compatible Moonshot target. Good fit once you want to compare Kimi against local Qwen profiles.",
     modelEnv: "KIMI_MODEL",
-    modelDefault: "kimi-k2-0905-preview",
+    modelDefault: "kimi-k2.5",
     thinkingModelEnv: "KIMI_THINKING_MODEL",
-    thinkingModelDefault: "kimi-k2-0905-preview",
+    thinkingModelDefault: "kimi-k2-thinking",
     baseUrlEnv: "KIMI_BASE_URL",
     baseUrlDefault: "https://api.moonshot.cn/v1",
     apiKeyEnv: "KIMI_API_KEY",
@@ -118,6 +142,7 @@ export const agentTargets: AgentTarget[] = [
     memoryProfile: "Offloaded to API provider.",
     notes: [
       "Kept OpenAI-compatible on purpose, so the same tool loop can be reused.",
+      "Defaulted to Moonshot's current strongest general / thinking pair for this target.",
       "You can override the default model id in .env.local."
     ]
   },
@@ -130,9 +155,9 @@ export const agentTargets: AgentTarget[] = [
     description:
       "GLM coding target via its OpenAI-compatible endpoint. Useful if you later want a cheaper coding back-end.",
     modelEnv: "GLM_MODEL",
-    modelDefault: "glm-4.7",
+    modelDefault: "glm-5",
     thinkingModelEnv: "GLM_THINKING_MODEL",
-    thinkingModelDefault: "glm-4.7",
+    thinkingModelDefault: "glm-5",
     baseUrlEnv: "GLM_BASE_URL",
     baseUrlDefault: "https://open.bigmodel.cn/api/paas/v4",
     apiKeyEnv: "GLM_API_KEY",
@@ -141,6 +166,7 @@ export const agentTargets: AgentTarget[] = [
     memoryProfile: "Offloaded to API provider.",
     notes: [
       "You can switch this to the coding endpoint later without changing the front-end.",
+      "Defaulted to Zhipu's current flagship GLM generation.",
       "Model naming differs by vendor plan, so keep it env-driven."
     ]
   },
@@ -153,9 +179,9 @@ export const agentTargets: AgentTarget[] = [
     description:
       "DashScope OpenAI-compatible target for Qwen hosted inference. Keeps the same agent shell while moving inference off-device.",
     modelEnv: "DASHSCOPE_MODEL",
-    modelDefault: "qwen-plus",
+    modelDefault: "qwen3-max",
     thinkingModelEnv: "DASHSCOPE_THINKING_MODEL",
-    thinkingModelDefault: "qwen-plus",
+    thinkingModelDefault: "qwen3-max-preview",
     baseUrlEnv: "DASHSCOPE_BASE_URL",
     baseUrlDefault: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     apiKeyEnv: "DASHSCOPE_API_KEY",
@@ -164,6 +190,7 @@ export const agentTargets: AgentTarget[] = [
     memoryProfile: "Offloaded to API provider.",
     notes: [
       "Useful when you want Qwen semantics but do not want local memory pressure.",
+      "Defaulted to DashScope's strongest Qwen max tier, with preview thinking mode wired separately.",
       "Compatible-mode keeps migration cost low."
     ]
   }

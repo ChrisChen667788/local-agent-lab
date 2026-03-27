@@ -8,18 +8,21 @@ import type {
 } from "@/lib/agent/types";
 
 export const runtime = "nodejs";
+const LOCAL_GATEWAY_WARMUP_WAIT_MS = 300000;
 
 async function ensureGatewayReady(baseUrl: string) {
-  const firstAttempt = await ensureLocalGatewayAvailableDetailed(baseUrl, { waitMs: 25000 });
+  const firstAttempt = await ensureLocalGatewayAvailableDetailed(baseUrl, {
+    waitMs: LOCAL_GATEWAY_WARMUP_WAIT_MS
+  });
   if (firstAttempt.ok) return firstAttempt;
-  const restarted = await restartLocalGateway(baseUrl, { waitMs: 30000 });
+  const restarted = await restartLocalGateway(baseUrl, { waitMs: LOCAL_GATEWAY_WARMUP_WAIT_MS });
   if (!restarted) {
     return {
       ok: false,
       reason: `Local gateway did not become ready, and restart timed out. ${firstAttempt.reason}`
     };
   }
-  return ensureLocalGatewayAvailableDetailed(baseUrl, { waitMs: 10000 });
+  return ensureLocalGatewayAvailableDetailed(baseUrl, { waitMs: LOCAL_GATEWAY_WARMUP_WAIT_MS });
 }
 
 async function postPrewarm(baseUrl: string, model: string) {
@@ -30,7 +33,7 @@ async function postPrewarm(baseUrl: string, model: string) {
       body: JSON.stringify({ model })
     });
   } catch {
-    const restarted = await restartLocalGateway(baseUrl, { waitMs: 30000 });
+    const restarted = await restartLocalGateway(baseUrl, { waitMs: LOCAL_GATEWAY_WARMUP_WAIT_MS });
     if (!restarted) {
       throw new Error("Gateway restart timed out before retrying prewarm.");
     }

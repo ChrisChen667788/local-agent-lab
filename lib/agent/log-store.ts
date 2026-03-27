@@ -1,5 +1,4 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import path from "path";
 import type {
   AgentBenchmarkBaseline,
   AgentCacheMode,
@@ -10,6 +9,7 @@ import type {
   AgentThinkingMode,
   AgentProviderProfile
 } from "@/lib/agent/types";
+import { getLocalAgentDataDir, getLocalAgentDataPath } from "@/lib/agent/data-dir";
 
 export type UsageSummary = {
   promptTokens: number;
@@ -91,15 +91,15 @@ export type StoredBenchmarkLog = AgentBenchmarkResponse & {
 
 export type StoredBenchmarkBaseline = AgentBenchmarkBaseline;
 
-const DATA_DIR = path.join(process.cwd(), "data", "agent-observability");
-const CHAT_LOG_FILE = path.join(DATA_DIR, "chat-history.jsonl");
-const CHECK_LOG_FILE = path.join(DATA_DIR, "connection-checks.jsonl");
-const TELEMETRY_LOG_FILE = path.join(DATA_DIR, "telemetry.jsonl");
-const BENCHMARK_LOG_FILE = path.join(DATA_DIR, "benchmark-history.jsonl");
-const BENCHMARK_BASELINE_FILE = path.join(DATA_DIR, "benchmark-baselines.jsonl");
-const BENCHMARK_PROMPT_SET_FILE = path.join(DATA_DIR, "benchmark-prompt-sets.json");
-const KNOWLEDGE_DOCUMENT_FILE = path.join(DATA_DIR, "knowledge-base-documents.json");
-const KNOWLEDGE_CHUNK_FILE = path.join(DATA_DIR, "knowledge-base-chunks.json");
+const DATA_DIR = getLocalAgentDataDir();
+const CHAT_LOG_FILE = getLocalAgentDataPath("chat-history.jsonl");
+const CHECK_LOG_FILE = getLocalAgentDataPath("connection-checks.jsonl");
+const TELEMETRY_LOG_FILE = getLocalAgentDataPath("telemetry.jsonl");
+const BENCHMARK_LOG_FILE = getLocalAgentDataPath("benchmark-history.jsonl");
+const BENCHMARK_BASELINE_FILE = getLocalAgentDataPath("benchmark-baselines.jsonl");
+const BENCHMARK_PROMPT_SET_FILE = getLocalAgentDataPath("benchmark-prompt-sets.json");
+const KNOWLEDGE_DOCUMENT_FILE = getLocalAgentDataPath("knowledge-base-documents.json");
+const KNOWLEDGE_CHUNK_FILE = getLocalAgentDataPath("knowledge-base-chunks.json");
 
 function ensureDataDir() {
   mkdirSync(DATA_DIR, { recursive: true });

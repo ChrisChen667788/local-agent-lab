@@ -24,6 +24,34 @@ type MetricPercentiles = AgentMetricPercentiles;
 type BenchmarkHeatmapMetricKey = "first-token" | "total-latency" | "throughput" | "success-rate";
 type BenchmarkBatchScope = "full-suite" | "comparison-subset";
 
+function formatTargetModelVersion(modelDefault: string, thinkingModelDefault?: string) {
+  if (thinkingModelDefault && thinkingModelDefault !== modelDefault) {
+    return `${modelDefault} · Thinking ${thinkingModelDefault}`;
+  }
+  return modelDefault;
+}
+
+function splitRowsByExecution<T extends { execution?: "local" | "remote" }>(rows: T[]) {
+  const local = rows.filter((row) => row.execution === "local");
+  const remote = rows.filter((row) => row.execution !== "local");
+  return { local, remote };
+}
+
+function buildExecutionSections<T extends { execution?: "local" | "remote" }>(
+  rows: T[],
+  labels: { local: string; remote: string }
+) {
+  const { local, remote } = splitRowsByExecution(rows);
+  const sections: Array<{ execution: "local" | "remote"; label: string; rows: T[] }> = [];
+  if (local.length) {
+    sections.push({ execution: "local", label: labels.local, rows: local });
+  }
+  if (remote.length) {
+    sections.push({ execution: "remote", label: labels.remote, rows: remote });
+  }
+  return sections;
+}
+
 type DashboardResponse = {
   generatedAt: string;
   target: {
@@ -72,6 +100,8 @@ type DashboardResponse = {
       targetId: string;
       targetLabel: string;
       providerLabel?: string;
+      execution?: "local" | "remote";
+      resolvedModel: string;
       providerProfile?: string;
       thinkingMode?: string;
       avgFirstTokenLatencyMs: number;
@@ -570,6 +600,7 @@ export function AdminDashboard() {
   const [benchmarkRunId, setBenchmarkRunId] = useState("");
   const [benchmarkProgress, setBenchmarkProgress] = useState<AgentBenchmarkProgress | null>(null);
   const [benchmarkError, setBenchmarkError] = useState("");
+  const [benchmarkResumeMessage, setBenchmarkResumeMessage] = useState("");
   const [benchmarkData, setBenchmarkData] = useState<AgentBenchmarkResponse | null>(null);
   const [benchmarkBaseline, setBenchmarkBaseline] = useState<BenchmarkBaselineResponse["baseline"]>(null);
   const [benchmarkBaselines, setBenchmarkBaselines] = useState<BenchmarkBaselineRecord[]>([]);
@@ -1819,9 +1850,50 @@ export function AdminDashboard() {
       }
       const payload = (await response.json()) as AgentBenchmarkProgress;
       setBenchmarkProgress(payload);
+      if (payload.status === "running" || payload.status === "pending") {
+        setBenchmarkPending(true);
+        setBenchmarkRunId(payload.runId);
+      } else {
+        setBenchmarkPending(false);
+        setBenchmarkResumeMessage("");
+        await Promise.all([loadDashboard(), loadBenchmarkBaseline()]);
+      }
     } catch (progressError) {
       setBenchmarkError((current) =>
         current || (progressError instanceof Error ? progressError.message : "Failed to load benchmark progress.")
+      );
+    }
+  }
+
+  async function loadLatestBenchmarkProgress() {
+    try {
+      const response = await fetch("/api/admin/benchmark/progress?latest=1&unfinishedOnly=1", {
+        cache: "no-store"
+      });
+      if (!response.ok) {
+        if (response.status === 404) {
+          setBenchmarkResumeMessage("");
+          return;
+        }
+        const payload = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(payload.error || "Failed to load latest benchmark progress.");
+      }
+      const payload = (await response.json()) as AgentBenchmarkProgress;
+      setBenchmarkProgress(payload);
+      if (payload.status === "running" || payload.status === "pending") {
+        setBenchmarkRunId(payload.runId);
+        setBenchmarkPending(true);
+        setBenchmarkResumeMessage(
+          [
+            locale === "en" ? "Recovered in-progress benchmark monitoring" : "已恢复进行中的 Benchmark 监控",
+            payload.suiteLabel || payload.suiteId || payload.benchmarkMode || "--",
+            payload.runId
+          ].join(" · ")
+        );
+      }
+    } catch (progressError) {
+      setBenchmarkError((current) =>
+        current || (progressError instanceof Error ? progressError.message : "Failed to load latest benchmark progress.")
       );
     }
   }
@@ -1837,6 +1909,7 @@ export function AdminDashboard() {
     setBenchmarkProgress(null);
     setBenchmarkError("");
     setBenchmarkBaselineMessage("");
+    setBenchmarkResumeMessage("");
     try {
       const profileModes = benchmarkBatchProfiles
         ? [
@@ -2104,6 +2177,10 @@ export function AdminDashboard() {
   }, []);
 
   useEffect(() => {
+    void loadLatestBenchmarkProgress();
+  }, []);
+
+  useEffect(() => {
     if (!promptSets.length) return;
     setBenchmarkPromptSetId((current) => (current && promptSets.some((entry) => entry.id === current) ? current : promptSets[0].id));
   }, [promptSets]);
@@ -2133,13 +2210,18 @@ export function AdminDashboard() {
   }, [benchmarkTargetIds.join(","), benchmarkContextWindow, benchmarkPromptMode, benchmarkPromptSetId, benchmarkDatasetId, benchmarkSuiteId, benchmarkPrompt, benchmarkBatchProfiles, benchmarkBatchScope]);
 
   useEffect(() => {
-    if (!benchmarkPending || !benchmarkRunId) return;
+    if (!benchmarkRunId) return;
+    const shouldPoll =
+      benchmarkPending ||
+      benchmarkProgress?.status === "running" ||
+      benchmarkProgress?.status === "pending";
+    if (!shouldPoll) return;
     void loadBenchmarkProgress(benchmarkRunId);
     const timer = window.setInterval(() => {
       void loadBenchmarkProgress(benchmarkRunId);
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [benchmarkPending, benchmarkRunId]);
+  }, [benchmarkPending, benchmarkProgress?.status, benchmarkRunId]);
 
   useEffect(() => {
     setSelectedComparisonBaselineId((current) =>
@@ -2238,6 +2320,14 @@ export function AdminDashboard() {
       })),
     [data]
   );
+  const localBenchmarkTargets = useMemo(
+    () => benchmarkTargets.filter((target) => target.execution === "local"),
+    [benchmarkTargets]
+  );
+  const remoteBenchmarkTargets = useMemo(
+    () => benchmarkTargets.filter((target) => target.execution === "remote"),
+    [benchmarkTargets]
+  );
   const benchmarkBaselineDeltaRows = useMemo(() => {
     if (!benchmarkData?.results.length || !comparisonBaseline?.results.length) return [];
     const baselineMap = new Map(
@@ -2261,6 +2351,7 @@ export function AdminDashboard() {
         targetLabel: result.targetLabel,
         providerProfile: result.providerProfile || benchmarkData.providerProfile || "default",
         thinkingMode: result.thinkingMode || benchmarkData.thinkingMode || "standard",
+        execution: result.execution || agentTargets.find((target) => target.id === result.targetId)?.execution || "remote",
         currentModel: result.resolvedModel,
         baselineModel: baselineResult?.resolvedModel,
         baselineMatched: Boolean(baselineResult),
@@ -2286,6 +2377,32 @@ export function AdminDashboard() {
       };
     });
   }, [comparisonBaseline, benchmarkData]);
+  const benchmarkResultGroups = useMemo(() => {
+    if (!benchmarkData?.results.length) return [];
+    return buildExecutionSections(benchmarkData.results, {
+      local: dictionary.common.local,
+      remote: dictionary.common.remote
+    });
+  }, [benchmarkData, dictionary.common.local, dictionary.common.remote]);
+  const benchmarkBaselineDeltaGroups = useMemo(() => {
+    if (!benchmarkBaselineDeltaRows.length) return [];
+    return buildExecutionSections(benchmarkBaselineDeltaRows, {
+      local: dictionary.common.local,
+      remote: dictionary.common.remote
+    });
+  }, [benchmarkBaselineDeltaRows, dictionary.common.local, dictionary.common.remote]);
+  const benchmarkCompareLastGroups = useMemo(() => {
+    if (!benchmarkData?.comparisonsToLast?.length) return [];
+    const comparisonRows = benchmarkData.comparisonsToLast.map((row) => ({
+      ...row,
+      execution:
+        row.execution || agentTargets.find((target) => target.id === row.targetId)?.execution || "remote"
+    }));
+    return buildExecutionSections(comparisonRows, {
+      local: dictionary.common.local,
+      remote: dictionary.common.remote
+    });
+  }, [benchmarkData, dictionary.common.local, dictionary.common.remote]);
   const benchmarkHeatmapMetricValues = useMemo(
     () =>
       (data?.benchmarkHeatmap || [])
@@ -2318,13 +2435,13 @@ export function AdminDashboard() {
 
   return (
     <section className="min-h-[calc(100vh-4rem)] bg-[radial-gradient(circle_at_top,_rgba(14,165,233,0.14),_transparent_26%),linear-gradient(180deg,_#020617_0%,_#0f172a_100%)] px-4 py-6 text-slate-100 sm:px-6">
-      <div className="mx-auto max-w-7xl space-y-4">
-        <header className="rounded-[28px] border border-white/10 bg-slate-950/75 p-5 shadow-[0_30px_80px_rgba(2,6,23,0.55)]">
-          <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-            <div>
+      <div className="mx-auto flex max-w-7xl flex-col gap-4">
+        <header className="order-20 rounded-2xl border border-white/10 bg-slate-950/75 px-5 py-4 shadow-[0_20px_60px_rgba(2,6,23,0.45)]">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+            <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:gap-4">
               <p className="text-xs uppercase tracking-[0.28em] text-cyan-300">{dictionary.nav.dashboard}</p>
-              <h1 className="mt-2 text-3xl font-semibold text-white">{dictionary.admin.title}</h1>
-              <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">{dictionary.admin.subtitle}</p>
+              <h1 className="text-xl font-semibold text-white">{dictionary.admin.title}</h1>
+              <p className="max-w-3xl text-xs leading-6 text-slate-500">{dictionary.admin.subtitle}</p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
               <select
@@ -2432,12 +2549,12 @@ export function AdminDashboard() {
         </header>
 
         {error ? (
-          <div className="rounded-2xl border border-rose-400/30 bg-rose-400/10 px-4 py-3 text-sm text-rose-100">
+          <div className="order-21 rounded-2xl border border-rose-400/30 bg-rose-400/10 px-4 py-3 text-sm text-rose-100">
             {error}
           </div>
         ) : null}
 
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+        <div className="order-22 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
           <div className="rounded-3xl border border-white/10 bg-slate-950/70 p-4">
             <p className="text-sm text-slate-400">{dictionary.admin.totalRequests}</p>
             <p className="mt-2 text-3xl font-semibold text-white">{data?.summary.totalRequests ?? 0}</p>
@@ -2466,28 +2583,30 @@ export function AdminDashboard() {
           </div>
         </div>
 
-        <div className="grid gap-4 xl:grid-cols-3">
+        <div className="order-23 grid gap-4 xl:grid-cols-3">
           <SeriesCard title={dictionary.admin.requestTrend} values={requestValues} tone="cyan" />
           <SeriesCard title={dictionary.admin.tokenTrend} values={tokenValues} tone="amber" />
           <SeriesCard title={uiText.concurrencyTrend} values={concurrencyValues} tone="violet" />
         </div>
 
-        <div className="grid gap-4 xl:grid-cols-3">
+        <div className="order-24 grid gap-4 xl:grid-cols-3">
           <SeriesCard title={uiText.firstTokenLatency} values={firstTokenLatencyValues} tone="emerald" />
           <SeriesCard title={uiText.totalLatency} values={totalLatencyValues} tone="amber" />
           <SeriesCard title={uiText.tokenThroughput} values={tokenThroughputValues} tone="cyan" />
         </div>
 
-        <MultiSeriesCard
-          title={uiText.latencySplit}
-          lines={[
-            { label: uiText.firstTokenLatency, values: firstTokenLatencyValues, tone: "emerald" },
-            { label: uiText.totalLatency, values: totalLatencyValues, tone: "amber" },
-            { label: uiText.appOverhead, values: appOverheadValues, tone: "violet" }
-          ]}
-        />
+        <div className="order-25">
+          <MultiSeriesCard
+            title={uiText.latencySplit}
+            lines={[
+              { label: uiText.firstTokenLatency, values: firstTokenLatencyValues, tone: "emerald" },
+              { label: uiText.totalLatency, values: totalLatencyValues, tone: "amber" },
+              { label: uiText.appOverhead, values: appOverheadValues, tone: "violet" }
+            ]}
+          />
+        </div>
 
-        <div className="rounded-3xl border border-white/10 bg-slate-950/70 p-4">
+        <div className="order-26 rounded-3xl border border-white/10 bg-slate-950/70 p-4">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
             <div>
               <p className="text-sm text-slate-300">{uiText.compareView}</p>
@@ -2569,7 +2688,7 @@ export function AdminDashboard() {
           </div>
         </div>
 
-        <div className="rounded-3xl border border-white/10 bg-slate-950/70 p-4">
+        <div className="order-1 rounded-3xl border border-white/10 bg-slate-950/70 p-4">
           <div className="flex flex-col gap-4">
             <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
               <div>
@@ -2966,26 +3085,67 @@ export function AdminDashboard() {
               </div>
               <div>
                 <p className="mb-2 text-xs uppercase tracking-[0.22em] text-slate-500">{uiText.benchmarkTargets}</p>
-                <div className="space-y-2 rounded-2xl border border-white/10 bg-black/20 p-3">
-                  {benchmarkTargets.map((target) => {
-                    const checked = benchmarkTargetIds.includes(target.id);
-                    return (
-                      <label key={target.id} className="flex items-center gap-2 text-sm text-slate-300">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={(event) =>
-                            setBenchmarkTargetIds((current) =>
-                              event.target.checked
-                                ? [...current, target.id]
-                                : current.filter((item) => item !== target.id)
-                            )
-                          }
-                        />
-                        {target.label}
-                      </label>
-                    );
-                  })}
+                <div className="space-y-3 rounded-2xl border border-white/10 bg-black/20 p-3">
+                  <div>
+                    <p className="mb-2 text-[11px] uppercase tracking-[0.18em] text-slate-500">{dictionary.common.local}</p>
+                    <div className="space-y-2">
+                      {localBenchmarkTargets.map((target) => {
+                        const checked = benchmarkTargetIds.includes(target.id);
+                        return (
+                          <label key={target.id} className="flex items-start gap-2 text-sm text-slate-300">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(event) =>
+                                setBenchmarkTargetIds((current) =>
+                                  event.target.checked
+                                    ? [...current, target.id]
+                                    : current.filter((item) => item !== target.id)
+                                )
+                              }
+                              className="mt-1"
+                            />
+                            <span>
+                              <span className="block text-sm text-slate-200">{target.label}</span>
+                              <span className="mt-1 block text-[11px] leading-5 text-slate-500">
+                                {formatTargetModelVersion(target.modelDefault, target.thinkingModelDefault)}
+                              </span>
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div className="border-t border-white/10 pt-3">
+                    <p className="mb-2 text-[11px] uppercase tracking-[0.18em] text-slate-500">{dictionary.common.remote}</p>
+                    <div className="space-y-2">
+                      {remoteBenchmarkTargets.map((target) => {
+                        const checked = benchmarkTargetIds.includes(target.id);
+                        return (
+                          <label key={target.id} className="flex items-start gap-2 text-sm text-slate-300">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(event) =>
+                                setBenchmarkTargetIds((current) =>
+                                  event.target.checked
+                                    ? [...current, target.id]
+                                    : current.filter((item) => item !== target.id)
+                                )
+                              }
+                              className="mt-1"
+                            />
+                            <span>
+                              <span className="block text-sm text-slate-200">{target.label}</span>
+                              <span className="mt-1 block text-[11px] leading-5 text-slate-500">
+                                {formatTargetModelVersion(target.modelDefault, target.thinkingModelDefault)}
+                              </span>
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -2997,7 +3157,7 @@ export function AdminDashboard() {
             ) : null}
 
             {benchmarkProgress ? (
-              <div className="rounded-2xl border border-cyan-400/20 bg-cyan-400/5 px-4 py-4">
+              <div className="rounded-3xl border border-cyan-400/20 bg-cyan-400/5 px-4 py-3">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <p className="text-sm font-semibold text-cyan-100">{uiText.benchmarkProgress}</p>
@@ -3053,11 +3213,36 @@ export function AdminDashboard() {
                     <div className="mt-1 break-all">{benchmarkProgress.runId}</div>
                   </div>
                 </div>
+                {benchmarkProgress.activeGroups?.length ? (
+                  <div className="mt-3 rounded-2xl border border-white/10 bg-black/20 px-3 py-2.5 text-xs text-cyan-50/80">
+                    <div className="text-cyan-100">Active groups</div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {benchmarkProgress.activeGroups.map((group) => (
+                        <span
+                          key={group.key}
+                          className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1"
+                        >
+                          {group.targetLabel} · {group.providerProfile} · {group.thinkingMode}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+                {benchmarkProgress.status === "failed" && benchmarkProgress.error ? (
+                  <div className="mt-3 rounded-2xl border border-rose-400/20 bg-rose-400/10 px-3 py-2.5 text-sm text-rose-100">
+                    {benchmarkProgress.error}
+                  </div>
+                ) : null}
+                {benchmarkResumeMessage ? (
+                  <div className="mt-3 rounded-2xl border border-white/10 bg-black/20 px-3 py-2 text-xs text-cyan-50/80">
+                    {benchmarkResumeMessage}
+                  </div>
+                ) : null}
               </div>
             ) : null}
 
             {comparisonBaseline ? (
-              <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/5 px-4 py-3 text-sm text-emerald-100">
+              <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/5 px-4 py-2.5 text-sm text-emerald-100">
                 <span className="font-semibold">{uiText.benchmarkBaselineComparisonTarget}</span>
                 {" · "}
                 {new Date(comparisonBaseline.savedAt).toLocaleString()}
@@ -3068,42 +3253,51 @@ export function AdminDashboard() {
                 {comparisonBaseline.suiteLabel ? ` · ${comparisonBaseline.suiteLabel}` : ""}
                 {" · "}
                 {comparisonBaseline.label || uiText.latestBaseline}
+                {" · "}
+                {buildExecutionSections(comparisonBaseline.results, {
+                  local: dictionary.common.local,
+                  remote: dictionary.common.remote
+                })
+                  .map((group) => `${group.label} ${group.rows.length}`)
+                  .join(" · ")}
               </div>
             ) : null}
 
             {benchmarkBaselineMessage ? (
-              <div className="rounded-2xl border border-cyan-400/20 bg-cyan-400/10 px-4 py-3 text-sm text-cyan-100">
+              <div className="rounded-2xl border border-cyan-400/20 bg-cyan-400/10 px-4 py-2.5 text-sm text-cyan-100">
                 {benchmarkBaselineMessage}
               </div>
             ) : null}
 
             {benchmarkPromptMode !== "custom" ? (
-              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm text-slate-300">{uiText.benchmarkBaselinePanel}</p>
-                    <span className="text-xs text-slate-500">
+              <div className="rounded-3xl border border-white/10 bg-black/20 p-4">
+                <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
+                  <div>
+                    <p className="text-sm text-slate-300">{uiText.benchmarkBaselinePanel}</p>
+                    <p className="mt-2 text-xs text-slate-500">
                       {benchmarkPromptMode === "prompt-set"
                         ? `${uiText.benchmarkPromptSet}: ${selectedPromptSet?.label || "--"}`
                         : benchmarkPromptMode === "dataset"
                           ? `${uiText.benchmarkDataset}: ${selectedBenchmarkDataset?.label || "--"}`
-                        : `${uiText.benchmarkSuite}: ${selectedBenchmarkSuite?.label || "--"}`}
-                  </span>
+                          : `${uiText.benchmarkSuite}: ${selectedBenchmarkSuite?.label || "--"}`}
+                    </p>
+                  </div>
                 </div>
-                <div className="mt-4 space-y-3">
+                <div className="mt-3 space-y-3">
                   {benchmarkBaselines.length ? (
                     benchmarkBaselines.map((entry) => (
-                      <div
+                      <article
                         key={entry.id}
-                        className={`rounded-2xl border px-4 py-4 ${
+                        className={`rounded-3xl border p-4 ${
                           comparisonBaseline?.id === entry.id
-                            ? "border-cyan-400/30 bg-cyan-400/5"
+                            ? "border-cyan-400/30 bg-cyan-400/10"
                             : "border-white/10 bg-slate-950/70"
                         }`}
                       >
                         <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
                           <div>
                             <div className="flex flex-wrap items-center gap-2">
-                              <p className="text-sm font-semibold text-white">{entry.label || entry.savedAt}</p>
+                              <p className="text-base font-semibold text-white">{entry.label || entry.savedAt}</p>
                               {entry.isDefault ? (
                                 <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2.5 py-1 text-[11px] text-emerald-200">
                                   {uiText.benchmarkBaselineDefault}
@@ -3116,12 +3310,29 @@ export function AdminDashboard() {
                               ) : null}
                             </div>
                             <p className="mt-2 text-xs text-slate-400">{new Date(entry.savedAt).toLocaleString()}</p>
-                            <p className="mt-1 text-xs text-slate-500">
-                              {uiText.contextWindowFilter}: {entry.contextWindow >= 1024 ? `${Math.round(entry.contextWindow / 1024)}K` : entry.contextWindow}
-                              {entry.promptSetPromptCount ? ` · n=${entry.promptSetPromptCount}` : ""}
-                              {entry.datasetSampleCount ? ` · dataset-n=${entry.datasetSampleCount}` : ""}
-                              {entry.suiteWorkloadCount ? ` · workloads=${entry.suiteWorkloadCount}` : ""}
-                            </p>
+                            <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-400">
+                              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5">
+                                {uiText.contextWindowFilter}: {entry.contextWindow >= 1024 ? `${Math.round(entry.contextWindow / 1024)}K` : entry.contextWindow}
+                              </span>
+                              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5">
+                                {uiText.benchmarkRuns}: {entry.runs}
+                              </span>
+                              {entry.promptSetPromptCount ? (
+                                <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5">
+                                  n={entry.promptSetPromptCount}
+                                </span>
+                              ) : null}
+                              {entry.datasetSampleCount ? (
+                                <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5">
+                                  dataset-n={entry.datasetSampleCount}
+                                </span>
+                              ) : null}
+                              {entry.suiteWorkloadCount ? (
+                                <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5">
+                                  workloads={entry.suiteWorkloadCount}
+                                </span>
+                              ) : null}
+                            </div>
                           </div>
                           <div className="flex flex-wrap gap-2">
                             <button
@@ -3155,43 +3366,91 @@ export function AdminDashboard() {
                             </button>
                           </div>
                         </div>
-                        <div className="mt-4 overflow-hidden rounded-2xl border border-white/10">
-                          <table className="w-full text-left text-xs">
-                            <thead className="bg-white/5 text-slate-400">
-                              <tr>
-                                <th className="px-3 py-2">{uiText.benchmarkTargets}</th>
-                                <th className="px-3 py-2">{uiText.providerProfile}</th>
-                                <th className="px-3 py-2">{uiText.benchmarkThinkingMode}</th>
-                                <th className="px-3 py-2">{uiText.firstTokenLatency}</th>
-                                <th className="px-3 py-2">{uiText.totalLatency}</th>
-                                <th className="px-3 py-2">{uiText.tokenThroughput}</th>
-                                <th className="px-3 py-2">{uiText.benchmarkScore}</th>
-                                <th className="px-3 py-2">{uiText.benchmarkPassRate}</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {entry.results.map((result) => {
+                        <div className="mt-4 space-y-3">
+                          {entry.benchmarkMode === "suite" ? (
+                            <div className="space-y-1 text-xs text-slate-500">
+                              <p>{uiText.benchmarkSuite}: {entry.suiteLabel || "--"} · n={entry.suiteWorkloadCount || 0}</p>
+                              {entry.profileBatchScope ? <p>scope={entry.profileBatchScope}</p> : null}
+                            </div>
+                          ) : entry.benchmarkMode === "dataset" ? (
+                            <div className="space-y-1 text-xs text-slate-500">
+                              <p>{uiText.benchmarkDataset}: {entry.datasetLabel || "--"} · n={entry.datasetSampleCount || 0}</p>
+                              <p>{uiText.benchmarkDatasetSource}: {entry.datasetSourceLabel || "--"}</p>
+                            </div>
+                          ) : entry.promptSetLabel ? (
+                            <p className="text-xs text-slate-500">
+                              {uiText.benchmarkPromptSet}: {entry.promptSetLabel} · n={entry.promptSetPromptCount || 0}
+                            </p>
+                          ) : (
+                            <p className="text-xs text-slate-500">{uiText.benchmarkPrompt}: {entry.prompt}</p>
+                          )}
+                          {buildExecutionSections(entry.results, {
+                            local: dictionary.common.local,
+                            remote: dictionary.common.remote
+                          }).map((group) => (
+                            <section key={`${entry.id}:${group.execution}`} className="space-y-3">
+                              <div className="flex items-center justify-between gap-3 px-1">
+                                <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">{group.label}</p>
+                                <span className="text-[11px] text-slate-500">{group.rows.length} results</span>
+                              </div>
+                              {group.rows.map((result) => {
                                 const hasMetrics = hasSuccessfulBenchmarkMetrics(result);
                                 return (
-                                  <tr
+                                  <div
                                     key={`${entry.id}:${result.targetId}:${result.providerProfile || entry.providerProfile || "default"}:${result.thinkingMode || entry.thinkingMode || "standard"}`}
-                                    className="border-t border-white/10"
+                                    className="rounded-2xl border border-white/10 bg-black/20 p-4"
                                   >
-                                    <td className="px-3 py-2 text-slate-200">{result.targetLabel}</td>
-                                    <td className="px-3 py-2 text-slate-300">{result.providerProfile || entry.providerProfile || "default"}</td>
-                                    <td className="px-3 py-2 text-slate-300">{result.thinkingMode || entry.thinkingMode || "standard"}</td>
-                                    <td className="px-3 py-2 text-slate-300">{formatBenchmarkMetric(result.avgFirstTokenLatencyMs, hasMetrics, 1, " ms")}</td>
-                                    <td className="px-3 py-2 text-slate-300">{formatBenchmarkMetric(result.avgLatencyMs, hasMetrics, 1, " ms")}</td>
-                                    <td className="px-3 py-2 text-slate-300">{formatBenchmarkMetric(result.avgTokenThroughputTps, hasMetrics, 2, ` ${uiText.tokensPerSecond}`)}</td>
-                                    <td className="px-3 py-2 text-slate-300">{typeof result.avgScore === "number" ? result.avgScore.toFixed(2) : "--"}</td>
-                                    <td className="px-3 py-2 text-slate-300">{typeof result.passRate === "number" ? `${result.passRate.toFixed(2)}%` : "--"}</td>
-                                  </tr>
+                                    <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+                                      <div>
+                                        <p className="text-base font-semibold text-slate-100">{result.targetLabel}</p>
+                                        <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-400">
+                                          <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1">
+                                            {result.okRuns}/{result.runs}
+                                          </span>
+                                          <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1">
+                                            {result.providerProfile || entry.providerProfile || "default"}
+                                          </span>
+                                          <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1">
+                                            {result.thinkingMode || entry.thinkingMode || "standard"}
+                                          </span>
+                                        </div>
+                                        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                                          <span>{dictionary.common.model}</span>
+                                          <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 font-mono text-[11px] text-slate-200">
+                                            {result.resolvedModel}
+                                          </span>
+                                        </div>
+                                      </div>
+                                      <div className="grid gap-3 text-xs text-slate-400 sm:grid-cols-2 xl:min-w-[420px] xl:grid-cols-5">
+                                        <div>
+                                          <p className="uppercase tracking-[0.2em] text-slate-500">{uiText.firstTokenLatency}</p>
+                                          <p className="mt-2 text-sm text-white">{formatBenchmarkMetric(result.avgFirstTokenLatencyMs, hasMetrics, 1, " ms")}</p>
+                                        </div>
+                                        <div>
+                                          <p className="uppercase tracking-[0.2em] text-slate-500">{uiText.totalLatency}</p>
+                                          <p className="mt-2 text-sm text-white">{formatBenchmarkMetric(result.avgLatencyMs, hasMetrics, 1, " ms")}</p>
+                                        </div>
+                                        <div>
+                                          <p className="uppercase tracking-[0.2em] text-slate-500">{uiText.tokenThroughput}</p>
+                                          <p className="mt-2 text-sm text-white">{formatBenchmarkMetric(result.avgTokenThroughputTps, hasMetrics, 2, ` ${uiText.tokensPerSecond}`)}</p>
+                                        </div>
+                                        <div>
+                                          <p className="uppercase tracking-[0.2em] text-slate-500">{uiText.benchmarkScore}</p>
+                                          <p className="mt-2 text-sm text-white">{typeof result.avgScore === "number" ? result.avgScore.toFixed(2) : "--"}</p>
+                                        </div>
+                                        <div>
+                                          <p className="uppercase tracking-[0.2em] text-slate-500">{uiText.benchmarkPassRate}</p>
+                                          <p className="mt-2 text-sm text-white">{typeof result.passRate === "number" ? `${result.passRate.toFixed(2)}%` : "--"}</p>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
                                 );
                               })}
-                            </tbody>
-                          </table>
+                            </section>
+                          ))}
                         </div>
-                      </div>
+                      </article>
                     ))
                   ) : (
                     <p className="text-sm text-slate-500">{uiText.benchmarkBaselineNoData}</p>
@@ -3220,158 +3479,227 @@ export function AdminDashboard() {
                     <span>{uiText.benchmarkRuns}: {benchmarkData.runs}</span>
                   </div>
                 </div>
-                <div className="overflow-hidden rounded-2xl border border-white/10">
-                  <table className="w-full text-left text-sm">
-                    <thead className="bg-white/5 text-slate-400">
-                      <tr>
-                        <th className="px-3 py-2">{uiText.benchmarkTargets}</th>
-                        <th className="px-3 py-2">{uiText.providerProfile}</th>
-                        <th className="px-3 py-2">{uiText.benchmarkThinkingMode}</th>
-                        <th className="px-3 py-2">{uiText.contextWindowFilter}</th>
-                        <th className="px-3 py-2">{uiText.benchmarkRuns}</th>
-                        <th className="px-3 py-2">{uiText.firstTokenLatency}</th>
-                        <th className="px-3 py-2">{uiText.totalLatency}</th>
-                        <th className="px-3 py-2">{uiText.tokenThroughput}</th>
-                        <th className="px-3 py-2">{uiText.benchmarkScore}</th>
-                        <th className="px-3 py-2">{uiText.benchmarkPassRate}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {benchmarkData.results.map((row) => {
-                        const hasMetrics = hasSuccessfulBenchmarkMetrics(row);
-                        return (
-                          <tr
-                            key={`${row.targetId}:${row.providerProfile || "default"}:${row.thinkingMode || "standard"}`}
-                            className="border-t border-white/10"
-                          >
-                            <td className="px-3 py-2 text-slate-100">{row.targetLabel}</td>
-                            <td className="px-3 py-2 text-slate-300">{row.providerProfile || "default"}</td>
-                            <td className="px-3 py-2 text-slate-300">{row.thinkingMode || "standard"}</td>
-                            <td className="px-3 py-2 text-slate-300">{row.contextWindow >= 1024 ? `${Math.round(row.contextWindow / 1024)}K` : row.contextWindow}</td>
-                            <td className="px-3 py-2 text-slate-300">{row.okRuns}/{row.runs}</td>
-                            <td className="px-3 py-2 text-slate-300">{formatBenchmarkMetric(row.avgFirstTokenLatencyMs, hasMetrics, 1, " ms")}</td>
-                            <td className="px-3 py-2 text-slate-300">{formatBenchmarkMetric(row.avgLatencyMs, hasMetrics, 1, " ms")}</td>
-                            <td className="px-3 py-2 text-slate-300">{formatBenchmarkMetric(row.avgTokenThroughputTps, hasMetrics, 2, ` ${uiText.tokensPerSecond}`)}</td>
-                            <td className="px-3 py-2 text-slate-300">{typeof row.avgScore === "number" ? row.avgScore.toFixed(2) : "--"}</td>
-                            <td className="px-3 py-2 text-slate-300">{typeof row.passRate === "number" ? `${row.passRate.toFixed(2)}%` : "--"}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                <div className="space-y-4">
+                  {benchmarkResultGroups.map((group) => (
+                    <section key={`results:${group.execution}`} className="space-y-3">
+                      <div className="flex items-center justify-between gap-3 px-1">
+                        <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">{group.label}</p>
+                        <span className="text-[11px] text-slate-500">{group.rows.length} results</span>
+                      </div>
+                      <div className="space-y-3">
+                        {group.rows.map((row) => {
+                          const hasMetrics = hasSuccessfulBenchmarkMetrics(row);
+                          return (
+                            <article
+                              key={`${row.targetId}:${row.providerProfile || "default"}:${row.thinkingMode || "standard"}`}
+                              className="rounded-3xl border border-white/10 bg-slate-950/70 p-4"
+                            >
+                              <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+                                <div>
+                                  <p className="text-base font-semibold text-slate-100">{row.targetLabel}</p>
+                                  <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-400">
+                                    <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1">
+                                      {row.providerProfile || "default"}
+                                    </span>
+                                    <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1">
+                                      {row.thinkingMode || "standard"}
+                                    </span>
+                                    <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1">
+                                      {uiText.contextWindowFilter}: {row.contextWindow >= 1024 ? `${Math.round(row.contextWindow / 1024)}K` : row.contextWindow}
+                                    </span>
+                                    <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1">
+                                      {row.okRuns}/{row.runs}
+                                    </span>
+                                  </div>
+                                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                                    <span>{dictionary.common.model}</span>
+                                    <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 font-mono text-[11px] text-slate-200">
+                                      {row.resolvedModel}
+                                    </span>
+                                  </div>
+                                </div>
+                                <div className="grid gap-3 text-xs text-slate-400 sm:grid-cols-2 xl:min-w-[520px] xl:grid-cols-5">
+                                  <div>
+                                    <p className="uppercase tracking-[0.2em] text-slate-500">{uiText.firstTokenLatency}</p>
+                                    <p className="mt-2 text-sm text-white">{formatBenchmarkMetric(row.avgFirstTokenLatencyMs, hasMetrics, 1, " ms")}</p>
+                                  </div>
+                                  <div>
+                                    <p className="uppercase tracking-[0.2em] text-slate-500">{uiText.totalLatency}</p>
+                                    <p className="mt-2 text-sm text-white">{formatBenchmarkMetric(row.avgLatencyMs, hasMetrics, 1, " ms")}</p>
+                                  </div>
+                                  <div>
+                                    <p className="uppercase tracking-[0.2em] text-slate-500">{uiText.tokenThroughput}</p>
+                                    <p className="mt-2 text-sm text-white">{formatBenchmarkMetric(row.avgTokenThroughputTps, hasMetrics, 2, ` ${uiText.tokensPerSecond}`)}</p>
+                                  </div>
+                                  <div>
+                                    <p className="uppercase tracking-[0.2em] text-slate-500">{uiText.benchmarkScore}</p>
+                                    <p className="mt-2 text-sm text-white">{typeof row.avgScore === "number" ? row.avgScore.toFixed(2) : "--"}</p>
+                                  </div>
+                                  <div>
+                                    <p className="uppercase tracking-[0.2em] text-slate-500">{uiText.benchmarkPassRate}</p>
+                                    <p className="mt-2 text-sm text-white">{typeof row.passRate === "number" ? `${row.passRate.toFixed(2)}%` : "--"}</p>
+                                  </div>
+                                </div>
+                              </div>
+                            </article>
+                          );
+                        })}
+                      </div>
+                    </section>
+                  ))}
                 </div>
 
                 {comparisonBaseline ? (
-                  <div className="overflow-hidden rounded-2xl border border-white/10">
-                    <table className="w-full text-left text-sm">
-                      <thead className="bg-white/5 text-slate-400">
-                        <tr>
-                          <th className="px-3 py-2">{uiText.benchmarkBaselineDelta}</th>
-                          <th className="px-3 py-2">{uiText.providerProfile}</th>
-                          <th className="px-3 py-2">{uiText.benchmarkThinkingMode}</th>
-                          <th className="px-3 py-2">{dictionary.common.model}</th>
-                          <th className="px-3 py-2">{uiText.firstTokenLatency}</th>
-                          <th className="px-3 py-2">{uiText.totalLatency}</th>
-                          <th className="px-3 py-2">{uiText.tokenThroughput}</th>
-                          <th className="px-3 py-2">{uiText.benchmarkScore}</th>
-                          <th className="px-3 py-2">{uiText.benchmarkPassRate}</th>
-                          <th className="px-3 py-2">{uiText.benchmarkSuccessRate}</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {benchmarkBaselineDeltaRows.length ? (
-                          benchmarkBaselineDeltaRows.map((row) => (
-                            <tr key={`${row.targetId}:${row.providerProfile}:${row.thinkingMode}:baseline`} className="border-t border-white/10">
-                              <td className="px-3 py-2 text-slate-100">
-                                <div>{row.targetLabel}</div>
-                                <div className="mt-1 text-xs text-slate-500">
-                                  {row.baselineMatched ? new Date(comparisonBaseline.savedAt).toLocaleString() : uiText.benchmarkNoBaselineComparison}
+                  <div className="space-y-3">
+                    {benchmarkBaselineDeltaGroups.length ? (
+                      benchmarkBaselineDeltaGroups.map((group) => (
+                        <section key={`baseline-delta:${group.execution}`} className="space-y-3">
+                          <div className="flex items-center justify-between gap-3 px-1">
+                            <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">{group.label}</p>
+                            <span className="text-[11px] text-slate-500">{group.rows.length} deltas</span>
+                          </div>
+                          {group.rows.map((row) => (
+                            <article
+                              key={`${row.targetId}:${row.providerProfile}:${row.thinkingMode}:baseline`}
+                              className="rounded-3xl border border-white/10 bg-slate-950/70 p-4"
+                            >
+                              <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+                                <div>
+                                  <p className="text-base font-semibold text-slate-100">{row.targetLabel}</p>
+                                  <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-400">
+                                    <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1">
+                                      {row.providerProfile}
+                                    </span>
+                                    <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1">
+                                      {row.thinkingMode}
+                                    </span>
+                                    <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1">
+                                      {row.baselineMatched ? new Date(comparisonBaseline.savedAt).toLocaleString() : uiText.benchmarkNoBaselineComparison}
+                                    </span>
+                                  </div>
+                                  <div className="mt-3 text-xs leading-6 text-slate-400">
+                                    <div>{dictionary.common.model}: {row.currentModel}</div>
+                                    <div>base: {row.baselineModel || "--"}</div>
+                                    <div className="mt-1">now: {row.currentModel}</div>
+                                  </div>
                                 </div>
-                              </td>
-                              <td className="px-3 py-2 text-slate-300">{row.providerProfile}</td>
-                              <td className="px-3 py-2 text-slate-300">{row.thinkingMode}</td>
-                              <td className="px-3 py-2 text-xs text-slate-300">
-                                <div>base: {row.baselineModel || "--"}</div>
-                                <div className="mt-1">now: {row.currentModel}</div>
-                              </td>
-                              <td className={`px-3 py-2 ${buildDeltaClass(row.deltaFirstTokenLatencyMs, true)}`}>{formatSignedNumber(row.deltaFirstTokenLatencyMs, 1, " ms")}</td>
-                              <td className={`px-3 py-2 ${buildDeltaClass(row.deltaLatencyMs, true)}`}>{formatSignedNumber(row.deltaLatencyMs, 1, " ms")}</td>
-                              <td className={`px-3 py-2 ${buildDeltaClass(row.deltaTokenThroughputTps, false)}`}>{formatSignedNumber(row.deltaTokenThroughputTps, 2)}</td>
-                              <td className={`px-3 py-2 ${buildDeltaClass(row.deltaScore, false)}`}>{formatSignedNumber(row.deltaScore, 2)}</td>
-                              <td className={`px-3 py-2 ${buildDeltaClass(row.deltaPassRate, false)}`}>{formatSignedNumber(row.deltaPassRate, 2, "%")}</td>
-                              <td className={`px-3 py-2 ${buildDeltaClass(row.deltaSuccessRate, false)}`}>{formatSignedNumber(row.deltaSuccessRate, 2, "%")}</td>
-                            </tr>
-                          ))
-                        ) : (
-                          <tr>
-                            <td className="px-3 py-4 text-slate-500" colSpan={10}>
-                              {uiText.benchmarkNoBaselineComparison}
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
+                                <div className="grid gap-3 text-xs text-slate-400 sm:grid-cols-2 xl:min-w-[620px] xl:grid-cols-6">
+                                  <div>
+                                    <p className="uppercase tracking-[0.2em] text-slate-500">{uiText.firstTokenLatency}</p>
+                                    <p className={`mt-2 text-sm ${buildDeltaClass(row.deltaFirstTokenLatencyMs, true)}`}>{formatSignedNumber(row.deltaFirstTokenLatencyMs, 1, " ms")}</p>
+                                  </div>
+                                  <div>
+                                    <p className="uppercase tracking-[0.2em] text-slate-500">{uiText.totalLatency}</p>
+                                    <p className={`mt-2 text-sm ${buildDeltaClass(row.deltaLatencyMs, true)}`}>{formatSignedNumber(row.deltaLatencyMs, 1, " ms")}</p>
+                                  </div>
+                                  <div>
+                                    <p className="uppercase tracking-[0.2em] text-slate-500">{uiText.tokenThroughput}</p>
+                                    <p className={`mt-2 text-sm ${buildDeltaClass(row.deltaTokenThroughputTps, false)}`}>{formatSignedNumber(row.deltaTokenThroughputTps, 2)}</p>
+                                  </div>
+                                  <div>
+                                    <p className="uppercase tracking-[0.2em] text-slate-500">{uiText.benchmarkScore}</p>
+                                    <p className={`mt-2 text-sm ${buildDeltaClass(row.deltaScore, false)}`}>{formatSignedNumber(row.deltaScore, 2)}</p>
+                                  </div>
+                                  <div>
+                                    <p className="uppercase tracking-[0.2em] text-slate-500">{uiText.benchmarkPassRate}</p>
+                                    <p className={`mt-2 text-sm ${buildDeltaClass(row.deltaPassRate, false)}`}>{formatSignedNumber(row.deltaPassRate, 2, "%")}</p>
+                                  </div>
+                                  <div>
+                                    <p className="uppercase tracking-[0.2em] text-slate-500">{uiText.benchmarkSuccessRate}</p>
+                                    <p className={`mt-2 text-sm ${buildDeltaClass(row.deltaSuccessRate, false)}`}>{formatSignedNumber(row.deltaSuccessRate, 2, "%")}</p>
+                                  </div>
+                                </div>
+                              </div>
+                            </article>
+                          ))}
+                        </section>
+                      ))
+                    ) : (
+                      <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-4 text-sm text-slate-500">
+                        {uiText.benchmarkNoBaselineComparison}
+                      </div>
+                    )}
                   </div>
                 ) : null}
 
-                <div className="grid gap-4 xl:grid-cols-3">
-                  {benchmarkData.results.map((row) => {
-                    const hasMetrics = hasSuccessfulBenchmarkMetrics(row);
-                    return (
-                      <div
-                        key={`${row.targetId}:${row.providerProfile || "default"}:${row.thinkingMode || "standard"}-percentiles`}
-                        className="rounded-2xl border border-white/10 bg-black/20 p-4"
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <p className="text-sm text-white">{row.targetLabel}</p>
-                          <span className="text-xs text-slate-400">
-                            {(row.providerProfile || "default")} · {row.thinkingMode || "standard"}
-                          </span>
-                        </div>
-                        {!hasMetrics ? (
-                          <p className="mt-3 text-sm text-slate-500">没有成功样本，当前结果不展示分位数。</p>
-                        ) : null}
-                        <div className="mt-3 space-y-3">
-                          <PercentileRow label={uiText.firstTokenLatency} metrics={row.firstTokenLatencyPercentiles} unit="ms" disabled={!hasMetrics} />
-                          <PercentileRow label={uiText.totalLatency} metrics={row.totalLatencyPercentiles} unit="ms" disabled={!hasMetrics} />
-                          <PercentileRow label={uiText.tokenThroughput} metrics={row.tokenThroughputPercentiles} unit={uiText.tokensPerSecond} disabled={!hasMetrics} />
-                        </div>
+                <div className="space-y-4">
+                  {benchmarkResultGroups.map((group) => (
+                    <section key={`percentiles:${group.execution}`} className="space-y-3">
+                      <div className="flex items-center justify-between gap-3 px-1">
+                        <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">{group.label} · {uiText.percentiles}</p>
+                        <span className="text-[11px] text-slate-500">{group.rows.length} cards</span>
                       </div>
-                    );
-                  })}
+                      <div className="grid gap-2.5 xl:grid-cols-3">
+                        {group.rows.map((row) => {
+                          const hasMetrics = hasSuccessfulBenchmarkMetrics(row);
+                          return (
+                            <div
+                              key={`${row.targetId}:${row.providerProfile || "default"}:${row.thinkingMode || "standard"}-percentiles`}
+                              className="rounded-2xl border border-white/10 bg-black/20 px-3.5 py-3"
+                            >
+                              <div className="flex items-center justify-between gap-3">
+                                <p className="text-sm font-medium text-white">{row.targetLabel}</p>
+                                <span className="text-[11px] text-slate-500">
+                                  {(row.providerProfile || "default")} · {row.thinkingMode || "standard"}
+                                </span>
+                              </div>
+                              {!hasMetrics ? (
+                                <p className="mt-2 text-sm text-slate-500">没有成功样本，当前结果不展示分位数。</p>
+                              ) : null}
+                              <div className="mt-2.5 space-y-2.5">
+                                <PercentileRow label={uiText.firstTokenLatency} metrics={row.firstTokenLatencyPercentiles} unit="ms" disabled={!hasMetrics} />
+                                <PercentileRow label={uiText.totalLatency} metrics={row.totalLatencyPercentiles} unit="ms" disabled={!hasMetrics} />
+                                <PercentileRow label={uiText.tokenThroughput} metrics={row.tokenThroughputPercentiles} unit={uiText.tokensPerSecond} disabled={!hasMetrics} />
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </section>
+                  ))}
                 </div>
 
-                {benchmarkData.comparisonsToLast?.length ? (
-                  <div className="overflow-hidden rounded-2xl border border-white/10">
-                    <table className="w-full text-left text-sm">
-                      <thead className="bg-white/5 text-slate-400">
-                        <tr>
-                          <th className="px-3 py-2">{uiText.compareLastRun}</th>
-                          <th className="px-3 py-2">{uiText.providerProfile}</th>
-                          <th className="px-3 py-2">{uiText.benchmarkThinkingMode}</th>
-                          <th className="px-3 py-2">{uiText.firstTokenLatency}</th>
-                          <th className="px-3 py-2">{uiText.totalLatency}</th>
-                          <th className="px-3 py-2">{uiText.tokenThroughput}</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {benchmarkData.comparisonsToLast.map((row) => (
-                          <tr key={`${row.targetId}:${row.providerProfile}:${row.thinkingMode}:last`} className="border-t border-white/10">
-                            <td className="px-3 py-2 text-slate-100">
-                              <div>{row.targetLabel}</div>
-                              <div className="mt-1 text-xs text-slate-400">
-                                {row.previousGeneratedAt ? new Date(row.previousGeneratedAt).toLocaleString() : "--"}
-                              </div>
-                            </td>
-                            <td className="px-3 py-2 text-slate-300">{row.providerProfile}</td>
-                            <td className="px-3 py-2 text-slate-300">{row.thinkingMode}</td>
-                            <td className="px-3 py-2 text-slate-300">{row.deltaFirstTokenLatencyMs === null || row.deltaFirstTokenLatencyMs === undefined ? "--" : `${row.deltaFirstTokenLatencyMs.toFixed(1)} ms`}</td>
-                            <td className="px-3 py-2 text-slate-300">{row.deltaLatencyMs === null || row.deltaLatencyMs === undefined ? "--" : `${row.deltaLatencyMs.toFixed(1)} ms`}</td>
-                            <td className="px-3 py-2 text-slate-300">{row.deltaTokenThroughputTps === null || row.deltaTokenThroughputTps === undefined ? "--" : row.deltaTokenThroughputTps.toFixed(2)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                {benchmarkCompareLastGroups.length ? (
+                  <div className="space-y-4">
+                    {benchmarkCompareLastGroups.map((group) => (
+                      <section key={`compare-last:${group.execution}`} className="space-y-3">
+                        <div className="flex items-center justify-between gap-3 px-1">
+                          <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">{group.label} · {uiText.compareLastRun}</p>
+                          <span className="text-[11px] text-slate-500">{group.rows.length} rows</span>
+                        </div>
+                        <div className="overflow-hidden rounded-2xl border border-white/10">
+                          <table className="w-full text-left text-sm">
+                            <thead className="bg-white/5 text-slate-400">
+                              <tr>
+                                <th className="px-3 py-2">{uiText.compareLastRun}</th>
+                                <th className="px-3 py-2">{uiText.providerProfile}</th>
+                                <th className="px-3 py-2">{uiText.benchmarkThinkingMode}</th>
+                                <th className="px-3 py-2">{uiText.firstTokenLatency}</th>
+                                <th className="px-3 py-2">{uiText.totalLatency}</th>
+                                <th className="px-3 py-2">{uiText.tokenThroughput}</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {group.rows.map((row) => (
+                                <tr key={`${row.targetId}:${row.providerProfile}:${row.thinkingMode}:last`} className="border-t border-white/10">
+                                  <td className="px-3 py-2 text-slate-100">
+                                    <div>{row.targetLabel}</div>
+                                    <div className="mt-1 text-xs text-slate-400">
+                                      {row.previousGeneratedAt ? new Date(row.previousGeneratedAt).toLocaleString() : "--"}
+                                    </div>
+                                  </td>
+                                  <td className="px-3 py-2 text-slate-300">{row.providerProfile}</td>
+                                  <td className="px-3 py-2 text-slate-300">{row.thinkingMode}</td>
+                                  <td className="px-3 py-2 text-slate-300">{row.deltaFirstTokenLatencyMs === null || row.deltaFirstTokenLatencyMs === undefined ? "--" : `${row.deltaFirstTokenLatencyMs.toFixed(1)} ms`}</td>
+                                  <td className="px-3 py-2 text-slate-300">{row.deltaLatencyMs === null || row.deltaLatencyMs === undefined ? "--" : `${row.deltaLatencyMs.toFixed(1)} ms`}</td>
+                                  <td className="px-3 py-2 text-slate-300">{row.deltaTokenThroughputTps === null || row.deltaTokenThroughputTps === undefined ? "--" : row.deltaTokenThroughputTps.toFixed(2)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </section>
+                    ))}
                   </div>
                 ) : null}
               </div>
@@ -3381,7 +3709,160 @@ export function AdminDashboard() {
               </div>
             )}
 
-            <div className="grid gap-4 xl:grid-cols-3">
+            <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm text-slate-300">{uiText.benchmarkHistory}</p>
+                <span className="text-[11px] text-slate-500">
+                  {uiText.benchmarkTrendTitle} · {data?.benchmarkHistory.length || 0}
+                </span>
+              </div>
+              <div className="mt-3 space-y-3">
+                {data?.benchmarkHistory.length ? (
+                  data.benchmarkHistory.map((entry) => (
+                    <article key={entry.id} className="rounded-3xl border border-white/10 bg-slate-950/70 px-4 py-3.5">
+                      {(() => {
+                        const entryProfiles = Array.from(
+                          new Set(entry.results.map((result) => result.providerProfile || entry.providerProfile || "default"))
+                        );
+                        const entryThinkingModes = Array.from(
+                          new Set(entry.results.map((result) => result.thinkingMode || entry.thinkingMode || "standard"))
+                        );
+                        const entryExecutionSummary = buildExecutionSections(entry.results, {
+                          local: dictionary.common.local,
+                          remote: dictionary.common.remote
+                        })
+                          .map((group) => `${group.label} ${group.rows.length}`)
+                          .join(" · ");
+                        const profileLabel = entryProfiles.length === 1 ? entryProfiles[0] : "mixed";
+                        const thinkingLabel = entryThinkingModes.length === 1 ? entryThinkingModes[0] : "mixed";
+                        return (
+                          <div className="flex flex-col gap-2 xl:flex-row xl:items-start xl:justify-between">
+                            <div>
+                              <p className="text-base font-semibold text-white">{new Date(entry.generatedAt).toLocaleString()}</p>
+                              <div className="mt-2 space-y-1 text-xs text-slate-500">
+                                <p>
+                                  {entry.benchmarkMode === "suite"
+                                    ? `${uiText.benchmarkSuite}: ${entry.suiteLabel || "--"}`
+                                    : entry.benchmarkMode === "dataset"
+                                      ? `${uiText.benchmarkDataset}: ${entry.datasetLabel || "--"}`
+                                      : entry.promptSetLabel
+                                        ? `${uiText.benchmarkPromptSet}: ${entry.promptSetLabel}`
+                                        : `${uiText.benchmarkPrompt}: ${entry.prompt}`}
+                                </p>
+                                <p>
+                                  {uiText.contextWindowFilter}: {entry.contextWindow >= 1024 ? `${Math.round(entry.contextWindow / 1024)}K` : entry.contextWindow}
+                                  {" · "}
+                                  {uiText.benchmarkRuns}: {entry.runs}
+                                  {" · "}
+                                  {uiText.providerProfile}: {profileLabel}
+                                  {" · "}
+                                  {uiText.benchmarkThinkingMode}: {thinkingLabel}
+                                  {entryExecutionSummary ? ` · ${entryExecutionSummary}` : ""}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="text-[11px] text-slate-500">{entry.results.length} results</div>
+                          </div>
+                        );
+                      })()}
+                      <div className="mt-3 space-y-3">
+                        {entry.benchmarkMode === "suite" ? (
+                          <div className="space-y-1 text-xs text-slate-500">
+                            <p>{uiText.benchmarkSuite}: {entry.suiteLabel || "--"} · n={entry.suiteWorkloadCount || 0}</p>
+                            {entry.profileBatchScope ? <p>scope={entry.profileBatchScope}</p> : null}
+                            <p>{uiText.benchmarkPrompt}: {entry.prompt}</p>
+                          </div>
+                        ) : entry.benchmarkMode === "dataset" ? (
+                          <div className="space-y-1 text-xs text-slate-500">
+                            <p>{uiText.benchmarkDataset}: {entry.datasetLabel || "--"} · n={entry.datasetSampleCount || 0}</p>
+                            <p>{uiText.benchmarkDatasetSource}: {entry.datasetSourceLabel || "--"}</p>
+                          </div>
+                        ) : entry.promptSetLabel ? (
+                          <p className="text-xs text-slate-500">
+                            {uiText.benchmarkPromptSet}: {entry.promptSetLabel} · n={entry.promptSetPromptCount || 0}
+                          </p>
+                        ) : (
+                          <p className="text-xs text-slate-500">{uiText.benchmarkPrompt}: {entry.prompt}</p>
+                        )}
+                        {(() => {
+                          const executionGroups = buildExecutionSections(entry.results, {
+                            local: dictionary.common.local,
+                            remote: dictionary.common.remote
+                          });
+
+                          return executionGroups.map((group) => (
+                            <section key={`${entry.id}:${group.execution}`} className="space-y-3">
+                              <div className="flex items-center justify-between gap-3 px-1">
+                                <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">{group.label}</p>
+                                <span className="text-[11px] text-slate-500">{group.rows.length} results</span>
+                              </div>
+                              {group.rows.map((result) => {
+                                const hasMetrics = hasSuccessfulBenchmarkMetrics(result);
+                                return (
+                                  <div
+                                    key={`${entry.id}:${result.targetId}:${result.providerProfile || entry.providerProfile || "default"}:${result.thinkingMode || entry.thinkingMode || "standard"}`}
+                                    className="rounded-2xl border border-white/10 bg-black/20 p-4"
+                                  >
+                                    <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+                                      <div>
+                                        <p className="text-base font-semibold text-slate-100">{result.targetLabel}</p>
+                                        <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-400">
+                                          <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1">
+                                            {result.okRuns}/{result.runs}
+                                          </span>
+                                          <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1">
+                                            {result.providerProfile || entry.providerProfile || "default"}
+                                          </span>
+                                          <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1">
+                                            {result.thinkingMode || entry.thinkingMode || "standard"}
+                                          </span>
+                                        </div>
+                                        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                                          <span>{dictionary.common.model}</span>
+                                          <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 font-mono text-[11px] text-slate-200">
+                                            {result.resolvedModel}
+                                          </span>
+                                        </div>
+                                      </div>
+                                      <div className="grid gap-3 text-xs text-slate-400 sm:grid-cols-2 xl:min-w-[420px] xl:grid-cols-5">
+                                        <div>
+                                          <p className="uppercase tracking-[0.2em] text-slate-500">{uiText.firstTokenLatency}</p>
+                                          <p className="mt-2 text-sm text-white">{formatBenchmarkMetric(result.avgFirstTokenLatencyMs, hasMetrics, 1, " ms")}</p>
+                                        </div>
+                                        <div>
+                                          <p className="uppercase tracking-[0.2em] text-slate-500">{uiText.totalLatency}</p>
+                                          <p className="mt-2 text-sm text-white">{formatBenchmarkMetric(result.avgLatencyMs, hasMetrics, 1, " ms")}</p>
+                                        </div>
+                                        <div>
+                                          <p className="uppercase tracking-[0.2em] text-slate-500">{uiText.tokenThroughput}</p>
+                                          <p className="mt-2 text-sm text-white">{formatBenchmarkMetric(result.avgTokenThroughputTps, hasMetrics, 2, ` ${uiText.tokensPerSecond}`)}</p>
+                                        </div>
+                                        <div>
+                                          <p className="uppercase tracking-[0.2em] text-slate-500">{uiText.benchmarkScore}</p>
+                                          <p className="mt-2 text-sm text-white">{typeof result.avgScore === "number" ? result.avgScore.toFixed(2) : "--"}</p>
+                                        </div>
+                                        <div>
+                                          <p className="uppercase tracking-[0.2em] text-slate-500">{uiText.benchmarkPassRate}</p>
+                                          <p className="mt-2 text-sm text-white">{typeof result.passRate === "number" ? `${result.passRate.toFixed(2)}%` : "--"}</p>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </section>
+                          ));
+                        })()}
+                      </div>
+                    </article>
+                  ))
+                ) : (
+                  <p className="text-sm text-slate-500">{uiText.benchmarkNoData}</p>
+                )}
+              </div>
+            </div>
+
+            <div className="grid gap-3 xl:grid-cols-3">
               <MultiSeriesCard
                 title={uiText.firstTokenLatency}
                 lines={benchmarkTrendLines.map((line) => ({
@@ -3408,15 +3889,15 @@ export function AdminDashboard() {
               />
             </div>
 
-            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+            <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3">
               <div className="flex items-center justify-between gap-3">
                 <p className="text-sm text-slate-300">{uiText.benchmarkHeatmap}</p>
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-xs text-slate-500">{uiText.providerProfile} × {uiText.benchmarkThinkingMode}</span>
+                  <span className="text-[11px] text-slate-500">{uiText.providerProfile} × {uiText.benchmarkThinkingMode}</span>
                   <select
                     value={benchmarkHeatmapWindowMinutes}
                     onChange={(event) => setBenchmarkHeatmapWindowMinutes(Number(event.target.value))}
-                    className="rounded-full border border-white/10 bg-black/25 px-3 py-1.5 text-xs text-slate-100 outline-none"
+                    className="rounded-full border border-white/10 bg-black/25 px-3 py-1 text-xs text-slate-100 outline-none"
                   >
                     {[60, 180, 720, 1440].map((value) => (
                       <option key={value} value={value}>
@@ -3427,7 +3908,7 @@ export function AdminDashboard() {
                   <select
                     value={benchmarkHeatmapPromptScope}
                     onChange={(event) => setBenchmarkHeatmapPromptScope(event.target.value as "all" | "fixed-only")}
-                    className="rounded-full border border-white/10 bg-black/25 px-3 py-1.5 text-xs text-slate-100 outline-none"
+                    className="rounded-full border border-white/10 bg-black/25 px-3 py-1 text-xs text-slate-100 outline-none"
                   >
                     <option value="all">{uiText.benchmarkHeatmapPromptScope}: {uiText.benchmarkHeatmapAllPrompts}</option>
                     <option value="fixed-only">{uiText.benchmarkHeatmapPromptScope}: {uiText.benchmarkHeatmapFixedPromptsOnly}</option>
@@ -3435,7 +3916,7 @@ export function AdminDashboard() {
                   <select
                     value={benchmarkHeatmapSampleStatus}
                     onChange={(event) => setBenchmarkHeatmapSampleStatus(event.target.value as "all" | "success" | "failed")}
-                    className="rounded-full border border-white/10 bg-black/25 px-3 py-1.5 text-xs text-slate-100 outline-none"
+                    className="rounded-full border border-white/10 bg-black/25 px-3 py-1 text-xs text-slate-100 outline-none"
                   >
                     <option value="all">{uiText.benchmarkHeatmapSampleStatus}: {uiText.allSamples}</option>
                     <option value="success">{uiText.benchmarkHeatmapSampleStatus}: {uiText.successSamples}</option>
@@ -3444,7 +3925,7 @@ export function AdminDashboard() {
                   <select
                     value={benchmarkHeatmapMetric}
                     onChange={(event) => setBenchmarkHeatmapMetric(event.target.value as BenchmarkHeatmapMetricKey)}
-                    className="rounded-full border border-white/10 bg-black/25 px-3 py-1.5 text-xs text-slate-100 outline-none"
+                    className="rounded-full border border-white/10 bg-black/25 px-3 py-1 text-xs text-slate-100 outline-none"
                   >
                     <option value="first-token">{uiText.benchmarkHeatmapMetric}: {uiText.firstTokenLatency}</option>
                     <option value="total-latency">{uiText.benchmarkHeatmapMetric}: {uiText.totalLatency}</option>
@@ -3453,7 +3934,7 @@ export function AdminDashboard() {
                   </select>
                 </div>
               </div>
-              <div className="mt-4 overflow-hidden rounded-2xl border border-white/10">
+              <div className="mt-3 overflow-hidden rounded-2xl border border-white/10">
                 <table className="w-full text-left text-sm">
                   <thead className="bg-white/5 text-slate-400">
                     <tr>
@@ -3510,86 +3991,10 @@ export function AdminDashboard() {
                 </table>
               </div>
             </div>
-
-            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-sm text-slate-300">{uiText.benchmarkHistory}</p>
-                <span className="text-xs text-slate-500">
-                  {uiText.benchmarkTrendTitle} · {data?.benchmarkHistory.length || 0}
-                </span>
-              </div>
-              <div className="mt-4 space-y-3">
-                {data?.benchmarkHistory.length ? (
-                  data.benchmarkHistory.map((entry) => (
-                    <div key={entry.id} className="rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-3">
-                      {(() => {
-                        const entryProfiles = Array.from(
-                          new Set(entry.results.map((result) => result.providerProfile || entry.providerProfile || "default"))
-                        );
-                        const entryThinkingModes = Array.from(
-                          new Set(entry.results.map((result) => result.thinkingMode || entry.thinkingMode || "standard"))
-                        );
-                        const profileLabel = entryProfiles.length === 1 ? entryProfiles[0] : "mixed";
-                        const thinkingLabel = entryThinkingModes.length === 1 ? entryThinkingModes[0] : "mixed";
-                        return (
-                      <div className="flex flex-wrap items-center justify-between gap-3">
-                        <p className="text-sm text-white">{new Date(entry.generatedAt).toLocaleString()}</p>
-                        <span className="text-xs text-slate-400">
-                          {uiText.contextWindowFilter}: {entry.contextWindow >= 1024 ? `${Math.round(entry.contextWindow / 1024)}K` : entry.contextWindow} · {uiText.benchmarkRuns}: {entry.runs} · {uiText.providerProfile}: {profileLabel} · {uiText.benchmarkThinkingMode}: {thinkingLabel}
-                        </span>
-                      </div>
-                        );
-                      })()}
-                      <div className="mt-3 space-y-2">
-                        {entry.benchmarkMode === "suite" ? (
-                          <div className="space-y-1 text-xs text-slate-500">
-                            <p>{uiText.benchmarkSuite}: {entry.suiteLabel || "--"} · n={entry.suiteWorkloadCount || 0}</p>
-                            {entry.profileBatchScope ? <p>scope={entry.profileBatchScope}</p> : null}
-                            <p>{uiText.benchmarkPrompt}: {entry.prompt}</p>
-                          </div>
-                        ) : entry.benchmarkMode === "dataset" ? (
-                          <div className="space-y-1 text-xs text-slate-500">
-                            <p>{uiText.benchmarkDataset}: {entry.datasetLabel || "--"} · n={entry.datasetSampleCount || 0}</p>
-                            <p>{uiText.benchmarkDatasetSource}: {entry.datasetSourceLabel || "--"}</p>
-                          </div>
-                        ) : entry.promptSetLabel ? (
-                          <p className="text-xs text-slate-500">
-                            {uiText.benchmarkPromptSet}: {entry.promptSetLabel} · n={entry.promptSetPromptCount || 0}
-                          </p>
-                        ) : (
-                          <p className="text-xs text-slate-500">{uiText.benchmarkPrompt}: {entry.prompt}</p>
-                        )}
-                        {entry.results.map((result) => {
-                          const hasMetrics = hasSuccessfulBenchmarkMetrics(result);
-                          return (
-                            <div
-                              key={`${entry.id}:${result.targetId}:${result.providerProfile || entry.providerProfile || "default"}:${result.thinkingMode || entry.thinkingMode || "standard"}`}
-                              className="rounded-xl border border-white/10 bg-black/20 px-3 py-3"
-                            >
-                              <div className="flex flex-wrap items-center justify-between gap-3">
-                                <p className="text-sm text-slate-100">{result.targetLabel}</p>
-                                <span className="text-xs text-slate-400">{result.okRuns}/{result.runs} · {(result.providerProfile || entry.providerProfile || "default")}{(result.thinkingMode || entry.thinkingMode) ? ` · ${result.thinkingMode || entry.thinkingMode}` : ""}</span>
-                              </div>
-                              <p className="mt-2 text-xs text-slate-400">{uiText.firstTokenLatency}: {formatBenchmarkMetric(result.avgFirstTokenLatencyMs, hasMetrics, 1, " ms")}</p>
-                              <p className="mt-1 text-xs text-slate-400">{uiText.totalLatency}: {formatBenchmarkMetric(result.avgLatencyMs, hasMetrics, 1, " ms")}</p>
-                              <p className="mt-1 text-xs text-slate-400">{uiText.tokenThroughput}: {formatBenchmarkMetric(result.avgTokenThroughputTps, hasMetrics, 2, ` ${uiText.tokensPerSecond}`)}</p>
-                              <p className="mt-1 text-xs text-slate-400">{uiText.benchmarkScore}: {typeof result.avgScore === "number" ? result.avgScore.toFixed(2) : "--"}</p>
-                              <p className="mt-1 text-xs text-slate-400">{uiText.benchmarkPassRate}: {typeof result.passRate === "number" ? `${result.passRate.toFixed(2)}%` : "--"}</p>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <p className="text-sm text-slate-500">{uiText.benchmarkNoData}</p>
-                )}
-              </div>
-            </div>
           </div>
         </div>
 
-        <div className="rounded-3xl border border-white/10 bg-slate-950/70 p-4">
+        <div className="order-30 rounded-3xl border border-white/10 bg-slate-950/70 p-4">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
             <div>
               <p className="text-sm text-slate-300">{uiText.knowledgeBaseTitle}</p>
@@ -3799,7 +4204,7 @@ export function AdminDashboard() {
         </div>
 
         {data?.summary.telemetryAvailable ? (
-          <div className="grid gap-4 xl:grid-cols-3">
+          <div className="order-31 grid gap-4 xl:grid-cols-3">
             <SeriesCard title={dictionary.admin.memory} values={memoryValues} tone="emerald" />
             <SeriesCard title={uiText.storageTrend} values={storageValues} tone="cyan" />
             <SeriesCard title={dictionary.admin.battery} values={batteryValues} tone="amber" />
@@ -3836,7 +4241,7 @@ export function AdminDashboard() {
           </div>
         ) : null}
 
-        <div className="rounded-3xl border border-white/10 bg-slate-950/70 p-4">
+        <div className="order-27 rounded-3xl border border-white/10 bg-slate-950/70 p-4">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
             <div>
               <p className="text-sm text-slate-300">{uiText.runtimeOps}</p>
@@ -3872,21 +4277,25 @@ export function AdminDashboard() {
               const runtimeMessage = runtimeMessages[target.id] || runtime?.message || "";
               const logExcerpt = runtimeLogExcerpts[target.id] || "";
               return (
-                <div key={target.id} className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                <article key={target.id} className="rounded-3xl border border-white/10 bg-black/20 p-4">
                   <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
                     <div>
                       <div className="flex flex-wrap items-center gap-2">
-                        <p className="text-sm font-semibold text-white">{target.label}</p>
+                        <p className="text-base font-semibold text-white">{target.label}</p>
                         <span
                           className={`rounded-full border px-2.5 py-1 text-[11px] ${
-                            runtime?.available
+                            runtime?.loadingAlias
+                              ? "border-amber-400/30 bg-amber-400/10 text-amber-100"
+                              : runtime?.available
                               ? runtime.busy
                                 ? "border-amber-400/30 bg-amber-400/10 text-amber-100"
                                 : "border-emerald-400/30 bg-emerald-400/10 text-emerald-100"
                               : "border-rose-400/30 bg-rose-400/10 text-rose-100"
                           }`}
                         >
-                          {runtime?.available
+                          {runtime?.loadingAlias
+                            ? dictionary.common.active
+                            : runtime?.available
                             ? runtime.busy
                               ? dictionary.common.active
                               : dictionary.common.ok
@@ -3896,99 +4305,154 @@ export function AdminDashboard() {
                       <p className="mt-2 text-xs text-slate-400">
                         {uiText.loadedAlias}: {runtime?.loadedAlias || runtime?.resolvedModel || target.modelDefault}
                       </p>
+                      {runtime?.loadingAlias ? (
+                        <p className="mt-1 text-xs text-amber-200">
+                          Loading: {runtime.loadingAlias}
+                          {typeof runtime.loadingElapsedMs === "number"
+                            ? ` · ${Math.max(1, Math.round(runtime.loadingElapsedMs / 1000))}s`
+                            : ""}
+                        </p>
+                      ) : null}
+                      {runtime?.loadingError ? (
+                        <p className="mt-1 break-all text-xs text-rose-200">Loading error: {runtime.loadingError}</p>
+                      ) : null}
                       <p className="mt-1 text-xs text-slate-500">
                         {uiText.queueLabel}: {runtime?.queueDepth ?? 0} · {uiText.activeLabel}: {runtime?.activeRequests ?? 0}
                       </p>
                     </div>
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        disabled={Boolean(action)}
-                        onClick={() => void loadRuntimeStatus(target.id)}
-                        className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:text-slate-500"
-                      >
-                        {action === "refresh" ? uiText.runtimeRefreshing : uiText.runtimeRefresh}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={Boolean(action)}
-                        onClick={() => void handleRuntimePrewarm(target.id)}
-                        className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-1.5 text-xs text-cyan-100 transition hover:bg-cyan-400/20 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-500"
-                      >
-                        {action === "prewarm" ? uiText.runtimeRefreshing : uiText.runtimePrewarm}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={Boolean(action)}
-                        onClick={() => void handleRuntimeAction(target.id, "release")}
-                        className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1.5 text-xs text-emerald-100 transition hover:bg-emerald-400/20 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-500"
-                      >
-                        {action === "release" ? uiText.runtimeRefreshing : uiText.runtimeRelease}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={Boolean(action)}
-                        onClick={() => void handleRuntimeAction(target.id, "restart")}
-                        className="rounded-full border border-amber-400/20 bg-amber-400/10 px-3 py-1.5 text-xs text-amber-100 transition hover:bg-amber-400/20 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-500"
-                      >
-                        {action === "restart" ? uiText.runtimeRefreshing : uiText.runtimeRestart}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={Boolean(action)}
-                        onClick={() => void handleRuntimeAction(target.id, "read_log")}
-                        className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:text-slate-500"
-                      >
-                        {action === "read_log" ? uiText.runtimeRefreshing : uiText.runtimeReadLog}
-                      </button>
-                    </div>
                   </div>
 
-                  <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                    <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-3 text-xs text-slate-300">
-                      <p className="text-slate-500">{uiText.runtimeSupervisor}</p>
-                      <p className="mt-1 text-white">{runtime?.supervisorPid ?? dictionary.common.unknown} · {runtime?.supervisorAlive ? dictionary.common.ok : dictionary.common.failed}</p>
+                  <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
+                    <div className="space-y-4">
+                      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-2">
+                        <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-4 text-sm text-slate-300">
+                          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeSupervisor}</p>
+                          <p className="mt-3 text-xl font-semibold text-white">{runtime?.supervisorPid ?? dictionary.common.unknown}</p>
+                          <p className="mt-2 text-xs text-slate-400">{runtime?.supervisorAlive ? dictionary.common.ok : dictionary.common.failed}</p>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-4 text-sm text-slate-300">
+                          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeGateway}</p>
+                          <p className="mt-3 text-xl font-semibold text-white">{runtime?.gatewayPid ?? dictionary.common.unknown}</p>
+                          <p className="mt-2 text-xs text-slate-400">{runtime?.gatewayAlive ? dictionary.common.ok : dictionary.common.failed}</p>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-4 text-sm text-slate-300">
+                          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeRestartCount}</p>
+                          <p className="mt-3 text-xl font-semibold text-white">{runtime?.restartCount ?? 0}</p>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-4 text-sm text-slate-300">
+                          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeLastExitCode}</p>
+                          <p className="mt-3 text-xl font-semibold text-white">{runtime?.lastExitCode ?? dictionary.common.unknown}</p>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-4 text-sm text-slate-300">
+                          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeLastStart}</p>
+                          <p className="mt-3 text-base font-semibold text-white">{runtime?.lastStartAt ? new Date(runtime.lastStartAt).toLocaleString() : dictionary.common.unknown}</p>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-4 text-sm text-slate-300">
+                          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeLastExit}</p>
+                          <p className="mt-3 text-base font-semibold text-white">{runtime?.lastExitAt ? new Date(runtime.lastExitAt).toLocaleString() : dictionary.common.unknown}</p>
+                        </div>
+                      </div>
                     </div>
-                    <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-3 text-xs text-slate-300">
-                      <p className="text-slate-500">{uiText.runtimeGateway}</p>
-                      <p className="mt-1 text-white">{runtime?.gatewayPid ?? dictionary.common.unknown} · {runtime?.gatewayAlive ? dictionary.common.ok : dictionary.common.failed}</p>
-                    </div>
-                    <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-3 text-xs text-slate-300">
-                      <p className="text-slate-500">{uiText.runtimeRestartCount}</p>
-                      <p className="mt-1 text-white">{runtime?.restartCount ?? 0}</p>
-                    </div>
-                    <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-3 text-xs text-slate-300">
-                      <p className="text-slate-500">{uiText.runtimeLastStart}</p>
-                      <p className="mt-1 text-white">{runtime?.lastStartAt ? new Date(runtime.lastStartAt).toLocaleString() : dictionary.common.unknown}</p>
-                    </div>
-                    <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-3 text-xs text-slate-300">
-                      <p className="text-slate-500">{uiText.runtimeLastExit}</p>
-                      <p className="mt-1 text-white">{runtime?.lastExitAt ? new Date(runtime.lastExitAt).toLocaleString() : dictionary.common.unknown}</p>
-                    </div>
-                    <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-3 text-xs text-slate-300">
-                      <p className="text-slate-500">{uiText.runtimeLastExitCode}</p>
-                      <p className="mt-1 text-white">{runtime?.lastExitCode ?? dictionary.common.unknown}</p>
-                    </div>
-                  </div>
 
-                  <div className="mt-3 rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-3 text-xs leading-6 text-slate-300">
-                    <p className="text-slate-500">{uiText.runtimeLastEvent}</p>
-                    <p className="mt-1 text-white">{runtime?.lastEvent || dictionary.common.unknown}</p>
-                    <p className="mt-3 text-slate-500">{uiText.runtimeEnsureReason}</p>
-                    <p className="mt-1 text-white">{runtime?.lastEnsureReason || runtimeMessage || uiText.runtimeNoLog}</p>
-                    <p className="mt-3 text-slate-500">{uiText.runtimeLogPath}</p>
-                    <p className="mt-1 break-all text-slate-400">{runtime?.logFile || dictionary.common.unknown}</p>
-                  </div>
+                    <div className="space-y-4">
+                      <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-4">
+                        <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Runtime trace</p>
+                        <p className="mt-3 text-sm leading-6 text-slate-200">{runtimeMessage || uiText.runtimeNoLog}</p>
+                        {runtime?.loadingAlias || runtime?.loadingError ? (
+                          <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 px-3 py-3 text-xs text-slate-300">
+                            {runtime?.loadingAlias ? (
+                              <p>
+                                Loading: {runtime.loadingAlias}
+                                {typeof runtime.loadingElapsedMs === "number"
+                                  ? ` · ${Math.max(1, Math.round(runtime.loadingElapsedMs / 1000))}s`
+                                  : ""}
+                              </p>
+                            ) : null}
+                            {runtime?.loadingError ? (
+                              <p className="mt-2 break-all text-rose-200">Loading error: {runtime.loadingError}</p>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
 
-                  <div className="mt-3 rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-3 text-xs text-slate-300">
-                    <p className="text-slate-500">{uiText.runtimeLog}</p>
-                    {logExcerpt ? (
-                      <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-xl border border-white/10 bg-black/20 p-3 leading-6 text-slate-200">{logExcerpt}</pre>
-                    ) : (
-                      <p className="mt-2 text-slate-500">{uiText.runtimeNoLog}</p>
-                    )}
+                      <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Model state</p>
+                          <span className="text-xs text-slate-500">{action ? uiText.runtimeRefreshing : dictionary.agent.runtimeIdle}</span>
+                        </div>
+                        <div className="mt-3 space-y-2 text-sm text-slate-300">
+                          <div>
+                            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.loadedAlias}</p>
+                            <p className="mt-1 text-sm text-white">{runtime?.loadedAlias || runtime?.resolvedModel || target.modelDefault}</p>
+                          </div>
+                          <div>
+                            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeLastEvent}</p>
+                            <p className="mt-1 text-sm text-white">{runtime?.lastEvent || dictionary.common.unknown}</p>
+                          </div>
+                          <div>
+                            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeEnsureReason}</p>
+                            <p className="mt-1 text-xs leading-6 text-slate-400">{runtime?.lastEnsureReason || runtimeMessage || uiText.runtimeNoLog}</p>
+                          </div>
+                          <div>
+                            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeLogPath}</p>
+                            <p className="mt-1 break-all text-xs text-slate-400">{runtime?.logFile || dictionary.common.unknown}</p>
+                          </div>
+                        </div>
+                        <div className="mt-4 flex flex-wrap gap-2 border-t border-white/10 pt-3">
+                          <button
+                            type="button"
+                            disabled={Boolean(action)}
+                            onClick={() => void loadRuntimeStatus(target.id)}
+                            className="rounded-full border border-white/10 bg-transparent px-3 py-1.5 text-[11px] text-slate-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:text-slate-500"
+                          >
+                            {action === "refresh" ? uiText.runtimeRefreshing : uiText.runtimeRefresh}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={Boolean(action)}
+                            onClick={() => void handleRuntimePrewarm(target.id)}
+                            className="rounded-full border border-cyan-400/20 bg-transparent px-3 py-1.5 text-[11px] text-cyan-200 transition hover:bg-cyan-400/10 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-500"
+                          >
+                            {action === "prewarm" ? uiText.runtimeRefreshing : uiText.runtimePrewarm}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={Boolean(action)}
+                            onClick={() => void handleRuntimeAction(target.id, "release")}
+                            className="rounded-full border border-emerald-400/20 bg-transparent px-3 py-1.5 text-[11px] text-emerald-200 transition hover:bg-emerald-400/10 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-500"
+                          >
+                            {action === "release" ? uiText.runtimeRefreshing : uiText.runtimeRelease}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={Boolean(action)}
+                            onClick={() => void handleRuntimeAction(target.id, "restart")}
+                            className="rounded-full border border-amber-400/20 bg-transparent px-3 py-1.5 text-[11px] text-amber-200 transition hover:bg-amber-400/10 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-500"
+                          >
+                            {action === "restart" ? uiText.runtimeRefreshing : uiText.runtimeRestart}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={Boolean(action)}
+                            onClick={() => void handleRuntimeAction(target.id, "read_log")}
+                            className="rounded-full border border-white/10 bg-transparent px-3 py-1.5 text-[11px] text-slate-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:text-slate-500"
+                          >
+                            {action === "read_log" ? uiText.runtimeRefreshing : uiText.runtimeReadLog}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-4 text-sm text-slate-300">
+                        <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeLog}</p>
+                        {logExcerpt ? (
+                          <pre className="mt-3 max-h-52 overflow-auto whitespace-pre-wrap break-words rounded-2xl border border-white/10 bg-black/20 p-3 text-xs leading-6 text-slate-200">{logExcerpt}</pre>
+                        ) : (
+                          <p className="mt-3 text-sm text-slate-500">{uiText.runtimeNoLog}</p>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                </div>
+                </article>
               );
             })}
           </div>

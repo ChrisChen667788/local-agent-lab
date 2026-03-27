@@ -38,6 +38,8 @@ import type {
 } from "@/lib/agent/types";
 
 export const runtime = "nodejs";
+const LOCAL_STREAM_CONNECT_TIMEOUT_MS = 300000;
+const LOCAL_STREAM_WARMUP_WAIT_MS = 300000;
 
 function isValidMessageArray(value: unknown): value is AgentMessage[] {
   return (
@@ -115,6 +117,23 @@ function streamEvent(payload: Record<string, unknown>) {
   return `${JSON.stringify(payload)}\n`;
 }
 
+async function fetchWithAbortTimeout(
+  input: string,
+  init: RequestInit,
+  timeoutMs: number
+) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function combineWarnings(...values: Array<string | undefined>) {
   return values.filter(Boolean).join(" ").trim() || undefined;
 }
@@ -146,7 +165,11 @@ function buildStreamMeta(
   execution: "local" | "remote",
   providerProfile: "speed" | "balanced" | "tool-first",
   thinkingMode: "standard" | "thinking",
-  thinkingFallbackToStandard = false
+  thinkingFallbackToStandard = false,
+  localFallbackUsed = false,
+  localFallbackTargetId?: string,
+  localFallbackTargetLabel?: string,
+  localFallbackReason?: string
 ) {
   return {
     type: "meta",
@@ -158,7 +181,11 @@ function buildStreamMeta(
     execution,
     providerProfile,
     thinkingMode,
-    thinkingFallbackToStandard
+    thinkingFallbackToStandard,
+    localFallbackUsed,
+    localFallbackTargetId,
+    localFallbackTargetLabel,
+    localFallbackReason
   };
 }
 
@@ -466,6 +493,10 @@ export async function POST(request: Request) {
                 providerProfile: response.providerProfile,
                 thinkingMode: response.thinkingMode,
                 thinkingFallbackToStandard: response.thinkingFallbackToStandard,
+                localFallbackUsed: response.localFallbackUsed,
+                localFallbackTargetId: response.localFallbackTargetId,
+                localFallbackTargetLabel: response.localFallbackTargetLabel,
+                localFallbackReason: response.localFallbackReason,
                 warning: response.warning,
                 usage: response.usage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
                 cacheHit: false,
@@ -493,6 +524,10 @@ export async function POST(request: Request) {
         let usage: AgentUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
         let warning: string | undefined;
         let firstVisibleDeltaAt: number | null = null;
+        let localFallbackUsed = false;
+        let localFallbackTargetId: string | undefined;
+        let localFallbackTargetLabel: string | undefined;
+        let localFallbackReason: string | undefined;
 
         const write = (payload: Record<string, unknown>) => {
           controller.enqueue(encoder.encode(streamEvent(payload)));
@@ -503,11 +538,13 @@ export async function POST(request: Request) {
         try {
           if (target.execution === "local") {
             try {
-              const ready = await ensureLocalGatewayAvailable(target.resolvedBaseUrl, { waitMs: 25000 });
+              const ready = await ensureLocalGatewayAvailable(target.resolvedBaseUrl, {
+                waitMs: LOCAL_STREAM_WARMUP_WAIT_MS
+              });
               if (!ready) {
                 throw new Error("Local gateway did not become ready in time.");
               }
-              const upstream = await fetch(`${target.resolvedBaseUrl.replace(/\/v1$/, "")}/v1/chat/completions/stream`, {
+              const upstream = await fetchWithAbortTimeout(`${target.resolvedBaseUrl.replace(/\/v1$/, "")}/v1/chat/completions/stream`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -518,7 +555,7 @@ export async function POST(request: Request) {
                   ],
                   max_tokens: 192
                 })
-              });
+              }, LOCAL_STREAM_CONNECT_TIMEOUT_MS);
 
               if (!upstream.ok) {
                 throw new Error(await upstream.text());
@@ -589,6 +626,10 @@ export async function POST(request: Request) {
               finalContent = recovered.content;
               usage = recovered.usage || usage;
               if (recovered.localFallbackUsed) {
+                localFallbackUsed = true;
+                localFallbackTargetId = recovered.localFallbackTargetId;
+                localFallbackTargetLabel = recovered.localFallbackTargetLabel;
+                localFallbackReason = recovered.localFallbackReason;
                 write(
                   buildStreamMeta(
                     body.targetId!,
@@ -599,7 +640,11 @@ export async function POST(request: Request) {
                     recovered.execution || target.execution,
                     recovered.providerProfile || providerProfile,
                     recovered.thinkingMode || thinkingMode,
-                    recovered.thinkingFallbackToStandard || false
+                    recovered.thinkingFallbackToStandard || false,
+                    recovered.localFallbackUsed || false,
+                    recovered.localFallbackTargetId,
+                    recovered.localFallbackTargetLabel,
+                    recovered.localFallbackReason
                   )
                 );
               }
@@ -737,6 +782,10 @@ export async function POST(request: Request) {
             providerProfile,
             thinkingMode,
             thinkingFallbackToStandard: thinkingMode === "thinking" && !isThinkingModelConfigured(body.targetId!),
+            localFallbackUsed,
+            localFallbackTargetId,
+            localFallbackTargetLabel,
+            localFallbackReason,
             warning,
             usage,
             cacheHit: false,

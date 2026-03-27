@@ -1,6 +1,6 @@
 # Agent Lab Development Roadmap
 
-Last updated: 2026-03-23
+Last updated: 2026-03-27
 
 ## Version snapshot
 
@@ -172,85 +172,119 @@ Last updated: 2026-03-23
 
 ## Next 20 rounds
 
-1. Admin backlog 收口
+下面这二十轮按“先还原界面与工作流，再收口稳定性，最后再补能力”的顺序排。目的不是继续把项目做散，而是尽量回到你最初定义的那条主线。
+
+1. Agent 第一屏还原收口
    Status: completed
-   Scope: 已完成指定 baseline 作为当前对比对象、heatmap 成功/失败样本过滤、prompt 集新增/编辑/删除，dashboard 与 benchmark 链路已打通。
+   Scope: 继续压缩主标题区、顶部状态胶囊、右侧信息面板和左侧目标列表，让 `/agent` 第一屏尽量贴近 3 月 26 日前的截图结构。
 
-2. Benchmark 回归报告
+2. Admin 第一屏还原收口
    Status: completed
-   Scope: 已支持自动生成 Markdown 回归报告，包含基线差值、热力图摘要、异常项摘要、最近一次与 baseline 的 delta。
+   Scope: 继续调整 `/admin` 的 Benchmark 配置、进度、基线、历史和结果卡顺序，让第一屏优先服务 Benchmark 主工作流。
 
-3. 运行时运维面板 + 本地网关稳定性强化
+3. Agent 右侧信息面板定型
    Status: completed
-   Scope: 已在 `/admin` 直接查看并操作 `prewarm / release / restart / log tail`，并补充 supervisor 状态摘要、冷启动重试、拉起超时原因细分、子进程退出码记录、批量 benchmark / prewarm 期间的恢复链路。
+   Scope: 把“已解析接口 / 自检 / 模型摘要 / 系统提示词 / 启动提示 / 本地运行时”顺序彻底固定，并统一成信息面板风格。
 
-4. 检索底座与文档切分
+4. Agent 左侧目标列表定型
    Status: completed
-   Scope: 已引入最小可用检索底座，补齐文档 ingest、Markdown/段落 chunking、metadata 结构、文件型知识库存储、检索验证 API，并接到 `/agent` 的 grounded system prompt 注入链路。
+   Scope: 继续把目标模型列表做成高密度连续列表，弱化厚重卡片感，并统一本地/远端/健康状态徽标样式。
 
-5. Grounded generation 与证据约束
+5. 本地运行时状态可视化
    Status: completed
-   Scope: 已补 grounded system prompt 注入、citation hit 回传、citation enforcement、低置信度 fallback、answer verification 启发式校验，并将 verification 结果接入会话显示与聊天日志。
+   Scope: 让用户在主界面直接看到“网关在线 / 模型加载中 / 已加载别名 / 队列 / 活跃请求”等状态，减少现在的报错不透明感。
 
-6. 检索质量优化
+6. 本地简单问答路由优化
    Status: completed
-   Scope: 已补 retrieval compression、answer verification 结果复用和 grounded 检索摘要；下一步再补 hybrid retrieval / rerank 与系统化检索评测。
+   Scope: 默认把简单短问答优先路由到已预热的 `Local Qwen3 0.6B`，降低本地 4B 冷加载把主流程拖慢的概率。
 
-7. 成本与时延控制
+7. 本地 4B 冷态降级机制
    Status: completed
-   Scope: 已接入 prompt cache、semantic cache 和现有 token budget 控制；下一步再补 route-to-small-model 与更严格的任务级预算控制。
+   Scope: 当 `Local Qwen3 4B 4-bit` 未就绪或长时间加载时，自动降级到 `0.6B` 并给出可见提示，而不是直接报错。
 
-8. Agent 核心能力升级
+8. 本地网关恢复链路加强
    Status: completed
-   Scope: 已补 Planner / Session memory 注入 MVP，并沿用现有会话持久化；下一步再补更完整的状态持久化和 tool orchestration policy。
+   Scope: 继续收口 gateway “加载中 / 导入慢 / 冲突模型等待 / 失败重启”的恢复逻辑，避免卡死和无限等待。
 
-9. 错误恢复与评判闭环
+9. Agent 本地报错文案收口
    Status: completed
-   Scope: 已补 provider 单次自动恢复和 grounded verification judge 启发式；下一步再补 self-consistency 与 model-as-judge。
+   Scope: 把 `Load failed`、空响应、检索低置信度等错误提示改成更明确的业务态文案，减少用户感知上的“坏掉”。
 
-10. 清理与验收
-   Status: completed
-   Scope: 已稳定 `/agent` 与 `/admin` 的重型页面加载，前端开发服务改为 `screen` 托管，并完成页面与 API smoke checks；下一步再继续收口历史页面和目录结构。
+10. Benchmark 本地/远端口径拆分
+    Status: completed
+    Scope: 把 local benchmark 和 remote benchmark 的配置语义、执行策略和结果说明明确拆开，避免口径混用。
 
-11. Grounded citation enforcement
-    Status: planned
-    Scope: 在 grounded 对话链路中强制引用 retrieval 命中块，回答缺引用时标记 warning，并把 citation 缺失纳入 benchmark。
+11. local full-suite 稳定性专项
+    Status: completed
+    Scope: 专门收口 `Local Qwen3 0.6B / 4B 4-bit` 的 formal/full suite，加入分组 warm、局部 early-stop、断点恢复和失败分段重跑。
 
-12. Low-confidence fallback answers
-    Status: planned
-    Scope: 当 retrieval confidence 低或 hitCount 太少时，自动切换为保守回答模板，明确提示证据不足，避免硬编。
+12. Benchmark 进度与中断恢复
+    Status: completed
+    Scope: 支持长跑 benchmark 的继续执行、断点恢复和更明确的剩余时间预估，避免页面看起来“一直卡住”。
 
-13. Answer verification / model-as-judge
-    Status: planned
-    Scope: 为 grounded QA 和正式评测集引入二次验证与 judge 结果，输出 verification verdict、争议样本列表和人工复核入口。
+13. Benchmark 历史与基线定型
+    Status: completed
+    Scope: 统一历史、基线、delta、结果汇总的长卡片阅读方式，减少现在不同区块之间的视觉割裂。
 
-14. Hybrid retrieval scaffold
-    Status: planned
-    Scope: 在现有词法检索上预留 embedding / rerank / hybrid retrieval 接口，先完成本地可插拔检索层。
+14. 本地运行时运维页定型
+    Status: completed
+    Scope: 继续把本地运行时运维从“按钮集合”收成“状态优先、操作次级”的信息布局，并与早期截图统一风格。
 
-15. Retrieval quality evaluation
-    Status: planned
-    Scope: 增加命中率、citation precision、fallback rate、verification pass rate 等检索质量指标，并接入 `/admin`。
+15. 检索增强体验收口
+    Status: completed
+    Scope: 当没有外挂知识库或低置信度命中时，允许常见问题正常回答；检索增强不再轻易把普通问答误伤成保守拒答。
 
-16. Prompt / semantic cache
-    Status: planned
-    Scope: 引入 prompt caching 与 semantic cache，优先覆盖短问答、固定 prompt 集和 grounded QA 场景。
+16. grounded/citation 结果轻量展示
+    Status: completed
+    Scope: 保留 grounded generation 能力，但把 citation / verification 结果改成更轻量的展示，避免污染主对话阅读体验。
 
-17. Route-to-small-model / token budget controller
-    Status: planned
-    Scope: 根据问题长度、工具意图、retrieval 命中与 thinking 模式，自动在 `0.6B / 4B / remote` 之间路由，并做任务级 token 预算控制。
+17. 会话与导出工作流收口
+    Status: completed
+    Scope: 继续优化会话恢复、固定、导出和批量清理的入口层级，让这些功能有但不抢主链路。
 
-18. Planner & stateful task execution
-    Status: planned
-    Scope: 加入 Planner、可恢复任务状态和多步计划摘要，让 Agent 不再只是一轮工具循环。
+18. 顶部导航与多语言条定型
+    Status: completed
+    Scope: 按早期截图继续压缩 `Agent / 后台 / 语言` 顶部导航视觉重量，统一两页第一屏的“产品态”。
 
-19. Memory System & state persistence
-    Status: planned
-    Scope: 将短期工作记忆、长期检索记忆和会话状态从前端 localStorage 逐步迁移到服务端可检索存储。
+19. 稳定版本发布节奏
+    Status: completed
+    Scope: 在现有本地 Git 版本化基础上，每个稳定节点生成版本号、release note、页面截图和 benchmark 摘要，避免后续再出现“改得太散又难回看”。
 
-20. Release hardening
-    Status: planned
-    Scope: 完成 smoke test、benchmark regression gate、runtime self-heal 验证、文档收口和正式报告模板定稿。
+20. 最终还原验收
+    Status: completed
+    Scope: 对照你保存的历史截图、历史对话需求和当前主流程，逐页做“界面、功能、工作流”验收清单，确认哪些已还原、哪些保留、哪些明确放弃。
+
+## Final acceptance
+
+这轮主线验收按“界面、功能、工作流、稳定性”四条做了最终自检，结论如下：
+
+### 已验收通过
+
+- `/agent` 第一屏已经回到“左侧目标模型列表 + 中间主工作区 + 右侧信息面板”的主结构。
+- `/agent` 的右侧面板顺序已经固定为：已解析接口、自检、模型摘要、系统提示词、启动提示、本地运行时。
+- `/admin` 第一屏已经收敛为 Benchmark 优先：配置、进度、基线、结果、历史都放在主工作流前段。
+- Benchmark 结果汇总、历史、baseline、delta、percentiles 已统一成长卡片阅读方式。
+- Benchmark 已明确区分本地与远端口径，远端目标已展示当前实际对接模型版本。
+- 长跑 benchmark 已支持基于最新未完成记录的恢复监控；运行中刷新页面可继续看到真实进度。
+- `Local Qwen3 0.6B` 的正式里程碑评测已验证恢复正常，不再出现空结果。
+- 本地运行时运维已经收成“状态优先、操作次级”的布局，不再以操作按钮为中心。
+- 会话导出链路已经统一复用筛选逻辑，并在界面上明确显示当前导出范围。
+- 顶部导航与语言条已经收回到更接近早期截图的轻量产品态。
+- 版本化流程已落地：`VERSION`、release note、发布脚本和发布流程文档已建立。
+
+### 当前保留项
+
+- 仓库里仍保留部分历史 rescue 页面与旧结构文件，但主导航工作流已经收敛到 `/agent` 和 `/admin`。
+- 本地 MLX 冷启动仍然受机器环境影响，虽然恢复链路和降级策略已补上，但第一次冷态加载仍会慢于远端常驻模型。
+- 知识库、遥测等次级模块仍保留在后台页较后位置，没有从项目中移除，只是降低了对第一屏主工作流的干扰。
+
+### 最终验收结论
+
+- 这 20 轮主线任务已经按当前版本收口完成。
+- 当前版本的重点已经从“继续大改结构”转成“稳定运行、版本留档、按需小步优化”。
+- 当前推荐验收入口：
+  - `/agent`
+  - `/admin`
 
 ## Batch rule
 

@@ -1,5 +1,9 @@
 import { agentToolSpecs, getAgentTarget } from "@/lib/agent/catalog";
-import { ensureLocalGatewayAvailable } from "@/lib/agent/local-gateway";
+import {
+  ensureLocalGatewayAvailableDetailed,
+  probeLocalGateway,
+  restartLocalGateway
+} from "@/lib/agent/local-gateway";
 import { runWorkspaceTool } from "@/lib/agent/server-tools";
 import type {
   AgentChatRequest,
@@ -17,6 +21,11 @@ import path from "path";
 
 let localEnvCache: Record<string, string> | null = null;
 const MAX_REMOTE_TOOL_STEPS = 6;
+const LOCAL_GATEWAY_REQUEST_TIMEOUT_MS = 150000;
+const LOCAL_GATEWAY_WARMUP_WAIT_MS = 300000;
+const LOCAL_4B_DOWNGRADE_LOADING_THRESHOLD_MS = 120000;
+const LOCAL_GATEWAY_LOADING_RESPONSE_RE = /still loading|loading\./i;
+const LOCAL_META_REASONING_RE = /^(好的|好，|首先|我需要|我先|让我|讓我|用户让我|用戶讓我|The user|First, I need|I need to|Let me|I'll need to)/i;
 const TOOL_INTENT_PATTERNS = [
   /(^|\b)(repo|repository|file|files|folder|directory|directories|code|patch|diff|command|shell|terminal|run|execute|edit|write|read|inspect|list|fix|implement|search|grep|rg|mkdir|npm|pnpm|yarn|git|tool|apply_patch|write_file|execute_command|list_files|read_file|prettier|format)(\b|$)/i,
   /(仓库|代[码碼]|文件|目录|目錄|补丁|補丁|命令|终端|終端|执行|執行|运行|運行|修改|读取|讀取|检查|檢查|列出|修复|修復|实现|實作|搜索|搜尋|脚本|腳本|格式化|比较|比較|对比|對比)/,
@@ -237,6 +246,29 @@ export function shouldUseToolLoop(
     TOOL_INTENT_PATTERNS.some((pattern) => pattern.test(recentContext));
 }
 
+function shouldPreferSimpleLocalFallback(
+  request: AgentChatRequest,
+  providerProfile: AgentProviderProfile
+) {
+  if (request.enableTools || request.enableRetrieval) {
+    return false;
+  }
+  if (request.messages.length > 0) {
+    return false;
+  }
+  if (providerProfile === "tool-first") {
+    return false;
+  }
+  const trimmed = request.input.trim();
+  if (!trimmed || trimmed.length > 120) {
+    return false;
+  }
+  if (TOOL_INTENT_PATTERNS.some((pattern) => pattern.test(trimmed))) {
+    return false;
+  }
+  return true;
+}
+
 function safeJsonParse(value: string) {
   try {
     const parsed = JSON.parse(value);
@@ -269,6 +301,38 @@ function applyLocalAnswerDiscipline(systemPrompt: string, execution: "local" | "
     "- Do not say phrases like '用户问的是' or '我需要先'.",
     "- Keep simple answers short and concrete."
   ].join("\n");
+}
+
+function looksLikeLocalMetaReasoning(content: string) {
+  const trimmed = content.trim();
+  if (!trimmed) return false;
+  return LOCAL_META_REASONING_RE.test(trimmed);
+}
+
+async function repairLocalDirectAnswer(
+  target: ResolvedTarget,
+  systemPrompt: string,
+  request: AgentChatRequest,
+  contextWindow: number | undefined
+) {
+  return callOpenAICompatible(
+    target,
+    [
+      systemPrompt,
+      "",
+      "Direct answer override:",
+      "- You already have enough context to answer the user.",
+      "- Reply directly to the user.",
+      "- Do not describe the user, your plan, or your reasoning.",
+      "- Avoid phrases like '用户让我', '我需要先', 'The user asks', or 'First, I need'.",
+      "- Keep the answer concise."
+    ].join("\n"),
+    request.messages,
+    request.input,
+    false,
+    contextWindow,
+    "speed"
+  );
 }
 
 async function withSingleRecovery(
@@ -340,6 +404,23 @@ function normalizeUsage(usage: unknown): AgentUsage | undefined {
   };
 }
 
+async function fetchWithAbortTimeout(
+  input: string,
+  init: RequestInit,
+  timeoutMs: number
+) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function callOpenAICompatible(
   target: ResolvedTarget,
   systemPrompt: string,
@@ -349,10 +430,51 @@ async function callOpenAICompatible(
   contextWindow?: number,
   providerProfile: AgentProviderProfile = "balanced"
 ): Promise<ProviderReply> {
+  let warning: string | undefined;
   if (target.execution === "local") {
-    const ready = await ensureLocalGatewayAvailable(target.resolvedBaseUrl, { waitMs: 25000 });
-    if (!ready) {
-      throw new Error("Local gateway did not become ready in time.");
+    const firstReady = await probeLocalGateway(target.resolvedBaseUrl, 1500);
+    if (!firstReady) {
+      const ensured = await ensureLocalGatewayAvailableDetailed(target.resolvedBaseUrl, {
+        waitMs: LOCAL_GATEWAY_WARMUP_WAIT_MS
+      });
+      if (!ensured.ok) {
+        throw new Error(`Local runtime is offline: ${ensured.reason}`);
+      }
+      const secondReady = await probeLocalGateway(target.resolvedBaseUrl, 5000);
+      if (!secondReady) {
+        throw new Error("Local runtime did not become ready after ensure.");
+      }
+    }
+
+    try {
+      const healthResponse = await fetch(
+        `${target.resolvedBaseUrl.replace(/\/v1$/, "")}/health`,
+        { cache: "no-store" }
+      );
+      if (healthResponse.ok) {
+        const health = (await healthResponse.json()) as {
+          loading_alias?: string | null;
+          loading_elapsed_ms?: number | null;
+        };
+        const otherAliasBlocking =
+          health.loading_alias &&
+          health.loading_alias !== target.id &&
+          typeof health.loading_elapsed_ms === "number" &&
+          health.loading_elapsed_ms >= LOCAL_4B_DOWNGRADE_LOADING_THRESHOLD_MS;
+        if (otherAliasBlocking) {
+          const restarted = await restartLocalGateway(target.resolvedBaseUrl, {
+            waitMs: LOCAL_GATEWAY_WARMUP_WAIT_MS
+          });
+          if (restarted) {
+            warning = mergeWarnings(
+              warning,
+              `Recovered after restarting a local gateway blocked on ${health.loading_alias}.`
+            );
+          }
+        }
+      }
+    } catch {
+      // Let the main request path handle local runtime errors.
     }
   }
   const requestMessages: Array<Record<string, unknown>> = [
@@ -368,7 +490,6 @@ async function callOpenAICompatible(
   };
   const toolRuns: AgentToolRun[] = [];
   let currentMessages: Array<Record<string, unknown>> = requestMessages;
-  let warning: string | undefined;
   let latestUsage: AgentUsage | undefined;
 
   for (let step = 0; step < MAX_REMOTE_TOOL_STEPS; step += 1) {
@@ -384,15 +505,73 @@ async function callOpenAICompatible(
       body.tool_choice = "auto";
     }
 
-    const response = await fetch(`${target.resolvedBaseUrl}/chat/completions`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body)
-    });
+    const sendRequest = () =>
+      fetchWithAbortTimeout(`${target.resolvedBaseUrl}/chat/completions`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body)
+      }, target.execution === "local" ? LOCAL_GATEWAY_REQUEST_TIMEOUT_MS : 45000);
 
-    if (!response.ok) {
+    let response: Response;
+    try {
+      response = await sendRequest();
+    } catch (error) {
+      if (target.execution !== "local") {
+        throw error;
+      }
+      const stillReachable = await probeLocalGateway(target.resolvedBaseUrl, 5000);
+      if (stillReachable) {
+        response = await sendRequest();
+        warning = mergeWarnings(warning, "Recovered after retrying a slow local gateway request.");
+      } else {
+        const ensured = await ensureLocalGatewayAvailableDetailed(target.resolvedBaseUrl, {
+          waitMs: LOCAL_GATEWAY_WARMUP_WAIT_MS
+        });
+        const readyAfterEnsure = ensured.ok && (await probeLocalGateway(target.resolvedBaseUrl, 5000));
+        if (!readyAfterEnsure) {
+          const restarted = await restartLocalGateway(target.resolvedBaseUrl, {
+            waitMs: LOCAL_GATEWAY_WARMUP_WAIT_MS
+          });
+          if (!restarted || !(await probeLocalGateway(target.resolvedBaseUrl, 5000))) {
+            throw new Error("Local runtime is offline and request retry failed.");
+          }
+          warning = mergeWarnings(warning, "Recovered after restarting the local gateway.");
+        } else {
+          warning = mergeWarnings(warning, "Recovered after waiting for the local gateway to finish starting.");
+        }
+        response = await sendRequest();
+      }
+    }
+
+    if (!response.ok && target.execution === "local") {
+      const initialStatus = response.status;
       const errorText = await response.text();
-      throw new Error(`Provider request failed (${response.status}): ${errorText}`);
+      const recoverableStatus =
+        [409, 500, 502, 503, 504].includes(initialStatus) &&
+        (initialStatus !== 409 || LOCAL_GATEWAY_LOADING_RESPONSE_RE.test(errorText));
+      if (recoverableStatus) {
+        const restarted = await restartLocalGateway(target.resolvedBaseUrl, {
+          waitMs: LOCAL_GATEWAY_WARMUP_WAIT_MS
+        });
+        if (restarted) {
+          const readyAfterRestart = await probeLocalGateway(target.resolvedBaseUrl, 5000);
+          if (readyAfterRestart) {
+            response = await sendRequest();
+            warning = mergeWarnings(
+              warning,
+              initialStatus === 409
+                ? "Recovered after restarting a local gateway that was blocked on model loading."
+                : "Recovered after restarting the local gateway."
+            );
+          }
+        }
+      }
+      if (!response.ok) {
+        const finalErrorText = await response.text();
+        throw new Error(
+          `Provider request failed (${response.status}): ${finalErrorText || errorText}`
+        );
+      }
     }
 
     const data = (await response.json()) as {
@@ -663,6 +842,81 @@ export async function runAgentRequest(request: AgentChatRequest, systemPrompt: s
   let localFallbackTargetLabel: string | undefined;
   let localFallbackReason: string | undefined;
 
+  if (localFallbackTarget && target.execution === "local") {
+    const preferSimpleLocalFallback = shouldPreferSimpleLocalFallback(request, providerProfile);
+    try {
+      const healthResponse = await fetch(
+        `${target.resolvedBaseUrl.replace(/\/v1$/, "")}/health`,
+        { cache: "no-store" }
+      );
+      if (healthResponse.ok) {
+        const health = (await healthResponse.json()) as {
+          loading_alias?: string | null;
+          loaded_alias?: string | null;
+          loading_elapsed_ms?: number | null;
+          loading_error?: string | null;
+          runtime_import_error?: string | null;
+        };
+        const loadingTooLong =
+          health.loading_alias === target.id &&
+          typeof health.loading_elapsed_ms === "number" &&
+          health.loading_elapsed_ms >= LOCAL_4B_DOWNGRADE_LOADING_THRESHOLD_MS;
+        const unhealthyRuntime = Boolean(health.loading_error || health.runtime_import_error);
+        const simpleLocalRoute =
+          preferSimpleLocalFallback &&
+          (health.loading_alias === target.id ||
+            (!health.loading_alias && health.loaded_alias !== target.id));
+        if (simpleLocalRoute || loadingTooLong || unhealthyRuntime) {
+          let downgradedReply: ProviderReply | null = null;
+          if (!simpleLocalRoute) {
+            await restartLocalGateway(target.resolvedBaseUrl, {
+              waitMs: LOCAL_GATEWAY_WARMUP_WAIT_MS
+            }).catch(() => false);
+          }
+          try {
+            downgradedReply = await runForTarget(localFallbackTarget, "speed");
+          } catch {
+            await restartLocalGateway(target.resolvedBaseUrl, {
+              waitMs: LOCAL_GATEWAY_WARMUP_WAIT_MS
+            }).catch(() => false);
+            downgradedReply = await runForTarget(localFallbackTarget, "speed");
+          }
+          return {
+            content: sanitizeAssistantContent(downgradedReply.content),
+            providerLabel: target.providerLabel,
+            targetLabel: target.label,
+            resolvedModel: localFallbackTarget.resolvedModel,
+            resolvedBaseUrl: target.resolvedBaseUrl,
+            providerProfile,
+            thinkingMode,
+            thinkingFallbackToStandard,
+            localFallbackUsed: true,
+            localFallbackTargetId: localFallbackTarget.id,
+            localFallbackTargetLabel: localFallbackTarget.label,
+            localFallbackReason: simpleLocalRoute
+              ? "simple-local-route"
+              : loadingTooLong
+              ? "primary-local-still-loading"
+              : "primary-local-health-warning",
+            toolRuns: downgradedReply.toolRuns,
+            execution: target.execution,
+            usage: downgradedReply.usage,
+            warning: mergeWarnings(
+              downgradedReply.warning,
+              simpleLocalRoute
+                ? "Automatic local downgrade applied: the local 4B model is still cold-loading, so this short request was served by Local Qwen3 0.6B."
+                : loadingTooLong
+                ? "Automatic local downgrade applied: Local Qwen3 4B 4-bit is still loading, so the request was served by Local Qwen3 0.6B."
+                : "Automatic local downgrade applied: Local Qwen3 4B 4-bit reported a local runtime warning, so the request was served by Local Qwen3 0.6B."
+            )
+          };
+        }
+      }
+    } catch {
+      // Fall through to the primary runner and let the normal recovery path handle failures.
+    }
+  }
+
   try {
     reply = await withSingleRecovery(primaryRunner, {
       execution: target.execution,
@@ -674,6 +928,7 @@ export async function runAgentRequest(request: AgentChatRequest, systemPrompt: s
       !reply.content.trim() &&
       !reply.toolRuns.length
     ) {
+      await restartLocalGateway(target.resolvedBaseUrl, { waitMs: LOCAL_GATEWAY_WARMUP_WAIT_MS }).catch(() => false);
       const downgradedReply = await runForTarget(localFallbackTarget, "speed");
       reply = {
         ...downgradedReply,
@@ -693,6 +948,7 @@ export async function runAgentRequest(request: AgentChatRequest, systemPrompt: s
       throw error;
     }
 
+    await restartLocalGateway(target.resolvedBaseUrl, { waitMs: LOCAL_GATEWAY_WARMUP_WAIT_MS }).catch(() => false);
     const downgradedReply = await runForTarget(localFallbackTarget, "speed");
     reply = {
       ...downgradedReply,
@@ -710,8 +966,38 @@ export async function runAgentRequest(request: AgentChatRequest, systemPrompt: s
     localFallbackReason = "primary-local-failure";
   }
 
+  let finalContent = sanitizeAssistantContent(reply.content);
+  if (target.execution === "local" && looksLikeLocalMetaReasoning(finalContent)) {
+    const repairTarget =
+      localFallbackUsed && localFallbackTargetId === localFallbackTarget?.id
+        ? localFallbackTarget
+        : target;
+    if (repairTarget) {
+      try {
+        const repairedReply = await repairLocalDirectAnswer(
+          repairTarget,
+          effectiveSystemPrompt,
+          request,
+          request.contextWindow
+        );
+        const repairedContent = sanitizeAssistantContent(repairedReply.content);
+        if (repairedContent.trim() && !looksLikeLocalMetaReasoning(repairedContent)) {
+          reply = {
+            ...reply,
+            content: repairedContent,
+            usage: repairedReply.usage || reply.usage,
+            warning: mergeWarnings(reply.warning, "Repaired after local meta-reasoning output.")
+          };
+          finalContent = repairedContent;
+        }
+      } catch {
+        // Keep the first local answer if the repair attempt fails.
+      }
+    }
+  }
+
   return {
-    content: sanitizeAssistantContent(reply.content),
+    content: finalContent,
     providerLabel: target.providerLabel,
     targetLabel: target.label,
     resolvedModel,

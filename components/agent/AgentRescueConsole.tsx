@@ -113,9 +113,9 @@ export function AgentRescueConsole() {
               <p className="text-xs uppercase tracking-[0.28em] text-cyan-300">Agent Rescue Console</p>
               <h1 className="mt-3 text-3xl font-semibold text-white">稳定入口</h1>
               <p className="mt-3 max-w-3xl text-sm leading-7 text-slate-400">
-                这里优先保证本地与远端模型可用。完整工作台仍保留在
-                <a className="ml-2 text-cyan-300 underline" href="/agent/full">
-                  /agent/full
+                这里优先保证本地与远端模型可用。正常工作台已恢复到
+                <a className="ml-2 text-cyan-300 underline" href="/agent">
+                  /agent
                 </a>
                 。
               </p>
