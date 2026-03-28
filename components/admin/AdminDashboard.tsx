@@ -325,6 +325,11 @@ type KnowledgeImportPreview = {
   supportedExtensions?: string[];
 };
 
+type KnowledgeRecentPathEntry = {
+  path: string;
+  pinned: boolean;
+};
+
 type KnowledgeEditorState = {
   id?: string;
   title: string;
@@ -877,7 +882,7 @@ export function AdminDashboard() {
   const [knowledgeImportTags, setKnowledgeImportTags] = useState("");
   const [knowledgeImportPreview, setKnowledgeImportPreview] = useState<KnowledgeImportPreview | null>(null);
   const [knowledgeRecommendedPaths, setKnowledgeRecommendedPaths] = useState<string[]>([]);
-  const [knowledgeRecentPaths, setKnowledgeRecentPaths] = useState<string[]>([]);
+  const [knowledgeRecentPaths, setKnowledgeRecentPaths] = useState<KnowledgeRecentPathEntry[]>([]);
   const [knowledgeWorkspaceRoot, setKnowledgeWorkspaceRoot] = useState("");
   const [knowledgeActionPending, setKnowledgeActionPending] = useState<"" | "probe" | "import" | "save">("");
   const [knowledgeEditor, setKnowledgeEditor] = useState<KnowledgeEditorState>({
@@ -2096,7 +2101,13 @@ export function AdminDashboard() {
     if (typeof window === "undefined" || !nextPath.trim()) return;
     const normalizedPath = nextPath.trim();
     setKnowledgeRecentPaths((current) => {
-      const nextEntries = [normalizedPath, ...current.filter((entry) => entry !== normalizedPath)].slice(0, 6);
+      const existing = current.find((entry) => entry.path === normalizedPath);
+      const nextEntries = [
+        { path: normalizedPath, pinned: existing?.pinned || false },
+        ...current.filter((entry) => entry.path !== normalizedPath)
+      ]
+        .sort((left, right) => Number(right.pinned) - Number(left.pinned))
+        .slice(0, 6);
       window.localStorage.setItem(KNOWLEDGE_IMPORT_HISTORY_KEY, JSON.stringify(nextEntries));
       return nextEntries;
     });
@@ -2107,6 +2118,31 @@ export function AdminDashboard() {
     setKnowledgeImportPreview(null);
     setKnowledgeMessage("");
     knowledgeImportInputRef.current?.focus();
+  }
+
+  function toggleKnowledgeImportRecentPathPin(nextPath: string) {
+    if (typeof window === "undefined") return;
+    setKnowledgeRecentPaths((current) => {
+      const nextEntries = current
+        .map((entry) =>
+          entry.path === nextPath
+            ? { ...entry, pinned: !entry.pinned }
+            : entry
+        )
+        .sort((left, right) => Number(right.pinned) - Number(left.pinned))
+        .slice(0, 6);
+      window.localStorage.setItem(KNOWLEDGE_IMPORT_HISTORY_KEY, JSON.stringify(nextEntries));
+      return nextEntries;
+    });
+  }
+
+  function removeKnowledgeImportRecentPath(nextPath: string) {
+    if (typeof window === "undefined") return;
+    setKnowledgeRecentPaths((current) => {
+      const nextEntries = current.filter((entry) => entry.path !== nextPath);
+      window.localStorage.setItem(KNOWLEDGE_IMPORT_HISTORY_KEY, JSON.stringify(nextEntries));
+      return nextEntries;
+    });
   }
 
   function editKnowledgeDocument(document: AgentKnowledgeDocument) {
@@ -2741,7 +2777,24 @@ export function AdminDashboard() {
       if (!raw) return;
       const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed)) return;
-      setKnowledgeRecentPaths(parsed.filter((entry): entry is string => typeof entry === "string").slice(0, 6));
+      const normalized = parsed.flatMap((entry) => {
+        if (typeof entry === "string") {
+          return [{ path: entry, pinned: false }];
+        }
+        if (
+          entry &&
+          typeof entry === "object" &&
+          typeof entry.path === "string"
+        ) {
+          return [{ path: entry.path, pinned: Boolean(entry.pinned) }];
+        }
+        return [];
+      });
+      setKnowledgeRecentPaths(
+        normalized
+          .sort((left, right) => Number(right.pinned) - Number(left.pinned))
+          .slice(0, 6)
+      );
     } catch {
       // Ignore malformed local history and keep the current UI usable.
     }
@@ -5083,16 +5136,41 @@ export function AdminDashboard() {
                       <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">
                         {locale.startsWith("en") ? "Recent import paths" : "最近导入路径"}
                       </p>
-                      <div className="mt-2 flex flex-wrap gap-2">
+                      <div className="mt-2 space-y-2">
                         {knowledgeRecentPaths.map((entry) => (
-                          <button
-                            key={entry}
-                            type="button"
-                            onClick={() => fillKnowledgeImportRecentPath(entry)}
-                            className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-200 transition hover:bg-white/10"
-                          >
-                            {entry}
-                          </button>
+                          <div key={entry.path} className="flex flex-wrap items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2">
+                            <button
+                              type="button"
+                              onClick={() => fillKnowledgeImportRecentPath(entry.path)}
+                              className="min-w-0 flex-1 break-all text-left text-xs leading-6 text-slate-200 transition hover:text-white"
+                            >
+                              {entry.path}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => toggleKnowledgeImportRecentPathPin(entry.path)}
+                              className={`rounded-full px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] ${
+                                entry.pinned
+                                  ? "border border-amber-400/20 bg-amber-400/10 text-amber-100"
+                                  : "border border-white/10 bg-white/5 text-slate-300"
+                              }`}
+                            >
+                              {entry.pinned
+                                ? locale.startsWith("en")
+                                  ? "Pinned"
+                                  : "已置顶"
+                                : locale.startsWith("en")
+                                  ? "Pin"
+                                  : "置顶"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => removeKnowledgeImportRecentPath(entry.path)}
+                              className="rounded-full border border-rose-400/20 bg-rose-400/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-rose-100"
+                            >
+                              {locale.startsWith("en") ? "Delete" : "删除"}
+                            </button>
+                          </div>
                         ))}
                       </div>
                     </div>

@@ -96,6 +96,15 @@ type ToolReviewItem = {
   confirmationUsed: boolean;
   errorText: string;
 };
+
+type WorkspaceFileView = {
+  path: string;
+  absolutePath?: string;
+  content?: string;
+  truncated?: boolean;
+  loading: boolean;
+  error?: string;
+};
 type AgentStreamEvent =
   | {
       type: "meta";
@@ -836,6 +845,9 @@ export function AgentWorkbench() {
   const [expandedCitationKey, setExpandedCitationKey] = useState("");
   const [expandedTraceTurnId, setExpandedTraceTurnId] = useState("");
   const [expandedReviewFileKey, setExpandedReviewFileKey] = useState("");
+  const [openWorkspaceFilePath, setOpenWorkspaceFilePath] = useState("");
+  const [workspaceFileViews, setWorkspaceFileViews] = useState<Record<string, WorkspaceFileView>>({});
+  const [replayTargetMode, setReplayTargetMode] = useState<"original" | "current">("original");
   const [toolDecisionBusyKey, setToolDecisionBusyKey] = useState("");
   const [toolDecisionStatusByToken, setToolDecisionStatusByToken] = useState<Record<string, "approved" | "rejected">>(
     {}
@@ -2303,14 +2315,16 @@ export function AgentWorkbench() {
   }
 
   function handlePrepareReplayTurn(turn: AgentTurn) {
-    setSelectedTargetId(turn.targetId);
-    if (turn.providerProfile) {
-      setProviderProfile(turn.providerProfile);
+    if (replayTargetMode === "original") {
+      setSelectedTargetId(turn.targetId);
+      if (turn.providerProfile) {
+        setProviderProfile(turn.providerProfile);
+      }
+      if (turn.thinkingMode) {
+        setThinkingMode(turn.thinkingMode);
+      }
+      setEnableRetrieval(Boolean(turn.retrieval));
     }
-    if (turn.thinkingMode) {
-      setThinkingMode(turn.thinkingMode);
-    }
-    setEnableRetrieval(Boolean(turn.retrieval));
     setInput(turn.prompt);
     setError("");
     requestAnimationFrame(() => {
@@ -2325,29 +2339,38 @@ export function AgentWorkbench() {
     options?: { includeHistory?: boolean }
   ) {
     if (pending) return;
-    setSelectedTargetId(turn.targetId);
-    if (turn.providerProfile) {
-      setProviderProfile(turn.providerProfile);
+    const useOriginalTarget = replayTargetMode === "original";
+    const replayTargetId = useOriginalTarget ? turn.targetId : selectedTargetId;
+    const replayTargetLabel = useOriginalTarget ? turn.targetLabel : selectedTarget.label;
+    const replayProfile = useOriginalTarget ? turn.providerProfile : providerProfile;
+    const replayThinkingMode = useOriginalTarget ? turn.thinkingMode : thinkingMode;
+    const replayRetrieval = useOriginalTarget ? Boolean(turn.retrieval) : enableRetrieval;
+
+    if (useOriginalTarget) {
+      setSelectedTargetId(turn.targetId);
+      if (turn.providerProfile) {
+        setProviderProfile(turn.providerProfile);
+      }
+      if (turn.thinkingMode) {
+        setThinkingMode(turn.thinkingMode);
+      }
+      setEnableRetrieval(Boolean(turn.retrieval));
     }
-    if (turn.thinkingMode) {
-      setThinkingMode(turn.thinkingMode);
-    }
-    setEnableRetrieval(Boolean(turn.retrieval));
     const includeHistory = Boolean(options?.includeHistory);
     await runPrompt(turn.prompt, {
-      targetId: turn.targetId,
-      enableTools: true,
-      enableRetrieval: Boolean(turn.retrieval),
-      providerProfile: turn.providerProfile,
-      thinkingMode: turn.thinkingMode,
+      targetId: replayTargetId,
+      enableTools,
+      enableRetrieval: replayRetrieval,
+      providerProfile: replayProfile,
+      thinkingMode: replayThinkingMode,
       historyTurns: includeHistory ? turns.slice(0, turnIndex) : [],
       displayPrompt: includeHistory
         ? locale.startsWith("en")
-          ? `$ context replay ${turn.targetLabel}`
-          : `$ 上下文回放 ${turn.targetLabel}`
+          ? `$ context replay ${replayTargetLabel}`
+          : `$ 上下文回放 ${replayTargetLabel}`
         : locale.startsWith("en")
-          ? `$ clean replay ${turn.targetLabel}`
-          : `$ 干净回放 ${turn.targetLabel}`
+          ? `$ clean replay ${replayTargetLabel}`
+          : `$ 干净回放 ${replayTargetLabel}`
     });
   }
 
@@ -2379,7 +2402,12 @@ export function AgentWorkbench() {
     const priorTurns = turns.slice(0, turnIndex + 1);
     const requestMessages = flattenTurns(priorTurns);
 
-    setSelectedTargetId(turnTargetId);
+    const useOriginalTarget = replayTargetMode === "original";
+    const resumeTargetId = useOriginalTarget ? turnTargetId : selectedTargetId;
+
+    if (useOriginalTarget) {
+      setSelectedTargetId(turnTargetId);
+    }
     setPending(true);
     setError("");
 
@@ -2390,7 +2418,7 @@ export function AgentWorkbench() {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          targetId: turnTargetId,
+          targetId: resumeTargetId,
           input: resumePrompt,
           messages: requestMessages,
           systemPrompt,
@@ -2454,6 +2482,60 @@ export function AgentWorkbench() {
       setCopyState(key);
     } catch (copyError) {
       setError(copyError instanceof Error ? copyError.message : uiText.copyFailed);
+    }
+  }
+
+  async function handleOpenWorkspaceFile(relativePath: string) {
+    if (!relativePath) return;
+
+    setOpenWorkspaceFilePath((current) => (current === relativePath ? "" : relativePath));
+    const cached = workspaceFileViews[relativePath];
+    if (cached?.content || cached?.loading) return;
+
+    setWorkspaceFileViews((current) => ({
+      ...current,
+      [relativePath]: {
+        path: relativePath,
+        loading: true
+      }
+    }));
+
+    try {
+      const response = await fetch(`/api/agent/workspace-file?path=${encodeURIComponent(relativePath)}`, {
+        cache: "no-store"
+      });
+      const payload = (await response.json()) as {
+        error?: string;
+        path?: string;
+        absolutePath?: string;
+        content?: string;
+        truncated?: boolean;
+      };
+      if (!response.ok) {
+        throw new Error(payload.error || "Failed to open workspace file.");
+      }
+      setWorkspaceFileViews((current) => ({
+        ...current,
+        [relativePath]: {
+          path: payload.path || relativePath,
+          absolutePath: payload.absolutePath,
+          content: payload.content || "",
+          truncated: Boolean(payload.truncated),
+          loading: false
+        }
+      }));
+    } catch (workspaceFileError) {
+      setWorkspaceFileViews((current) => ({
+        ...current,
+        [relativePath]: {
+          path: relativePath,
+          loading: false,
+          error:
+            workspaceFileError instanceof Error
+              ? workspaceFileError.message
+              : "Failed to open workspace file."
+        }
+      }));
     }
   }
 
@@ -3310,6 +3392,30 @@ export function AgentWorkbench() {
                             ) : null}
                           </div>
                           <div className="flex flex-wrap items-center gap-2">
+                            <div className="flex items-center gap-1 rounded-full border border-white/10 bg-black/20 px-1 py-1">
+                              <button
+                                type="button"
+                                onClick={() => setReplayTargetMode("original")}
+                                className={`rounded-full px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] transition ${
+                                  replayTargetMode === "original"
+                                    ? "bg-cyan-400/15 text-cyan-100"
+                                    : "text-slate-400 hover:text-slate-200"
+                                }`}
+                              >
+                                {locale.startsWith("en") ? "Original target" : "保留原目标"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setReplayTargetMode("current")}
+                                className={`rounded-full px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] transition ${
+                                  replayTargetMode === "current"
+                                    ? "bg-cyan-400/15 text-cyan-100"
+                                    : "text-slate-400 hover:text-slate-200"
+                                }`}
+                              >
+                                {locale.startsWith("en") ? "Current target" : "切换目标回放"}
+                              </button>
+                            </div>
                             <button
                               type="button"
                               disabled={pending}
@@ -3437,6 +3543,8 @@ export function AgentWorkbench() {
                                         {item.files.map((file) => {
                                           const reviewFileKey = `${item.key}:${file.path}`;
                                           const open = expandedReviewFileKey === reviewFileKey;
+                                          const openedFile = workspaceFileViews[file.path];
+                                          const workspaceFileOpen = openWorkspaceFilePath === file.path;
                                           return (
                                             <div key={reviewFileKey} className="rounded-xl border border-white/10 bg-black/20">
                                               <button
@@ -3486,6 +3594,37 @@ export function AgentWorkbench() {
                                                       : "展开"}
                                                 </span>
                                               </button>
+                                              <div className="flex flex-wrap gap-2 px-3 pb-2">
+                                                <button
+                                                  type="button"
+                                                  onClick={() =>
+                                                    handleCopy(
+                                                      file.diffPreview || file.contentPreview || file.path,
+                                                      `${reviewFileKey}:file`
+                                                    )
+                                                  }
+                                                  className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-200 transition hover:bg-white/10"
+                                                >
+                                                  {copyState === `${reviewFileKey}:file`
+                                                    ? dictionary.common.copied
+                                                    : locale.startsWith("en")
+                                                      ? "Copy file diff"
+                                                      : "复制文件 diff"}
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  onClick={() => void handleOpenWorkspaceFile(file.path)}
+                                                  className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-cyan-100 transition hover:bg-cyan-400/20"
+                                                >
+                                                  {workspaceFileOpen
+                                                    ? locale.startsWith("en")
+                                                      ? "Hide file"
+                                                      : "收起文件"
+                                                    : locale.startsWith("en")
+                                                      ? "Open file"
+                                                      : "打开文件"}
+                                                </button>
+                                              </div>
                                               {open ? (
                                                 <div className="border-t border-white/10 px-3 py-3">
                                                   {file.diffPreview ? (
@@ -3501,6 +3640,38 @@ export function AgentWorkbench() {
                                                       {locale.startsWith("en") ? "No file-level preview available." : "当前没有文件级预览内容。"}
                                                     </p>
                                                   )}
+                                                  {workspaceFileOpen ? (
+                                                    <div className="mt-3 rounded-xl border border-white/10 bg-slate-950/70 px-3 py-3">
+                                                      <div className="flex flex-wrap items-center justify-between gap-2">
+                                                        <p className="text-[11px] uppercase tracking-[0.22em] text-slate-400">
+                                                          {locale.startsWith("en") ? "Workspace file" : "工作区文件"}
+                                                        </p>
+                                                        {openedFile?.absolutePath ? (
+                                                          <span className="text-[11px] text-slate-500">{openedFile.absolutePath}</span>
+                                                        ) : null}
+                                                      </div>
+                                                      {openedFile?.loading ? (
+                                                        <p className="mt-2 text-xs leading-6 text-slate-400">
+                                                          {locale.startsWith("en") ? "Loading file..." : "正在读取文件..."}
+                                                        </p>
+                                                      ) : openedFile?.error ? (
+                                                        <p className="mt-2 text-xs leading-6 text-rose-100">{openedFile.error}</p>
+                                                      ) : (
+                                                        <>
+                                                          <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-slate-200">
+                                                            {openedFile?.content || ""}
+                                                          </pre>
+                                                          {openedFile?.truncated ? (
+                                                            <p className="mt-2 text-[11px] text-amber-100">
+                                                              {locale.startsWith("en")
+                                                                ? "Preview truncated to keep the trace panel responsive."
+                                                                : "为保持轨迹面板响应速度，文件预览已截断。"}
+                                                            </p>
+                                                          ) : null}
+                                                        </>
+                                                      )}
+                                                    </div>
+                                                  ) : null}
                                                 </div>
                                               ) : null}
                                             </div>
