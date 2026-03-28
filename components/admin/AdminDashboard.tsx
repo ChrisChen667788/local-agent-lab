@@ -309,6 +309,19 @@ type KnowledgeBaseResponse = {
     avgChunkChars: number;
     avgChunkTokens: number;
   };
+  workspaceRoot?: string;
+  recommendedImportPaths?: string[];
+};
+
+type KnowledgeImportPreview = {
+  path: string;
+  kind: "file" | "directory" | "other";
+  recursive: boolean;
+  totalFiles: number;
+  importableCount: number;
+  skippedCount: number;
+  previewFiles: string[];
+  supportedExtensions?: string[];
 };
 
 type KnowledgeEditorState = {
@@ -861,6 +874,10 @@ export function AdminDashboard() {
   const [knowledgeImportPath, setKnowledgeImportPath] = useState("");
   const [knowledgeImportRecursive, setKnowledgeImportRecursive] = useState(true);
   const [knowledgeImportTags, setKnowledgeImportTags] = useState("");
+  const [knowledgeImportPreview, setKnowledgeImportPreview] = useState<KnowledgeImportPreview | null>(null);
+  const [knowledgeRecommendedPaths, setKnowledgeRecommendedPaths] = useState<string[]>([]);
+  const [knowledgeWorkspaceRoot, setKnowledgeWorkspaceRoot] = useState("");
+  const [knowledgeActionPending, setKnowledgeActionPending] = useState<"" | "probe" | "import" | "save">("");
   const [knowledgeEditor, setKnowledgeEditor] = useState<KnowledgeEditorState>({
     title: "",
     source: "",
@@ -1869,6 +1886,8 @@ export function AdminDashboard() {
       setKnowledgeDocuments(payload.documents || []);
       setKnowledgeStats(payload.stats || null);
       setKnowledgeChunks(payload.chunks || []);
+      setKnowledgeRecommendedPaths(payload.recommendedImportPaths || []);
+      setKnowledgeWorkspaceRoot(payload.workspaceRoot || "");
       setKnowledgeMessage("");
       setKnowledgeMessageTone("success");
     } catch (knowledgeError) {
@@ -1886,6 +1905,7 @@ export function AdminDashboard() {
       return;
     }
     setKnowledgePending(true);
+    setKnowledgeActionPending("save");
     try {
       const response = await fetch("/api/admin/knowledge-base", {
         method: "POST",
@@ -1924,6 +1944,63 @@ export function AdminDashboard() {
       );
     } finally {
       setKnowledgePending(false);
+      setKnowledgeActionPending("");
+    }
+  }
+
+  async function probeKnowledgePath() {
+    if (!knowledgeImportPath.trim()) {
+      setKnowledgeMessage(
+        locale.startsWith("en") ? "Please fill in an absolute local path before importing." : "请先填写本地绝对路径，再执行导入。"
+      );
+      setKnowledgeMessageTone("error");
+      knowledgeImportInputRef.current?.focus();
+      return;
+    }
+    setKnowledgePending(true);
+    setKnowledgeActionPending("probe");
+    setKnowledgeMessage("");
+    try {
+      const response = await fetch("/api/admin/knowledge-base", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          importMode: "path-probe",
+          path: knowledgeImportPath.trim(),
+          recursive: knowledgeImportRecursive,
+          tags: knowledgeImportTags
+        })
+      });
+      const payload = (await response.json()) as {
+        error?: string;
+        inspection?: KnowledgeImportPreview;
+        supportedExtensions?: string[];
+      };
+      if (!response.ok) {
+        throw new Error(payload.error || "Failed to inspect knowledge path.");
+      }
+      setKnowledgeImportPreview(
+        payload.inspection
+          ? {
+              ...payload.inspection,
+              supportedExtensions: payload.supportedExtensions || []
+            }
+          : null
+      );
+      setKnowledgeMessage(
+        locale.startsWith("en")
+          ? `Path check complete. Found ${payload.inspection?.importableCount || 0} importable files.`
+          : `路径检查完成，发现 ${payload.inspection?.importableCount || 0} 个可导入文件。`
+      );
+      setKnowledgeMessageTone("success");
+    } catch (knowledgeError) {
+      setKnowledgeMessage(
+        knowledgeError instanceof Error ? knowledgeError.message : "Failed to inspect knowledge path."
+      );
+      setKnowledgeMessageTone("error");
+    } finally {
+      setKnowledgePending(false);
+      setKnowledgeActionPending("");
     }
   }
 
@@ -1937,6 +2014,7 @@ export function AdminDashboard() {
       return;
     }
     setKnowledgePending(true);
+    setKnowledgeActionPending("import");
     setKnowledgeMessage("");
     try {
       const response = await fetch("/api/admin/knowledge-base", {
@@ -1952,11 +2030,21 @@ export function AdminDashboard() {
       const payload = (await response.json()) as {
         error?: string;
         importedCount?: number;
+        inspection?: KnowledgeImportPreview;
+        supportedExtensions?: string[];
       };
       if (!response.ok) {
         throw new Error(payload.error || "Failed to import knowledge path.");
       }
       await loadKnowledgeBase();
+      setKnowledgeImportPreview(
+        payload.inspection
+          ? {
+              ...payload.inspection,
+              supportedExtensions: payload.supportedExtensions || []
+            }
+          : null
+      );
       setKnowledgeMessage(
         locale.startsWith("en")
           ? `Imported ${payload.importedCount || 0} documents from path.`
@@ -1970,15 +2058,31 @@ export function AdminDashboard() {
       setKnowledgeMessageTone("error");
     } finally {
       setKnowledgePending(false);
+      setKnowledgeActionPending("");
     }
   }
 
   function fillKnowledgeImportWorkspacePath() {
-    setKnowledgeImportPath("/Users/chenhaorui/Documents/New project/docs");
+    const docsPath = knowledgeRecommendedPaths[0] || `${knowledgeWorkspaceRoot || "/Users/chenhaorui/Documents/New project"}/docs`;
+    setKnowledgeImportPath(docsPath);
+    setKnowledgeImportPreview(null);
     setKnowledgeMessage(
       locale.startsWith("en")
         ? "Filled with the current workspace docs path. You can still edit it before importing."
         : "已填入当前工作区 docs 路径，导入前仍可自行修改。"
+    );
+    setKnowledgeMessageTone("success");
+    knowledgeImportInputRef.current?.focus();
+  }
+
+  function fillKnowledgeImportWorkspaceRootPath() {
+    const rootPath = knowledgeRecommendedPaths[1] || knowledgeWorkspaceRoot || "/Users/chenhaorui/Documents/New project";
+    setKnowledgeImportPath(rootPath);
+    setKnowledgeImportPreview(null);
+    setKnowledgeMessage(
+      locale.startsWith("en")
+        ? "Filled with the current workspace root path. Review the preview before importing."
+        : "已填入当前工作区根目录，建议先检查预览再导入。"
     );
     setKnowledgeMessageTone("success");
     knowledgeImportInputRef.current?.focus();
@@ -4875,11 +4979,14 @@ export function AdminDashboard() {
                     <input
                       ref={knowledgeImportInputRef}
                       value={knowledgeImportPath}
-                      onChange={(event) => setKnowledgeImportPath(event.target.value)}
+                      onChange={(event) => {
+                        setKnowledgeImportPath(event.target.value);
+                        setKnowledgeImportPreview(null);
+                      }}
                       onKeyDown={(event) => {
                         if (event.key === "Enter") {
                           event.preventDefault();
-                          void importKnowledgePath();
+                          void probeKnowledgePath();
                         }
                       }}
                       placeholder={locale.startsWith("en") ? "/absolute/path/to/docs" : "填写本地绝对路径"}
@@ -4902,10 +5009,30 @@ export function AdminDashboard() {
                     </button>
                     <button
                       type="button"
+                      onClick={fillKnowledgeImportWorkspaceRootPath}
+                      className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10"
+                    >
+                      {locale.startsWith("en") ? "Use workspace root" : "填入当前工作区根目录"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void probeKnowledgePath()}
+                      className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10"
+                    >
+                      {knowledgePending && knowledgeActionPending === "probe"
+                        ? locale.startsWith("en")
+                          ? "Scanning..."
+                          : "检查中"
+                        : locale.startsWith("en")
+                          ? "Scan path"
+                          : "检查路径"}
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => void importKnowledgePath()}
                       className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-400/20"
                     >
-                      {knowledgePending
+                      {knowledgePending && knowledgeActionPending === "import"
                         ? uiText.runtimeRefreshing
                         : locale.startsWith("en")
                           ? "Import path"
@@ -4926,6 +5053,45 @@ export function AdminDashboard() {
                       }`}
                     >
                       {knowledgeMessage}
+                    </div>
+                  ) : null}
+                  {knowledgeImportPreview ? (
+                    <div className="mt-3 rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-cyan-100">
+                          {locale.startsWith("en")
+                            ? knowledgeImportPreview.kind
+                            : knowledgeImportPreview.kind === "directory"
+                              ? "目录"
+                              : knowledgeImportPreview.kind === "file"
+                                ? "文件"
+                                : "其他"}
+                        </span>
+                        <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">
+                          {locale.startsWith("en") ? "Importable" : "可导入"} {knowledgeImportPreview.importableCount}
+                        </span>
+                        <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">
+                          {locale.startsWith("en") ? "Skipped" : "跳过"} {knowledgeImportPreview.skippedCount}
+                        </span>
+                        <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">
+                          {locale.startsWith("en") ? "Total files" : "文件总数"} {knowledgeImportPreview.totalFiles}
+                        </span>
+                      </div>
+                      <p className="mt-3 break-all text-xs leading-6 text-slate-300">{knowledgeImportPreview.path}</p>
+                      {knowledgeImportPreview.previewFiles.length ? (
+                        <div className="mt-3 rounded-xl border border-white/10 bg-black/20 px-3 py-3">
+                          <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">
+                            {locale.startsWith("en") ? "Preview files" : "预览文件"}
+                          </p>
+                          <div className="mt-2 space-y-1.5">
+                            {knowledgeImportPreview.previewFiles.map((filePath) => (
+                              <p key={filePath} className="break-all text-xs leading-6 text-slate-200">
+                                {filePath}
+                              </p>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>

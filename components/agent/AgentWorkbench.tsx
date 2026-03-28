@@ -75,6 +75,19 @@ type StoredAgentSession = {
 };
 
 type ParsedToolOutput = Record<string, unknown>;
+type ToolReviewItem = {
+  key: string;
+  toolName: string;
+  status: string;
+  affectedFiles: string[];
+  diffPreview: string;
+  contentPreview: string;
+  verificationEntries: Array<Record<string, unknown>>;
+  verified: boolean | null;
+  confirmationRequired: boolean;
+  confirmationUsed: boolean;
+  errorText: string;
+};
 type AgentStreamEvent =
   | {
       type: "meta";
@@ -375,6 +388,46 @@ function formatCacheMode(mode: AgentCacheMode | undefined) {
 function readArrayField(source: ParsedToolOutput | null, key: string) {
   const value = source?.[key];
   return Array.isArray(value) ? value : [];
+}
+
+function readObjectArrayField(source: ParsedToolOutput | null, key: string) {
+  const value = source?.[key];
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry) => entry && typeof entry === "object") as Array<Record<string, unknown>>;
+}
+
+function collectToolReviewItems(turn: AgentTurn) {
+  return turn.toolRuns.flatMap((toolRun, index) => {
+    const parsed = parseToolOutput(toolRun.output);
+    const diffPreview = readStringField(parsed, "diffPreview");
+    const contentPreview = readStringField(parsed, "contentPreview");
+    const verificationEntries = readObjectArrayField(parsed, "verification");
+    const affectedFiles = readArrayField(parsed, "affectedFiles").filter(
+      (entry): entry is string => typeof entry === "string" && entry.trim().length > 0
+    );
+    const verified = readBooleanField(parsed, "verified");
+    const confirmationUsed = Boolean(readBooleanField(parsed, "confirmationUsed"));
+    const confirmationRequired = readStringField(parsed, "status") === "confirmation_required";
+    const errorText = readStringField(parsed, "error");
+
+    if (!diffPreview && !contentPreview && !verificationEntries.length && !affectedFiles.length) {
+      return [];
+    }
+
+    return [{
+      key: `${turn.id}:review:${index}`,
+      toolName: toolRun.name,
+      status: readStringField(parsed, "status") || "completed",
+      affectedFiles,
+      diffPreview,
+      contentPreview,
+      verificationEntries,
+      verified,
+      confirmationRequired,
+      confirmationUsed,
+      errorText
+    }];
+  });
 }
 
 function formatConnectionStageLabel(stageId: AgentConnectionCheckStage["id"]) {
@@ -740,6 +793,7 @@ export function AgentWorkbench() {
   const [runtimeActionPending, setRuntimeActionPending] = useState<"" | "release" | "restart" | "read_log">("");
   const [runtimeLogExcerpt, setRuntimeLogExcerpt] = useState("");
   const [expandedCitationKey, setExpandedCitationKey] = useState("");
+  const [expandedTraceTurnId, setExpandedTraceTurnId] = useState("");
   const [toolDecisionBusyKey, setToolDecisionBusyKey] = useState("");
   const [toolDecisionStatusByToken, setToolDecisionStatusByToken] = useState<Record<string, "approved" | "rejected">>(
     {}
@@ -753,6 +807,7 @@ export function AgentWorkbench() {
   const [preferencesReady, setPreferencesReady] = useState(false);
   const [serverSessionSyncState, setServerSessionSyncState] = useState<"" | "syncing" | "synced" | "error">("");
   const transcriptRef = useRef<HTMLDivElement | null>(null);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const runtimeRequestInFlightRef = useRef(false);
   const sessionSyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -2013,8 +2068,25 @@ export function AgentWorkbench() {
     };
   }, [pending, selectedTarget.execution, selectedTarget.label, selectedTargetId, thinkingMode]);
 
-  async function runPrompt(nextPrompt: string) {
-    const priorTurns = turns;
+  async function runPrompt(
+    nextPrompt: string,
+    options?: {
+      targetId?: string;
+      enableTools?: boolean;
+      enableRetrieval?: boolean;
+      providerProfile?: AgentProviderProfile;
+      thinkingMode?: AgentThinkingMode;
+      historyTurns?: AgentTurn[];
+      displayPrompt?: string;
+    }
+  ) {
+    const effectiveTargetId = options?.targetId || selectedTargetId;
+    const effectiveTarget = agentTargets.find((target) => target.id === effectiveTargetId) || selectedTarget;
+    const effectiveEnableTools = options?.enableTools ?? enableTools;
+    const effectiveEnableRetrieval = options?.enableRetrieval ?? enableRetrieval;
+    const effectiveProviderProfile = options?.providerProfile ?? providerProfile;
+    const effectiveThinkingMode = options?.thinkingMode ?? thinkingMode;
+    const priorTurns = options?.historyTurns ?? turns;
     const requestMessages = flattenTurns(priorTurns);
     const turnId = `${Date.now()}`;
 
@@ -2025,16 +2097,16 @@ export function AgentWorkbench() {
       ...priorTurns,
       {
         id: turnId,
-        targetId: selectedTargetId,
+        targetId: effectiveTargetId,
         prompt: nextPrompt,
-        displayPrompt: nextPrompt,
+        displayPrompt: options?.displayPrompt || nextPrompt,
         response: "",
-        providerLabel: selectedTarget.providerLabel,
-        targetLabel: selectedTarget.label,
-        resolvedModel: selectedTarget.modelDefault,
-        resolvedBaseUrl: selectedTarget.baseUrlDefault,
-        providerProfile: selectedTarget.execution === "remote" ? providerProfile : undefined,
-        thinkingMode: selectedTarget.execution === "remote" ? thinkingMode : undefined,
+        providerLabel: effectiveTarget.providerLabel,
+        targetLabel: effectiveTarget.label,
+        resolvedModel: effectiveTarget.modelDefault,
+        resolvedBaseUrl: effectiveTarget.baseUrlDefault,
+        providerProfile: effectiveTarget.execution === "remote" ? effectiveProviderProfile : undefined,
+        thinkingMode: effectiveTarget.execution === "remote" ? effectiveThinkingMode : undefined,
         thinkingFallbackToStandard: false,
         localFallbackUsed: false,
         localFallbackTargetId: undefined,
@@ -2057,15 +2129,15 @@ export function AgentWorkbench() {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          targetId: selectedTargetId,
+          targetId: effectiveTargetId,
           input: nextPrompt,
           messages: requestMessages,
           systemPrompt,
-          enableTools,
-          enableRetrieval,
+          enableTools: effectiveEnableTools,
+          enableRetrieval: effectiveEnableRetrieval,
           contextWindow,
-          providerProfile,
-          thinkingMode
+          providerProfile: effectiveProviderProfile,
+          thinkingMode: effectiveThinkingMode
         })
       });
 
@@ -2188,18 +2260,61 @@ export function AgentWorkbench() {
     await runPrompt(input.trim());
   }
 
+  function handlePrepareReplayTurn(turn: AgentTurn) {
+    setSelectedTargetId(turn.targetId);
+    if (turn.providerProfile) {
+      setProviderProfile(turn.providerProfile);
+    }
+    if (turn.thinkingMode) {
+      setThinkingMode(turn.thinkingMode);
+    }
+    setEnableRetrieval(Boolean(turn.retrieval));
+    setInput(turn.prompt);
+    setError("");
+    requestAnimationFrame(() => {
+      composerRef.current?.focus();
+      composerRef.current?.scrollIntoView({ block: "nearest" });
+    });
+  }
+
+  async function handleReplayTurn(turn: AgentTurn) {
+    if (pending) return;
+    setSelectedTargetId(turn.targetId);
+    if (turn.providerProfile) {
+      setProviderProfile(turn.providerProfile);
+    }
+    if (turn.thinkingMode) {
+      setThinkingMode(turn.thinkingMode);
+    }
+    setEnableRetrieval(Boolean(turn.retrieval));
+    await runPrompt(turn.prompt, {
+      targetId: turn.targetId,
+      enableTools: true,
+      enableRetrieval: Boolean(turn.retrieval),
+      providerProfile: turn.providerProfile,
+      thinkingMode: turn.thinkingMode,
+      historyTurns: [],
+      displayPrompt: locale.startsWith("en")
+        ? `$ replay ${turn.targetLabel}`
+        : `$ 回放 ${turn.targetLabel}`
+    });
+  }
+
   async function handleResumeAgent(
     turnIndex: number,
     turnId: string,
     turnTargetId: string,
-    sourceToolRun: AgentToolRun
+    sourceToolRun: AgentToolRun,
+    options?: { approvalContext?: boolean }
   ) {
     if (pending || toolDecisionBusyKey) return;
 
     const resumePrompt = [
       "Continue the current task from this point.",
       "",
-      "A previously blocked tool step has now been approved and executed.",
+      options?.approvalContext
+        ? "A previously blocked tool step has now been approved and executed."
+        : "Treat the following tool result as the replay point for the task.",
       `Tool: ${sourceToolRun.name}`,
       "Arguments:",
       JSON.stringify(sourceToolRun.input, null, 2),
@@ -3099,7 +3214,10 @@ export function AgentWorkbench() {
                   </div>
                 ) : (
                   <div className="space-y-6">
-                    {turns.map((turn, turnIndex) => (
+                    {turns.map((turn, turnIndex) => {
+                      const reviewItems = collectToolReviewItems(turn);
+                      const traceOpen = expandedTraceTurnId === turn.id;
+                      return (
                       <article key={turn.id} className="space-y-3 rounded-3xl border border-white/10 bg-white/[0.03] p-4">
                         <div className="flex flex-wrap items-center justify-between gap-3">
                           <div className="flex flex-wrap items-center gap-2">
@@ -3140,10 +3258,139 @@ export function AgentWorkbench() {
                               </span>
                             ) : null}
                           </div>
-                          <span className="text-[11px] uppercase tracking-[0.24em] text-slate-500">
-                            {turn.resolvedModel}
-                          </span>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              disabled={pending}
+                              onClick={() => handlePrepareReplayTurn(turn)}
+                              className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              {locale.startsWith("en") ? "Load replay" : "载入回放"}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={pending}
+                              onClick={() => void handleReplayTurn(turn)}
+                              className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-cyan-100 transition hover:bg-cyan-400/20 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              {locale.startsWith("en") ? "Replay now" : "立即回放"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setExpandedTraceTurnId((current) => (current === turn.id ? "" : turn.id))}
+                              className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300 transition hover:bg-white/10"
+                            >
+                              {traceOpen
+                                ? locale.startsWith("en")
+                                  ? "Hide trace"
+                                  : "收起轨迹"
+                                : locale.startsWith("en")
+                                  ? "Show trace"
+                                  : "查看轨迹"}
+                            </button>
+                            <span className="text-[11px] uppercase tracking-[0.24em] text-slate-500">
+                              {turn.resolvedModel}
+                            </span>
+                          </div>
                         </div>
+
+                        {traceOpen ? (
+                          <div className="rounded-2xl border border-sky-400/15 bg-sky-400/5 px-3 py-3">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-200">
+                                {locale.startsWith("en") ? "Tool steps" : "工具步骤"} {turn.toolRuns.length}
+                              </span>
+                              <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-200">
+                                {locale.startsWith("en") ? "Plan steps" : "规划步骤"} {turn.plannerSteps?.length || 0}
+                              </span>
+                              <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-200">
+                                {locale.startsWith("en") ? "Patch reviews" : "变更审阅"} {reviewItems.length}
+                              </span>
+                              <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-200">
+                                {locale.startsWith("en") ? "Retrieval hits" : "检索命中"} {turn.retrieval?.hitCount || 0}
+                              </span>
+                            </div>
+                            <div className="mt-3 grid gap-2 md:grid-cols-2">
+                              <div className="rounded-xl border border-white/10 bg-slate-950/60 px-3 py-3 text-xs leading-6 text-slate-200">
+                                <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">
+                                  {locale.startsWith("en") ? "Replay source" : "回放来源"}
+                                </p>
+                                <p className="mt-2">{turn.targetLabel} · {turn.providerLabel}</p>
+                                <p>{turn.providerProfile || "--"} · {turn.thinkingMode || "--"}</p>
+                                <p>{turn.resolvedModel}</p>
+                              </div>
+                              <div className="rounded-xl border border-white/10 bg-slate-950/60 px-3 py-3 text-xs leading-6 text-slate-200">
+                                <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">
+                                  {locale.startsWith("en") ? "Execution notes" : "执行摘要"}
+                                </p>
+                                <p className="mt-2">
+                                  {turn.warning
+                                    ? turn.warning
+                                    : locale.startsWith("en")
+                                      ? "No extra warning on this turn."
+                                      : "该轮没有额外告警。"}
+                                </p>
+                              </div>
+                            </div>
+                            {reviewItems.length ? (
+                              <div className="mt-3 space-y-3">
+                                <p className="text-[11px] uppercase tracking-[0.22em] text-sky-200">
+                                  {locale.startsWith("en") ? "Patch / diff review" : "Patch / Diff 审核"}
+                                </p>
+                                {reviewItems.map((item) => (
+                                  <div key={item.key} className="rounded-xl border border-white/10 bg-slate-950/70 px-3 py-3">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <span className="rounded-full bg-sky-400/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-sky-200">
+                                        {item.toolName}
+                                      </span>
+                                      <span className="rounded-full bg-white/5 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">
+                                        {item.status}
+                                      </span>
+                                      {item.confirmationRequired ? (
+                                        <span className="rounded-full bg-violet-400/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-violet-200">
+                                          {locale.startsWith("en") ? "Needs approval" : "待审批"}
+                                        </span>
+                                      ) : null}
+                                      {item.confirmationUsed ? (
+                                        <span className="rounded-full bg-emerald-400/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-emerald-200">
+                                          {locale.startsWith("en") ? "Approved" : "已审批"}
+                                        </span>
+                                      ) : null}
+                                      {item.verified !== null ? (
+                                        <span className={`rounded-full px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] ${item.verified ? "bg-emerald-400/10 text-emerald-200" : "bg-rose-400/10 text-rose-200"}`}>
+                                          {item.verified
+                                            ? locale.startsWith("en") ? "Verified" : "已验证"
+                                            : locale.startsWith("en") ? "Needs review" : "待复核"}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                    {item.affectedFiles.length ? (
+                                      <div className="mt-3 flex flex-wrap gap-2">
+                                        {item.affectedFiles.map((filePath) => (
+                                          <span key={filePath} className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] text-slate-200">
+                                            {filePath}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    ) : null}
+                                    {item.diffPreview ? (
+                                      <pre className="mt-3 max-h-52 overflow-auto whitespace-pre-wrap break-words rounded-xl border border-cyan-400/15 bg-cyan-400/5 px-3 py-3 text-xs leading-6 text-cyan-50">
+                                        {item.diffPreview}
+                                      </pre>
+                                    ) : item.contentPreview ? (
+                                      <pre className="mt-3 max-h-52 overflow-auto whitespace-pre-wrap break-words rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-xs leading-6 text-slate-200">
+                                        {item.contentPreview}
+                                      </pre>
+                                    ) : null}
+                                    {item.errorText ? (
+                                      <p className="mt-3 text-xs leading-6 text-rose-100">{item.errorText}</p>
+                                    ) : null}
+                                  </div>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
 
                         <div className="rounded-2xl border border-white/10 bg-black/25 p-3">
                           <div className="flex items-center justify-between gap-3">
@@ -3326,20 +3573,34 @@ export function AgentWorkbench() {
                                       </div>
                                     ) : null}
 
-                                    {confirmationUsed ? (
-                                      <div className="mt-3 flex flex-wrap gap-2">
+                                    <div className="mt-3 flex flex-wrap gap-2">
+                                      {confirmationUsed ? (
                                         <button
                                           type="button"
                                           disabled={pending || Boolean(toolDecisionBusyKey)}
                                           onClick={() =>
-                                            handleResumeAgent(turnIndex, turn.id, turn.targetId, toolRun)
+                                            handleResumeAgent(turnIndex, turn.id, turn.targetId, toolRun, {
+                                              approvalContext: true
+                                            })
                                           }
                                           className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1.5 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-400/20 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
                                         >
                                           {uiText.resumeAgent}
                                         </button>
-                                      </div>
-                                    ) : null}
+                                      ) : null}
+                                      <button
+                                        type="button"
+                                        disabled={pending || Boolean(toolDecisionBusyKey)}
+                                        onClick={() =>
+                                          handleResumeAgent(turnIndex, turn.id, turn.targetId, toolRun, {
+                                            approvalContext: false
+                                          })
+                                        }
+                                        className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
+                                      >
+                                        {locale.startsWith("en") ? "Replay from here" : "从该步骤继续"}
+                                      </button>
+                                    </div>
 
                                     {contentPreview ? (
                                       <div className="mt-3 rounded-xl border border-white/10 bg-slate-950/70 px-3 py-3">
@@ -3780,7 +4041,8 @@ export function AgentWorkbench() {
                           </pre>
                         </div>
                       </article>
-                    ))}
+                    );
+                  })}
 
                     {pending ? (
                       <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-4 text-sm leading-7 text-slate-400">
@@ -3860,6 +4122,7 @@ export function AgentWorkbench() {
                 </div>
 
                 <textarea
+                  ref={composerRef}
                   value={input}
                   onChange={(event) => setInput(event.target.value)}
                   onKeyDown={handleComposerKeyDown}
