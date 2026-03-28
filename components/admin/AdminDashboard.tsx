@@ -1955,14 +1955,18 @@ export function AdminDashboard() {
     }
   }
 
-  async function probeKnowledgePath() {
-    if (!knowledgeImportPath.trim()) {
+  async function probeKnowledgePath(nextPath?: string) {
+    const normalizedPath = (nextPath ?? knowledgeImportPath).trim();
+    if (!normalizedPath) {
       setKnowledgeMessage(
         locale.startsWith("en") ? "Please fill in an absolute local path before importing." : "请先填写本地绝对路径，再执行导入。"
       );
       setKnowledgeMessageTone("error");
       knowledgeImportInputRef.current?.focus();
       return;
+    }
+    if (nextPath) {
+      setKnowledgeImportPath(normalizedPath);
     }
     setKnowledgePending(true);
     setKnowledgeActionPending("probe");
@@ -1973,7 +1977,7 @@ export function AdminDashboard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           importMode: "path-probe",
-          path: knowledgeImportPath.trim(),
+          path: normalizedPath,
           recursive: knowledgeImportRecursive,
           tags: knowledgeImportTags
         })
@@ -1994,7 +1998,7 @@ export function AdminDashboard() {
             }
           : null
       );
-      rememberKnowledgeImportPath(knowledgeImportPath.trim());
+      rememberKnowledgeImportPath(normalizedPath);
       setKnowledgeMessage(
         locale.startsWith("en")
           ? `Path check complete. Found ${payload.inspection?.importableCount || 0} importable files.`
@@ -5145,6 +5149,13 @@ export function AdminDashboard() {
                               className="min-w-0 flex-1 break-all text-left text-xs leading-6 text-slate-200 transition hover:text-white"
                             >
                               {entry.path}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void probeKnowledgePath(entry.path)}
+                              className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-cyan-100 transition hover:bg-cyan-400/20"
+                            >
+                              {locale.startsWith("en") ? "Scan" : "扫描"}
                             </button>
                             <button
                               type="button"

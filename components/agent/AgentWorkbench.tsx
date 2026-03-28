@@ -55,6 +55,15 @@ type AgentTurn = {
   toolRuns: AgentToolRun[];
   warning?: string;
   connectionCheck?: AgentConnectionCheckResponse;
+  replaySource?: {
+    turnId: string;
+    targetId: string;
+    targetLabel: string;
+    resolvedModel: string;
+    response: string;
+    includeHistory: boolean;
+    targetMode: "original" | "current";
+  };
 };
 
 type StoredAgentSession = {
@@ -104,6 +113,12 @@ type WorkspaceFileView = {
   truncated?: boolean;
   loading: boolean;
   error?: string;
+};
+
+type FocusedFileExcerpt = {
+  startLine: number;
+  endLine: number;
+  content: string;
 };
 type AgentStreamEvent =
   | {
@@ -431,6 +446,71 @@ function splitDiffPreviewByFile(diffPreview: string) {
   });
 
   return chunks;
+}
+
+function readFirstNewFileLineFromDiff(diffPreview: string) {
+  if (!diffPreview.trim()) return null;
+  const match = diffPreview.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/m);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function buildFocusedFileExcerpt(content: string, lineNumber: number, radius = 16): FocusedFileExcerpt {
+  const lines = content.split("\n");
+  const startLine = Math.max(1, lineNumber - radius);
+  const endLine = Math.min(lines.length, lineNumber + radius);
+  return {
+    startLine,
+    endLine,
+    content: lines
+      .slice(startLine - 1, endLine)
+      .map((line, index) => `${String(startLine + index).padStart(4, " ")} | ${line}`)
+      .join("\n")
+  };
+}
+
+function buildReplayComparison(turn: AgentTurn, locale: string) {
+  if (!turn.replaySource) return null;
+  const originalResponse = turn.replaySource.response.trim();
+  const replayResponse = turn.response.trim();
+  const sameTarget = turn.replaySource.targetId === turn.targetId;
+  const sameResponse = originalResponse === replayResponse;
+  const sameOpening =
+    !sameResponse &&
+    originalResponse.slice(0, 120) &&
+    originalResponse.slice(0, 120) === replayResponse.slice(0, 120);
+  const responseDelta = replayResponse.length - originalResponse.length;
+
+  return {
+    sourceLabel: `${turn.replaySource.targetLabel} · ${turn.replaySource.resolvedModel}`,
+    replayModeLabel: turn.replaySource.includeHistory
+      ? locale.startsWith("en")
+        ? "Context replay"
+        : "上下文回放"
+      : locale.startsWith("en")
+        ? "Clean replay"
+        : "干净回放",
+    targetModeLabel: turn.replaySource.targetMode === "original"
+      ? locale.startsWith("en")
+        ? "Original target"
+        : "保留原目标"
+      : locale.startsWith("en")
+        ? "Current target"
+        : "切换目标回放",
+    summary: sameResponse
+      ? locale.startsWith("en")
+        ? "Replay response matches the original turn."
+        : "回放结果与原轮响应一致。"
+      : sameOpening
+        ? locale.startsWith("en")
+          ? "Replay starts similarly but diverges later."
+          : "回放开头相近，但后续结果出现分歧。"
+        : locale.startsWith("en")
+          ? "Replay response differs noticeably from the original turn."
+          : "回放结果与原轮存在明显差异。",
+    responseDelta
+  };
 }
 
 function collectToolReviewItems(turn: AgentTurn) {
@@ -846,6 +926,7 @@ export function AgentWorkbench() {
   const [expandedTraceTurnId, setExpandedTraceTurnId] = useState("");
   const [expandedReviewFileKey, setExpandedReviewFileKey] = useState("");
   const [openWorkspaceFilePath, setOpenWorkspaceFilePath] = useState("");
+  const [focusedWorkspaceFilePath, setFocusedWorkspaceFilePath] = useState("");
   const [workspaceFileViews, setWorkspaceFileViews] = useState<Record<string, WorkspaceFileView>>({});
   const [replayTargetMode, setReplayTargetMode] = useState<"original" | "current">("original");
   const [toolDecisionBusyKey, setToolDecisionBusyKey] = useState("");
@@ -2131,6 +2212,7 @@ export function AgentWorkbench() {
       providerProfile?: AgentProviderProfile;
       thinkingMode?: AgentThinkingMode;
       historyTurns?: AgentTurn[];
+      replaySource?: AgentTurn["replaySource"];
       displayPrompt?: string;
     }
   ) {
@@ -2172,7 +2254,8 @@ export function AgentWorkbench() {
         memorySummary: undefined,
         retrieval: undefined,
         verification: undefined,
-        toolRuns: []
+        toolRuns: [],
+        replaySource: options?.replaySource
       }
     ]);
 
@@ -2364,6 +2447,15 @@ export function AgentWorkbench() {
       providerProfile: replayProfile,
       thinkingMode: replayThinkingMode,
       historyTurns: includeHistory ? turns.slice(0, turnIndex) : [],
+      replaySource: {
+        turnId: turn.id,
+        targetId: turn.targetId,
+        targetLabel: turn.targetLabel,
+        resolvedModel: turn.resolvedModel,
+        response: turn.response,
+        includeHistory,
+        targetMode: replayTargetMode
+      },
       displayPrompt: includeHistory
         ? locale.startsWith("en")
           ? `$ context replay ${replayTargetLabel}`
@@ -2485,12 +2577,14 @@ export function AgentWorkbench() {
     }
   }
 
-  async function handleOpenWorkspaceFile(relativePath: string) {
+  async function handleOpenWorkspaceFile(relativePath: string, options?: { focusDiff?: boolean }) {
     if (!relativePath) return;
 
-    setOpenWorkspaceFilePath((current) => (current === relativePath ? "" : relativePath));
+    const nextOpenPath = openWorkspaceFilePath === relativePath ? "" : relativePath;
+    setOpenWorkspaceFilePath(nextOpenPath);
+    setFocusedWorkspaceFilePath(nextOpenPath && options?.focusDiff ? relativePath : "");
     const cached = workspaceFileViews[relativePath];
-    if (cached?.content || cached?.loading) return;
+    if (!nextOpenPath || cached?.content || cached?.loading) return;
 
     setWorkspaceFileViews((current) => ({
       ...current,
@@ -3350,6 +3444,7 @@ export function AgentWorkbench() {
                     {turns.map((turn, turnIndex) => {
                       const reviewItems = collectToolReviewItems(turn);
                       const traceOpen = expandedTraceTurnId === turn.id;
+                      const replayComparison = buildReplayComparison(turn, locale);
                       return (
                       <article key={turn.id} className="space-y-3 rounded-3xl border border-white/10 bg-white/[0.03] p-4">
                         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -3545,6 +3640,16 @@ export function AgentWorkbench() {
                                           const open = expandedReviewFileKey === reviewFileKey;
                                           const openedFile = workspaceFileViews[file.path];
                                           const workspaceFileOpen = openWorkspaceFilePath === file.path;
+                                          const focusLine = file.diffPreview
+                                            ? readFirstNewFileLineFromDiff(file.diffPreview)
+                                            : null;
+                                          const focusedExcerpt =
+                                            workspaceFileOpen &&
+                                            focusedWorkspaceFilePath === file.path &&
+                                            focusLine &&
+                                            openedFile?.content
+                                              ? buildFocusedFileExcerpt(openedFile.content, focusLine)
+                                              : null;
                                           return (
                                             <div key={reviewFileKey} className="rounded-xl border border-white/10 bg-black/20">
                                               <button
@@ -3624,6 +3729,15 @@ export function AgentWorkbench() {
                                                       ? "Open file"
                                                       : "打开文件"}
                                                 </button>
+                                                {focusLine ? (
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => void handleOpenWorkspaceFile(file.path, { focusDiff: true })}
+                                                    className="rounded-full border border-violet-400/20 bg-violet-400/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-violet-100 transition hover:bg-violet-400/20"
+                                                  >
+                                                    {locale.startsWith("en") ? "Jump to diff" : "跳到 diff"}
+                                                  </button>
+                                                ) : null}
                                               </div>
                                               {open ? (
                                                 <div className="border-t border-white/10 px-3 py-3">
@@ -3658,8 +3772,15 @@ export function AgentWorkbench() {
                                                         <p className="mt-2 text-xs leading-6 text-rose-100">{openedFile.error}</p>
                                                       ) : (
                                                         <>
+                                                          {focusedExcerpt ? (
+                                                            <p className="mt-2 text-[11px] text-violet-200">
+                                                              {locale.startsWith("en")
+                                                                ? `Focused near line ${focusLine}`
+                                                                : `已定位到第 ${focusLine} 行附近`}
+                                                            </p>
+                                                          ) : null}
                                                           <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-slate-200">
-                                                            {openedFile?.content || ""}
+                                                            {focusedExcerpt?.content || openedFile?.content || ""}
                                                           </pre>
                                                           {openedFile?.truncated ? (
                                                             <p className="mt-2 text-[11px] text-amber-100">
@@ -4011,6 +4132,29 @@ export function AgentWorkbench() {
                         {turn.warning ? (
                           <div className="rounded-2xl border border-amber-300/25 bg-amber-300/10 px-3 py-3 text-sm leading-6 text-amber-100">
                             {turn.warning}
+                          </div>
+                        ) : null}
+
+                        {replayComparison ? (
+                          <div className="rounded-2xl border border-violet-400/20 bg-violet-400/[0.06] px-3 py-3">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="rounded-full border border-violet-400/20 bg-violet-400/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-violet-100">
+                                {locale.startsWith("en") ? "Replay compare" : "回放对比"}
+                              </span>
+                              <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-200">
+                                {replayComparison.replayModeLabel}
+                              </span>
+                              <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-200">
+                                {replayComparison.targetModeLabel}
+                              </span>
+                            </div>
+                            <p className="mt-2 text-xs leading-6 text-slate-200">{replayComparison.sourceLabel}</p>
+                            <p className="mt-1 text-xs leading-6 text-slate-300">
+                              {locale.startsWith("en") ? "Response delta" : "响应长度变化"}:{" "}
+                              {replayComparison.responseDelta > 0 ? "+" : ""}
+                              {replayComparison.responseDelta}
+                            </p>
+                            <p className="mt-2 text-xs leading-6 text-violet-100">{replayComparison.summary}</p>
                           </div>
                         ) : null}
 
