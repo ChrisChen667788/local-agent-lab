@@ -120,6 +120,12 @@ type FocusedFileExcerpt = {
   endLine: number;
   content: string;
 };
+
+type WorkspaceFileFocusState = {
+  path: string;
+  anchors: number[];
+  index: number;
+};
 type AgentStreamEvent =
   | {
       type: "meta";
@@ -456,6 +462,14 @@ function readFirstNewFileLineFromDiff(diffPreview: string) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
+function readNewFileLineAnchorsFromDiff(diffPreview: string) {
+  if (!diffPreview.trim()) return [];
+  const matches = [...diffPreview.matchAll(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/gm)];
+  return matches
+    .map((match) => Number(match[1]))
+    .filter((value, index, list) => Number.isFinite(value) && value > 0 && list.indexOf(value) === index);
+}
+
 function buildFocusedFileExcerpt(content: string, lineNumber: number, radius = 16): FocusedFileExcerpt {
   const lines = content.split("\n");
   const startLine = Math.max(1, lineNumber - radius);
@@ -481,6 +495,36 @@ function buildReplayComparison(turn: AgentTurn, locale: string) {
     originalResponse.slice(0, 120) &&
     originalResponse.slice(0, 120) === replayResponse.slice(0, 120);
   const responseDelta = replayResponse.length - originalResponse.length;
+  const originalLines = originalResponse.split("\n").map((line) => line.trim());
+  const replayLines = replayResponse.split("\n").map((line) => line.trim());
+  const maxLines = Math.max(originalLines.length, replayLines.length);
+  const keyDiffs: string[] = [];
+  for (let index = 0; index < maxLines && keyDiffs.length < 3; index += 1) {
+    const originalLine = originalLines[index] || "";
+    const replayLine = replayLines[index] || "";
+    if (originalLine === replayLine) continue;
+    if (!originalLine && replayLine) {
+      keyDiffs.push(
+        locale.startsWith("en")
+          ? `Replay added: ${replayLine.slice(0, 80)}`
+          : `回放新增：${replayLine.slice(0, 80)}`
+      );
+      continue;
+    }
+    if (originalLine && !replayLine) {
+      keyDiffs.push(
+        locale.startsWith("en")
+          ? `Replay omitted: ${originalLine.slice(0, 80)}`
+          : `回放省略：${originalLine.slice(0, 80)}`
+      );
+      continue;
+    }
+    keyDiffs.push(
+      locale.startsWith("en")
+        ? `Changed "${originalLine.slice(0, 40)}" -> "${replayLine.slice(0, 40)}"`
+        : `已变化：“${originalLine.slice(0, 20)}” -> “${replayLine.slice(0, 20)}”`
+    );
+  }
 
   return {
     sourceLabel: `${turn.replaySource.targetLabel} · ${turn.replaySource.resolvedModel}`,
@@ -509,7 +553,8 @@ function buildReplayComparison(turn: AgentTurn, locale: string) {
         : locale.startsWith("en")
           ? "Replay response differs noticeably from the original turn."
           : "回放结果与原轮存在明显差异。",
-    responseDelta
+    responseDelta,
+    keyDiffs
   };
 }
 
@@ -927,6 +972,7 @@ export function AgentWorkbench() {
   const [expandedReviewFileKey, setExpandedReviewFileKey] = useState("");
   const [openWorkspaceFilePath, setOpenWorkspaceFilePath] = useState("");
   const [focusedWorkspaceFilePath, setFocusedWorkspaceFilePath] = useState("");
+  const [workspaceFileFocusState, setWorkspaceFileFocusState] = useState<WorkspaceFileFocusState | null>(null);
   const [workspaceFileViews, setWorkspaceFileViews] = useState<Record<string, WorkspaceFileView>>({});
   const [replayTargetMode, setReplayTargetMode] = useState<"original" | "current">("original");
   const [toolDecisionBusyKey, setToolDecisionBusyKey] = useState("");
@@ -2577,12 +2623,39 @@ export function AgentWorkbench() {
     }
   }
 
-  async function handleOpenWorkspaceFile(relativePath: string, options?: { focusDiff?: boolean }) {
+  function handleStepWorkspaceFileAnchor(direction: -1 | 1) {
+    setWorkspaceFileFocusState((current) => {
+      if (!current || current.anchors.length <= 1) return current;
+      const nextIndex = current.index + direction;
+      if (nextIndex < 0 || nextIndex >= current.anchors.length) return current;
+      return {
+        ...current,
+        index: nextIndex
+      };
+    });
+  }
+
+  async function handleOpenWorkspaceFile(
+    relativePath: string,
+    options?: { focusDiff?: boolean; anchors?: number[]; anchorIndex?: number }
+  ) {
     if (!relativePath) return;
 
     const nextOpenPath = openWorkspaceFilePath === relativePath ? "" : relativePath;
     setOpenWorkspaceFilePath(nextOpenPath);
     setFocusedWorkspaceFilePath(nextOpenPath && options?.focusDiff ? relativePath : "");
+    setWorkspaceFileFocusState(
+      nextOpenPath && options?.focusDiff
+        ? {
+            path: relativePath,
+            anchors: options?.anchors?.length ? options.anchors : [1],
+            index: Math.max(
+              0,
+              Math.min(options?.anchorIndex ?? 0, Math.max((options?.anchors?.length || 1) - 1, 0))
+            )
+          }
+        : null
+    );
     const cached = workspaceFileViews[relativePath];
     if (!nextOpenPath || cached?.content || cached?.loading) return;
 
@@ -3640,9 +3713,15 @@ export function AgentWorkbench() {
                                           const open = expandedReviewFileKey === reviewFileKey;
                                           const openedFile = workspaceFileViews[file.path];
                                           const workspaceFileOpen = openWorkspaceFilePath === file.path;
-                                          const focusLine = file.diffPreview
-                                            ? readFirstNewFileLineFromDiff(file.diffPreview)
-                                            : null;
+                                          const focusAnchors = file.diffPreview
+                                            ? readNewFileLineAnchorsFromDiff(file.diffPreview)
+                                            : [];
+                                          const focusLine =
+                                            workspaceFileOpen &&
+                                            workspaceFileFocusState?.path === file.path &&
+                                            workspaceFileFocusState.anchors.length
+                                              ? workspaceFileFocusState.anchors[workspaceFileFocusState.index]
+                                              : focusAnchors[0] || null;
                                           const focusedExcerpt =
                                             workspaceFileOpen &&
                                             focusedWorkspaceFilePath === file.path &&
@@ -3732,7 +3811,13 @@ export function AgentWorkbench() {
                                                 {focusLine ? (
                                                   <button
                                                     type="button"
-                                                    onClick={() => void handleOpenWorkspaceFile(file.path, { focusDiff: true })}
+                                                    onClick={() =>
+                                                      void handleOpenWorkspaceFile(file.path, {
+                                                        focusDiff: true,
+                                                        anchors: focusAnchors,
+                                                        anchorIndex: 0
+                                                      })
+                                                    }
                                                     className="rounded-full border border-violet-400/20 bg-violet-400/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-violet-100 transition hover:bg-violet-400/20"
                                                   >
                                                     {locale.startsWith("en") ? "Jump to diff" : "跳到 diff"}
@@ -3760,9 +3845,36 @@ export function AgentWorkbench() {
                                                         <p className="text-[11px] uppercase tracking-[0.22em] text-slate-400">
                                                           {locale.startsWith("en") ? "Workspace file" : "工作区文件"}
                                                         </p>
-                                                        {openedFile?.absolutePath ? (
-                                                          <span className="text-[11px] text-slate-500">{openedFile.absolutePath}</span>
-                                                        ) : null}
+                                                        <div className="flex flex-wrap items-center justify-end gap-2">
+                                                          {workspaceFileOpen &&
+                                                          workspaceFileFocusState?.path === file.path &&
+                                                          workspaceFileFocusState.anchors.length > 1 ? (
+                                                            <>
+                                                              <button
+                                                                type="button"
+                                                                disabled={workspaceFileFocusState.index === 0}
+                                                                onClick={() => handleStepWorkspaceFileAnchor(-1)}
+                                                                className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-200 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40"
+                                                              >
+                                                                {locale.startsWith("en") ? "Prev change" : "上一处变更"}
+                                                              </button>
+                                                              <button
+                                                                type="button"
+                                                                disabled={
+                                                                  workspaceFileFocusState.index >=
+                                                                  workspaceFileFocusState.anchors.length - 1
+                                                                }
+                                                                onClick={() => handleStepWorkspaceFileAnchor(1)}
+                                                                className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-200 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40"
+                                                              >
+                                                                {locale.startsWith("en") ? "Next change" : "下一处变更"}
+                                                              </button>
+                                                            </>
+                                                          ) : null}
+                                                          {openedFile?.absolutePath ? (
+                                                            <span className="text-[11px] text-slate-500">{openedFile.absolutePath}</span>
+                                                          ) : null}
+                                                        </div>
                                                       </div>
                                                       {openedFile?.loading ? (
                                                         <p className="mt-2 text-xs leading-6 text-slate-400">
@@ -4155,6 +4267,18 @@ export function AgentWorkbench() {
                               {replayComparison.responseDelta}
                             </p>
                             <p className="mt-2 text-xs leading-6 text-violet-100">{replayComparison.summary}</p>
+                            {replayComparison.keyDiffs.length ? (
+                              <div className="mt-3 rounded-xl border border-white/10 bg-black/20 px-3 py-3">
+                                <p className="text-[11px] uppercase tracking-[0.22em] text-slate-400">
+                                  {locale.startsWith("en") ? "Top 3 key differences" : "前 3 处关键差异"}
+                                </p>
+                                <ul className="mt-2 space-y-1 text-xs leading-6 text-slate-200">
+                                  {replayComparison.keyDiffs.map((diff, index) => (
+                                    <li key={`${turn.id}:replay-diff:${index}`}>- {diff}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            ) : null}
                           </div>
                         ) : null}
 

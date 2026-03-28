@@ -2017,7 +2017,8 @@ export function AdminDashboard() {
   }
 
   async function importKnowledgePath() {
-    if (!knowledgeImportPath.trim()) {
+    const normalizedPath = knowledgeImportPath.trim();
+    if (!normalizedPath) {
       setKnowledgeMessage(
         locale.startsWith("en") ? "Please fill in an absolute local path before importing." : "请先填写本地绝对路径，再执行导入。"
       );
@@ -2034,7 +2035,7 @@ export function AdminDashboard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           importMode: "path",
-          path: knowledgeImportPath.trim(),
+          path: normalizedPath,
           recursive: knowledgeImportRecursive,
           tags: knowledgeImportTags
         })
@@ -2057,7 +2058,7 @@ export function AdminDashboard() {
             }
           : null
       );
-      rememberKnowledgeImportPath(knowledgeImportPath.trim());
+      rememberKnowledgeImportPath(normalizedPath);
       setKnowledgeMessage(
         locale.startsWith("en")
           ? `Imported ${payload.importedCount || 0} documents from path.`
@@ -2067,6 +2068,93 @@ export function AdminDashboard() {
     } catch (knowledgeError) {
       setKnowledgeMessage(
         knowledgeError instanceof Error ? knowledgeError.message : "Failed to import knowledge path."
+      );
+      setKnowledgeMessageTone("error");
+    } finally {
+      setKnowledgePending(false);
+      setKnowledgeActionPending("");
+    }
+  }
+
+  async function probeAndImportKnowledgePath(nextPath: string) {
+    const normalizedPath = nextPath.trim();
+    if (!normalizedPath) return;
+    setKnowledgeImportPath(normalizedPath);
+    setKnowledgeImportPreview(null);
+    setKnowledgePending(true);
+    setKnowledgeActionPending("probe");
+    setKnowledgeMessage("");
+    try {
+      const probeResponse = await fetch("/api/admin/knowledge-base", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          importMode: "path-probe",
+          path: normalizedPath,
+          recursive: knowledgeImportRecursive,
+          tags: knowledgeImportTags
+        })
+      });
+      const probePayload = (await probeResponse.json()) as {
+        error?: string;
+        inspection?: KnowledgeImportPreview;
+        supportedExtensions?: string[];
+      };
+      if (!probeResponse.ok) {
+        throw new Error(probePayload.error || "Failed to inspect knowledge path.");
+      }
+      setKnowledgeImportPreview(
+        probePayload.inspection
+          ? {
+              ...probePayload.inspection,
+              supportedExtensions: probePayload.supportedExtensions || []
+            }
+          : null
+      );
+      setKnowledgeActionPending("import");
+      const importResponse = await fetch("/api/admin/knowledge-base", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          importMode: "path",
+          path: normalizedPath,
+          recursive: knowledgeImportRecursive,
+          tags: knowledgeImportTags
+        })
+      });
+      const importPayload = (await importResponse.json()) as {
+        error?: string;
+        importedCount?: number;
+        inspection?: KnowledgeImportPreview;
+        supportedExtensions?: string[];
+      };
+      if (!importResponse.ok) {
+        throw new Error(importPayload.error || "Failed to import knowledge path.");
+      }
+      await loadKnowledgeBase();
+      setKnowledgeImportPreview(
+        importPayload.inspection
+          ? {
+              ...importPayload.inspection,
+              supportedExtensions: importPayload.supportedExtensions || []
+            }
+          : probePayload.inspection
+            ? {
+                ...probePayload.inspection,
+                supportedExtensions: probePayload.supportedExtensions || []
+              }
+            : null
+      );
+      rememberKnowledgeImportPath(normalizedPath);
+      setKnowledgeMessage(
+        locale.startsWith("en")
+          ? `Scanned and imported ${importPayload.importedCount || 0} documents.`
+          : `已完成扫描并导入 ${importPayload.importedCount || 0} 个文档。`
+      );
+      setKnowledgeMessageTone("success");
+    } catch (knowledgeError) {
+      setKnowledgeMessage(
+        knowledgeError instanceof Error ? knowledgeError.message : "Failed to scan and import knowledge path."
       );
       setKnowledgeMessageTone("error");
     } finally {
@@ -5156,6 +5244,13 @@ export function AdminDashboard() {
                               className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-cyan-100 transition hover:bg-cyan-400/20"
                             >
                               {locale.startsWith("en") ? "Scan" : "扫描"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void probeAndImportKnowledgePath(entry.path)}
+                              className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-emerald-100 transition hover:bg-emerald-400/20"
+                            >
+                              {locale.startsWith("en") ? "Scan + import" : "扫描并导入"}
                             </button>
                             <button
                               type="button"
