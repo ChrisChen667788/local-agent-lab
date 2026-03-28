@@ -24,6 +24,7 @@ import type {
 type MetricPercentiles = AgentMetricPercentiles;
 type BenchmarkHeatmapMetricKey = "first-token" | "total-latency" | "throughput" | "success-rate";
 type BenchmarkBatchScope = "full-suite" | "comparison-subset";
+const KNOWLEDGE_IMPORT_HISTORY_KEY = "admin-knowledge-import-history-v1";
 
 function formatTargetModelVersion(modelDefault: string, thinkingModelDefault?: string) {
   if (thinkingModelDefault && thinkingModelDefault !== modelDefault) {
@@ -876,6 +877,7 @@ export function AdminDashboard() {
   const [knowledgeImportTags, setKnowledgeImportTags] = useState("");
   const [knowledgeImportPreview, setKnowledgeImportPreview] = useState<KnowledgeImportPreview | null>(null);
   const [knowledgeRecommendedPaths, setKnowledgeRecommendedPaths] = useState<string[]>([]);
+  const [knowledgeRecentPaths, setKnowledgeRecentPaths] = useState<string[]>([]);
   const [knowledgeWorkspaceRoot, setKnowledgeWorkspaceRoot] = useState("");
   const [knowledgeActionPending, setKnowledgeActionPending] = useState<"" | "probe" | "import" | "save">("");
   const [knowledgeEditor, setKnowledgeEditor] = useState<KnowledgeEditorState>({
@@ -1987,6 +1989,7 @@ export function AdminDashboard() {
             }
           : null
       );
+      rememberKnowledgeImportPath(knowledgeImportPath.trim());
       setKnowledgeMessage(
         locale.startsWith("en")
           ? `Path check complete. Found ${payload.inspection?.importableCount || 0} importable files.`
@@ -2045,6 +2048,7 @@ export function AdminDashboard() {
             }
           : null
       );
+      rememberKnowledgeImportPath(knowledgeImportPath.trim());
       setKnowledgeMessage(
         locale.startsWith("en")
           ? `Imported ${payload.importedCount || 0} documents from path.`
@@ -2085,6 +2089,23 @@ export function AdminDashboard() {
         : "已填入当前工作区根目录，建议先检查预览再导入。"
     );
     setKnowledgeMessageTone("success");
+    knowledgeImportInputRef.current?.focus();
+  }
+
+  function rememberKnowledgeImportPath(nextPath: string) {
+    if (typeof window === "undefined" || !nextPath.trim()) return;
+    const normalizedPath = nextPath.trim();
+    setKnowledgeRecentPaths((current) => {
+      const nextEntries = [normalizedPath, ...current.filter((entry) => entry !== normalizedPath)].slice(0, 6);
+      window.localStorage.setItem(KNOWLEDGE_IMPORT_HISTORY_KEY, JSON.stringify(nextEntries));
+      return nextEntries;
+    });
+  }
+
+  function fillKnowledgeImportRecentPath(nextPath: string) {
+    setKnowledgeImportPath(nextPath);
+    setKnowledgeImportPreview(null);
+    setKnowledgeMessage("");
     knowledgeImportInputRef.current?.focus();
   }
 
@@ -2711,6 +2732,19 @@ export function AdminDashboard() {
 
   useEffect(() => {
     void loadPromptSets();
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(KNOWLEDGE_IMPORT_HISTORY_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      setKnowledgeRecentPaths(parsed.filter((entry): entry is string => typeof entry === "string").slice(0, 6));
+    } catch {
+      // Ignore malformed local history and keep the current UI usable.
+    }
   }, []);
 
   useEffect(() => {
@@ -5044,6 +5078,25 @@ export function AdminDashboard() {
                         : "支持：md、txt、rst、json、yaml、ts、tsx、js、jsx、py"}
                     </span>
                   </div>
+                  {knowledgeRecentPaths.length ? (
+                    <div className="mt-3 rounded-2xl border border-white/10 bg-black/20 px-3 py-3">
+                      <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">
+                        {locale.startsWith("en") ? "Recent import paths" : "最近导入路径"}
+                      </p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {knowledgeRecentPaths.map((entry) => (
+                          <button
+                            key={entry}
+                            type="button"
+                            onClick={() => fillKnowledgeImportRecentPath(entry)}
+                            className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-200 transition hover:bg-white/10"
+                          >
+                            {entry}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
                   {knowledgeMessage ? (
                     <div
                       className={`mt-3 rounded-2xl border px-3 py-2 text-sm ${

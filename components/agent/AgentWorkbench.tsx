@@ -83,6 +83,14 @@ type ToolReviewItem = {
   diffPreview: string;
   contentPreview: string;
   verificationEntries: Array<Record<string, unknown>>;
+  files: Array<{
+    path: string;
+    diffPreview: string;
+    contentPreview: string;
+    changed: boolean | null;
+    existedBefore: boolean | null;
+    existsAfter: boolean | null;
+  }>;
   verified: boolean | null;
   confirmationRequired: boolean;
   confirmationUsed: boolean;
@@ -396,6 +404,26 @@ function readObjectArrayField(source: ParsedToolOutput | null, key: string) {
   return value.filter((entry) => entry && typeof entry === "object") as Array<Record<string, unknown>>;
 }
 
+function splitDiffPreviewByFile(diffPreview: string) {
+  if (!diffPreview.trim()) return new Map<string, string>();
+  const sections = diffPreview.split(/^diff --git /m).filter(Boolean);
+  const chunks = new Map<string, string>();
+
+  sections.forEach((section) => {
+    const normalized = section.startsWith("a/")
+      ? `diff --git ${section}`
+      : `diff --git ${section}`;
+    const lines = normalized.split("\n");
+    const header = lines[0] || "";
+    const match = header.match(/^diff --git a\/(.+?) b\/(.+)$/);
+    const path = match?.[2] || match?.[1];
+    if (!path) return;
+    chunks.set(path, normalized.trim());
+  });
+
+  return chunks;
+}
+
 function collectToolReviewItems(turn: AgentTurn) {
   return turn.toolRuns.flatMap((toolRun, index) => {
     const parsed = parseToolOutput(toolRun.output);
@@ -409,6 +437,18 @@ function collectToolReviewItems(turn: AgentTurn) {
     const confirmationUsed = Boolean(readBooleanField(parsed, "confirmationUsed"));
     const confirmationRequired = readStringField(parsed, "status") === "confirmation_required";
     const errorText = readStringField(parsed, "error");
+    const diffByFile = splitDiffPreviewByFile(diffPreview);
+    const files = verificationEntries.map((entry) => ({
+      path: typeof entry.path === "string" ? entry.path : "",
+      diffPreview:
+        typeof entry.path === "string" && diffByFile.has(entry.path)
+          ? diffByFile.get(entry.path) || ""
+          : "",
+      contentPreview: typeof entry.contentPreview === "string" ? entry.contentPreview : "",
+      changed: typeof entry.changed === "boolean" ? entry.changed : null,
+      existedBefore: typeof entry.existedBefore === "boolean" ? entry.existedBefore : null,
+      existsAfter: typeof entry.existsAfter === "boolean" ? entry.existsAfter : null
+    })).filter((entry) => entry.path);
 
     if (!diffPreview && !contentPreview && !verificationEntries.length && !affectedFiles.length) {
       return [];
@@ -422,6 +462,7 @@ function collectToolReviewItems(turn: AgentTurn) {
       diffPreview,
       contentPreview,
       verificationEntries,
+      files,
       verified,
       confirmationRequired,
       confirmationUsed,
@@ -794,6 +835,7 @@ export function AgentWorkbench() {
   const [runtimeLogExcerpt, setRuntimeLogExcerpt] = useState("");
   const [expandedCitationKey, setExpandedCitationKey] = useState("");
   const [expandedTraceTurnId, setExpandedTraceTurnId] = useState("");
+  const [expandedReviewFileKey, setExpandedReviewFileKey] = useState("");
   const [toolDecisionBusyKey, setToolDecisionBusyKey] = useState("");
   const [toolDecisionStatusByToken, setToolDecisionStatusByToken] = useState<Record<string, "approved" | "rejected">>(
     {}
@@ -2277,7 +2319,11 @@ export function AgentWorkbench() {
     });
   }
 
-  async function handleReplayTurn(turn: AgentTurn) {
+  async function handleReplayTurn(
+    turnIndex: number,
+    turn: AgentTurn,
+    options?: { includeHistory?: boolean }
+  ) {
     if (pending) return;
     setSelectedTargetId(turn.targetId);
     if (turn.providerProfile) {
@@ -2287,16 +2333,21 @@ export function AgentWorkbench() {
       setThinkingMode(turn.thinkingMode);
     }
     setEnableRetrieval(Boolean(turn.retrieval));
+    const includeHistory = Boolean(options?.includeHistory);
     await runPrompt(turn.prompt, {
       targetId: turn.targetId,
       enableTools: true,
       enableRetrieval: Boolean(turn.retrieval),
       providerProfile: turn.providerProfile,
       thinkingMode: turn.thinkingMode,
-      historyTurns: [],
-      displayPrompt: locale.startsWith("en")
-        ? `$ replay ${turn.targetLabel}`
-        : `$ 回放 ${turn.targetLabel}`
+      historyTurns: includeHistory ? turns.slice(0, turnIndex) : [],
+      displayPrompt: includeHistory
+        ? locale.startsWith("en")
+          ? `$ context replay ${turn.targetLabel}`
+          : `$ 上下文回放 ${turn.targetLabel}`
+        : locale.startsWith("en")
+          ? `$ clean replay ${turn.targetLabel}`
+          : `$ 干净回放 ${turn.targetLabel}`
     });
   }
 
@@ -3270,10 +3321,18 @@ export function AgentWorkbench() {
                             <button
                               type="button"
                               disabled={pending}
-                              onClick={() => void handleReplayTurn(turn)}
+                              onClick={() => void handleReplayTurn(turnIndex, turn, { includeHistory: true })}
                               className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-cyan-100 transition hover:bg-cyan-400/20 disabled:cursor-not-allowed disabled:opacity-40"
                             >
-                              {locale.startsWith("en") ? "Replay now" : "立即回放"}
+                              {locale.startsWith("en") ? "Context replay" : "上下文回放"}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={pending}
+                              onClick={() => void handleReplayTurn(turnIndex, turn, { includeHistory: false })}
+                              className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              {locale.startsWith("en") ? "Clean replay" : "干净回放"}
                             </button>
                             <button
                               type="button"
@@ -3371,6 +3430,82 @@ export function AgentWorkbench() {
                                             {filePath}
                                           </span>
                                         ))}
+                                      </div>
+                                    ) : null}
+                                    {item.files.length ? (
+                                      <div className="mt-3 space-y-2">
+                                        {item.files.map((file) => {
+                                          const reviewFileKey = `${item.key}:${file.path}`;
+                                          const open = expandedReviewFileKey === reviewFileKey;
+                                          return (
+                                            <div key={reviewFileKey} className="rounded-xl border border-white/10 bg-black/20">
+                                              <button
+                                                type="button"
+                                                onClick={() =>
+                                                  setExpandedReviewFileKey((current) =>
+                                                    current === reviewFileKey ? "" : reviewFileKey
+                                                  )
+                                                }
+                                                className="flex w-full flex-wrap items-center justify-between gap-2 px-3 py-2.5 text-left"
+                                              >
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                  <span className="text-xs font-semibold text-white">{file.path}</span>
+                                                  {file.changed !== null ? (
+                                                    <span className={`rounded-full px-2 py-1 text-[10px] uppercase tracking-[0.18em] ${
+                                                      file.changed
+                                                        ? "bg-emerald-400/10 text-emerald-200"
+                                                        : "bg-white/5 text-slate-300"
+                                                    }`}>
+                                                      {file.changed
+                                                        ? locale.startsWith("en")
+                                                          ? "Changed"
+                                                          : "已变更"
+                                                        : locale.startsWith("en")
+                                                          ? "No diff"
+                                                          : "无差异"}
+                                                    </span>
+                                                  ) : null}
+                                                  {file.existedBefore === false ? (
+                                                    <span className="rounded-full bg-cyan-400/10 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-cyan-200">
+                                                      {locale.startsWith("en") ? "Created" : "新建"}
+                                                    </span>
+                                                  ) : null}
+                                                  {file.existsAfter === false ? (
+                                                    <span className="rounded-full bg-rose-400/10 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-rose-200">
+                                                      {locale.startsWith("en") ? "Removed" : "已删除"}
+                                                    </span>
+                                                  ) : null}
+                                                </div>
+                                                <span className="text-[11px] text-slate-400">
+                                                  {open
+                                                    ? locale.startsWith("en")
+                                                      ? "Collapse"
+                                                      : "收起"
+                                                    : locale.startsWith("en")
+                                                      ? "Expand"
+                                                      : "展开"}
+                                                </span>
+                                              </button>
+                                              {open ? (
+                                                <div className="border-t border-white/10 px-3 py-3">
+                                                  {file.diffPreview ? (
+                                                    <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-xl border border-cyan-400/15 bg-cyan-400/5 px-3 py-3 text-xs leading-6 text-cyan-50">
+                                                      {file.diffPreview}
+                                                    </pre>
+                                                  ) : file.contentPreview ? (
+                                                    <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-xl border border-white/10 bg-slate-950/70 px-3 py-3 text-xs leading-6 text-slate-200">
+                                                      {file.contentPreview}
+                                                    </pre>
+                                                  ) : (
+                                                    <p className="text-xs leading-6 text-slate-400">
+                                                      {locale.startsWith("en") ? "No file-level preview available." : "当前没有文件级预览内容。"}
+                                                    </p>
+                                                  )}
+                                                </div>
+                                              ) : null}
+                                            </div>
+                                          );
+                                        })}
                                       </div>
                                     ) : null}
                                     {item.diffPreview ? (
