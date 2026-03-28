@@ -23,6 +23,7 @@ function buildPercentiles(values: Array<number | null | undefined>) {
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
+  const generatedAt = new Date().toISOString();
   const format = (searchParams.get("format") || "markdown").toLowerCase();
   const benchmarkMode = (searchParams.get("benchmarkMode") || "all").toLowerCase();
   const sampleStatus = (searchParams.get("sampleStatus") || "all").toLowerCase();
@@ -115,7 +116,34 @@ export async function GET(request: Request) {
     .filter((entry) => entry.results.length > 0);
 
   if (format === "json") {
-    return new NextResponse(JSON.stringify(logs, null, 2), {
+    return new NextResponse(
+      JSON.stringify(
+        {
+          kind: "benchmark-history-export",
+          schemaVersion: "0.2.1",
+          generatedAt,
+          filters: {
+            benchmarkMode,
+            sampleStatus,
+            historyStatus,
+            providerProfile,
+            thinkingMode,
+            promptSetId,
+            datasetId,
+            suiteId,
+            profileBatchScope,
+            prompt,
+            targetIds,
+            contextWindow,
+            windowMinutes: Number.isFinite(windowMinutesValue) ? windowMinutesValue : null,
+            limit
+          },
+          entries: logs
+        },
+        null,
+        2
+      ),
+      {
       headers: {
         "Content-Type": "application/json; charset=utf-8",
         "Content-Disposition": `attachment; filename=\"benchmark-history${targetIds.length ? `-${targetIds.join("-")}` : ""}.json\"`
@@ -123,7 +151,25 @@ export async function GET(request: Request) {
     });
   }
 
-  const markdown = serializeBenchmarksAsMarkdown(logs);
+  const markdown = serializeBenchmarksAsMarkdown(logs, {
+    generatedAt,
+    schemaVersion: "0.2.1",
+    filters: {
+      benchmarkMode,
+      sampleStatus,
+      historyStatus,
+      providerProfile,
+      thinkingMode,
+      promptSetId,
+      datasetId,
+      suiteId,
+      profileBatchScope,
+      prompt,
+      targetIds,
+      contextWindow,
+      limit
+    }
+  });
   return new NextResponse(markdown, {
     headers: {
       "Content-Type": "text/markdown; charset=utf-8",

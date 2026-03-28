@@ -322,13 +322,32 @@ export function serializeConnectionChecksAsMarkdown(logs: StoredConnectionCheckL
   return lines.join("\n");
 }
 
-export function serializeBenchmarksAsMarkdown(logs: StoredBenchmarkLog[]) {
+export function serializeBenchmarksAsMarkdown(
+  logs: StoredBenchmarkLog[],
+  options?: {
+    generatedAt?: string;
+    schemaVersion?: string;
+    filters?: Record<string, unknown>;
+  }
+) {
   const lines: string[] = [
     "# Agent Benchmark History",
     "",
-    `Generated at: ${new Date().toISOString()}`,
+    `Generated at: ${options?.generatedAt || new Date().toISOString()}`,
     ""
   ];
+
+  if (options?.schemaVersion) {
+    lines.push(`- Export schema: ${options.schemaVersion}`);
+  }
+  if (options?.filters) {
+    lines.push("- Filters:");
+    for (const [key, value] of Object.entries(options.filters)) {
+      if (value === undefined || value === null || value === "" || (Array.isArray(value) && !value.length)) continue;
+      lines.push(`  - ${key}: ${Array.isArray(value) ? value.join(", ") : String(value)}`);
+    }
+    lines.push("");
+  }
 
   for (const log of logs) {
     lines.push(`## Benchmark · ${log.generatedAt}`);

@@ -3,6 +3,7 @@ import { agentTargets, getAgentTarget } from "@/lib/agent/catalog";
 import { calculateTokenThroughputTps, percentile } from "@/lib/agent/metrics";
 import { collectDashboardDataWithFilters } from "@/lib/agent/admin-metrics";
 import { getObservabilityPaths, readBenchmarkLogs, readChatLogs } from "@/lib/agent/log-store";
+import { resolveTargetWithMode } from "@/lib/agent/providers";
 
 export const runtime = "nodejs";
 
@@ -18,6 +19,19 @@ function buildPercentiles(values: Array<number | null | undefined>) {
     p95: percentile(values, 0.95),
     p99: percentile(values, 0.99)
   };
+}
+
+function safeResolveModelVersion(targetId: string, thinkingMode: "standard" | "thinking") {
+  const target = getAgentTarget(targetId);
+  if (!target) return null;
+
+  try {
+    return resolveTargetWithMode(targetId, thinkingMode).resolvedModel;
+  } catch {
+    return thinkingMode === "thinking"
+      ? target.thinkingModelDefault || target.modelDefault
+      : target.modelDefault;
+  }
 }
 
 function normalizeBenchmarkResult<T extends {
@@ -114,6 +128,24 @@ export async function GET(request: Request) {
   ).sort((a, b) => a - b);
   const filteredBenchmarkTargetIds = (benchmarkTargetIds.length ? benchmarkTargetIds : agentTargets.map((item) => item.id))
     .filter((id) => agentTargets.some((item) => item.id === id));
+  const benchmarkTargetVersions = filteredBenchmarkTargetIds
+    .map((id) => {
+      const targetEntry = getAgentTarget(id);
+      if (!targetEntry) return null;
+      const standardResolvedModel = safeResolveModelVersion(id, "standard") || targetEntry.modelDefault;
+      const thinkingResolvedModel =
+        targetEntry.thinkingModelDefault || targetEntry.thinkingModelEnv
+          ? safeResolveModelVersion(id, "thinking")
+          : null;
+      return {
+        targetId: targetEntry.id,
+        targetLabel: targetEntry.label,
+        execution: targetEntry.execution,
+        standardResolvedModel,
+        thinkingResolvedModel
+      };
+    })
+    .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
   const benchmarkHistoryRaw = readBenchmarkLogs({ sinceIso, limit: 120 });
   const availableBenchmarkThinkingModes = Array.from(
     new Set(
@@ -156,6 +188,7 @@ export async function GET(request: Request) {
       targetLabel: string;
       providerProfile: string;
       thinkingMode: string;
+      resolvedModel?: string;
       points: Array<{
         timestamp: string;
         contextWindow: number;
@@ -176,6 +209,7 @@ export async function GET(request: Request) {
         targetLabel: result.targetLabel,
         providerProfile: resultProviderProfile,
         thinkingMode: resultThinkingMode,
+        resolvedModel: result.resolvedModel,
         points: []
       };
       current.points.push({
@@ -339,6 +373,7 @@ export async function GET(request: Request) {
     availableProviderProfiles,
     availableBenchmarkThinkingModes,
     availableContextWindows,
+    benchmarkTargetVersions,
     comparison,
     benchmarkHistory,
     benchmarkTrends,

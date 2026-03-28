@@ -15,6 +15,7 @@ import type {
   AgentRetrievalSummary,
   AgentMetricPercentiles,
   AgentRuntimeActionResponse,
+  AgentRuntimeLogSummary,
   AgentRuntimePrewarmAllResponse,
   AgentRuntimePrewarmResponse,
   AgentRuntimeStatus
@@ -75,6 +76,13 @@ type DashboardResponse = {
   availableProviderProfiles: string[];
   availableBenchmarkThinkingModes: string[];
   availableContextWindows: number[];
+  benchmarkTargetVersions: Array<{
+    targetId: string;
+    targetLabel: string;
+    execution: "local" | "remote";
+    standardResolvedModel: string;
+    thinkingResolvedModel?: string | null;
+  }>;
   benchmarkHistory: Array<{
     id: string;
     generatedAt: string;
@@ -128,6 +136,7 @@ type DashboardResponse = {
     targetLabel: string;
     providerProfile: string;
     thinkingMode: string;
+    resolvedModel?: string;
     points: Array<{
       timestamp: string;
       contextWindow: number;
@@ -734,8 +743,84 @@ function summarizeBenchmarkFailureDistribution(
   return {
     byTarget: summarize(failedSamples.map((sample) => sample.targetLabel)),
     byProfile: summarize(failedSamples.map((sample) => `${sample.targetLabel} · ${sample.profileLabel}`)),
-    byWorkload: summarize(failedSamples.map((sample) => sample.workloadLabel))
+    byWorkload: summarize(failedSamples.map((sample) => sample.workloadLabel)),
+    byReason: summarize(
+      results.flatMap((result) =>
+        result.samples
+          .filter((sample) => !sample.ok)
+          .map((sample) => classifyBenchmarkFailure(sample.warning || undefined).label)
+      )
+    )
   };
+}
+
+function formatBenchmarkProgressStatus(status: AgentBenchmarkProgress["status"], locale: string) {
+  switch (status) {
+    case "pending":
+      return locale.startsWith("en") ? "Pending" : "待执行";
+    case "running":
+      return locale.startsWith("en") ? "Running" : "执行中";
+    case "completed":
+      return locale.startsWith("en") ? "Completed" : "已完成";
+    case "failed":
+      return locale.startsWith("en") ? "Failed" : "失败";
+    case "stopped":
+      return locale.startsWith("en") ? "Stopped" : "已停止";
+    case "abandoned":
+      return locale.startsWith("en") ? "Abandoned" : "已放弃";
+    default:
+      return status;
+  }
+}
+
+function formatBenchmarkQueueSectionTitle(
+  kind: "active" | "pending" | "recent",
+  locale: string
+) {
+  if (kind === "active") return locale.startsWith("en") ? "Active groups" : "当前执行队列";
+  if (kind === "pending") return locale.startsWith("en") ? "Pending groups" : "待执行队列";
+  return locale.startsWith("en") ? "Recently completed" : "最近完成";
+}
+
+function describeRuntimePhase(runtime: AgentRuntimeStatus | null, locale: string) {
+  const phase = runtime?.phase || "offline";
+  switch (phase) {
+    case "remote":
+      return {
+        label: locale.startsWith("en") ? "Remote" : "远端",
+        className: "border-violet-400/20 bg-violet-400/10 text-violet-100"
+      };
+    case "ready":
+      return {
+        label: locale.startsWith("en") ? "Ready" : "已就绪",
+        className: "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
+      };
+    case "busy":
+      return {
+        label: locale.startsWith("en") ? "Busy" : "处理中",
+        className: "border-amber-400/20 bg-amber-400/10 text-amber-100"
+      };
+    case "loading":
+      return {
+        label: locale.startsWith("en") ? "Loading" : "加载中",
+        className: "border-amber-400/20 bg-amber-400/10 text-amber-100"
+      };
+    case "recovering":
+      return {
+        label: locale.startsWith("en") ? "Recovering" : "恢复中",
+        className: "border-cyan-400/20 bg-cyan-400/10 text-cyan-100"
+      };
+    case "error":
+      return {
+        label: locale.startsWith("en") ? "Error" : "异常",
+        className: "border-rose-400/20 bg-rose-400/10 text-rose-100"
+      };
+    default:
+      return {
+        label: locale.startsWith("en") ? "Offline" : "离线",
+        className: "border-white/10 bg-white/5 text-slate-300"
+      };
+  }
 }
 
 function formatSignedNumber(value?: number | null, digits = 1, suffix = "") {
@@ -772,6 +857,9 @@ export function AdminDashboard() {
   const [knowledgeQuery, setKnowledgeQuery] = useState("");
   const [knowledgeQueryPending, setKnowledgeQueryPending] = useState(false);
   const [knowledgeResults, setKnowledgeResults] = useState<AgentRetrievalSummary | null>(null);
+  const [knowledgeImportPath, setKnowledgeImportPath] = useState("");
+  const [knowledgeImportRecursive, setKnowledgeImportRecursive] = useState(true);
+  const [knowledgeImportTags, setKnowledgeImportTags] = useState("");
   const [knowledgeEditor, setKnowledgeEditor] = useState<KnowledgeEditorState>({
     title: "",
     source: "",
@@ -812,6 +900,7 @@ export function AdminDashboard() {
   const [benchmarkProgress, setBenchmarkProgress] = useState<AgentBenchmarkProgress | null>(null);
   const [benchmarkError, setBenchmarkError] = useState("");
   const [benchmarkResumeMessage, setBenchmarkResumeMessage] = useState("");
+  const [benchmarkControlPending, setBenchmarkControlPending] = useState<"" | "stop" | "abandon" | "continue">("");
   const [benchmarkData, setBenchmarkData] = useState<AgentBenchmarkResponse | null>(null);
   const [benchmarkBaseline, setBenchmarkBaseline] = useState<BenchmarkBaselineResponse["baseline"]>(null);
   const [benchmarkBaselines, setBenchmarkBaselines] = useState<BenchmarkBaselineRecord[]>([]);
@@ -821,6 +910,9 @@ export function AdminDashboard() {
   const [runtimeStatuses, setRuntimeStatuses] = useState<Record<string, AgentRuntimeStatus | null>>({});
   const [runtimeActionPending, setRuntimeActionPending] = useState<Record<string, RuntimeActionKind | "">>({});
   const [runtimeLogExcerpts, setRuntimeLogExcerpts] = useState<Record<string, string>>({});
+  const [runtimeLogSummaries, setRuntimeLogSummaries] = useState<Record<string, AgentRuntimeLogSummary | null>>({});
+  const [runtimeLogQueries, setRuntimeLogQueries] = useState<Record<string, string>>({});
+  const [runtimeLogLimits, setRuntimeLogLimits] = useState<Record<string, number>>({});
   const [runtimeMessages, setRuntimeMessages] = useState<Record<string, string>>({});
   const [prewarmAllPending, setPrewarmAllPending] = useState(false);
   const [prewarmAllMessage, setPrewarmAllMessage] = useState("");
@@ -1830,6 +1922,45 @@ export function AdminDashboard() {
     }
   }
 
+  async function importKnowledgePath() {
+    if (!knowledgeImportPath.trim()) {
+      setBenchmarkError(locale.startsWith("en") ? "Knowledge import path is required." : "需要填写知识库导入路径。");
+      return;
+    }
+    setKnowledgePending(true);
+    try {
+      const response = await fetch("/api/admin/knowledge-base", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          importMode: "path",
+          path: knowledgeImportPath.trim(),
+          recursive: knowledgeImportRecursive,
+          tags: knowledgeImportTags
+        })
+      });
+      const payload = (await response.json()) as {
+        error?: string;
+        importedCount?: number;
+      };
+      if (!response.ok) {
+        throw new Error(payload.error || "Failed to import knowledge path.");
+      }
+      await loadKnowledgeBase();
+      setKnowledgeMessage(
+        locale.startsWith("en")
+          ? `Imported ${payload.importedCount || 0} documents from path.`
+          : `已从路径导入 ${payload.importedCount || 0} 个文档。`
+      );
+    } catch (knowledgeError) {
+      setBenchmarkError(
+        knowledgeError instanceof Error ? knowledgeError.message : "Failed to import knowledge path."
+      );
+    } finally {
+      setKnowledgePending(false);
+    }
+  }
+
   function editKnowledgeDocument(document: AgentKnowledgeDocument) {
     setKnowledgeEditor({
       id: document.id,
@@ -1966,13 +2097,22 @@ export function AdminDashboard() {
     }
   }
 
-  async function handleRuntimeAction(targetId: string, action: Exclude<RuntimeActionKind, "refresh" | "prewarm">) {
+  async function handleRuntimeAction(
+    targetId: string,
+    action: Exclude<RuntimeActionKind, "refresh" | "prewarm">,
+    options?: { query?: string; limit?: number }
+  ) {
     setRuntimeActionPending((current) => ({ ...current, [targetId]: action }));
     try {
       const response = await fetch("/api/agent/runtime/actions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ targetId, action })
+        body: JSON.stringify({
+          targetId,
+          action,
+          query: options?.query,
+          limit: options?.limit
+        })
       });
       const payload = (await response.json()) as AgentRuntimeActionResponse & { error?: string };
       if (!response.ok) {
@@ -1982,6 +2122,12 @@ export function AdminDashboard() {
         setRuntimeLogExcerpts((current) => ({
           ...current,
           [targetId]: payload.logExcerpt || ""
+        }));
+      }
+      if (payload.logSummary) {
+        setRuntimeLogSummaries((current) => ({
+          ...current,
+          [targetId]: payload.logSummary || null
         }));
       }
       if (payload.runtime) {
@@ -2025,6 +2171,13 @@ export function AdminDashboard() {
     } finally {
       setPrewarmAllPending(false);
     }
+  }
+
+  async function handleRuntimeLogSearch(targetId: string) {
+    await handleRuntimeAction(targetId, "read_log", {
+      query: runtimeLogQueries[targetId] || "",
+      limit: runtimeLogLimits[targetId] || 120
+    });
   }
 
   async function loadDashboard() {
@@ -2106,6 +2259,60 @@ export function AdminDashboard() {
       setBenchmarkError((current) =>
         current || (progressError instanceof Error ? progressError.message : "Failed to load latest benchmark progress.")
       );
+    }
+  }
+
+  async function continueLatestBenchmarkProgress() {
+    setBenchmarkControlPending("continue");
+    setBenchmarkError("");
+    try {
+      await loadLatestBenchmarkProgress();
+    } finally {
+      setBenchmarkControlPending("");
+    }
+  }
+
+  async function handleBenchmarkProgressAction(action: "stop" | "abandon") {
+    if (!benchmarkProgress?.runId) return;
+    if (action === "abandon") {
+      const confirmed = window.confirm(
+        locale.startsWith("en")
+          ? "Abandon this benchmark run? This will clear it from unfinished progress tracking."
+          : "确认放弃这个 Benchmark run 吗？放弃后它将不再出现在未完成进度里。"
+      );
+      if (!confirmed) return;
+    }
+
+    setBenchmarkControlPending(action);
+    setBenchmarkError("");
+    try {
+      const response = await fetch("/api/admin/benchmark/progress", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          runId: benchmarkProgress.runId,
+          action
+        })
+      });
+      const payload = (await response.json()) as AgentBenchmarkProgress & { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error || "Failed to update benchmark progress.");
+      }
+      setBenchmarkProgress(payload);
+      if (payload.status === "running" || payload.status === "pending") {
+        setBenchmarkPending(true);
+      } else {
+        setBenchmarkPending(false);
+        await Promise.all([loadDashboard(), loadBenchmarkBaseline()]);
+      }
+    } catch (progressActionError) {
+      setBenchmarkError(
+        progressActionError instanceof Error ? progressActionError.message : "Failed to update benchmark progress."
+      );
+    } finally {
+      setBenchmarkControlPending("");
     }
   }
 
@@ -2521,8 +2728,8 @@ export function AdminDashboard() {
       (data?.benchmarkTrends || []).map((entry, index) => ({
         label:
           entry.providerProfile === "default" && entry.thinkingMode === "standard"
-            ? entry.targetLabel
-            : `${entry.targetLabel} · ${entry.providerProfile}${entry.thinkingMode === "thinking" ? " · thinking" : ""}`,
+            ? `${entry.targetLabel}${entry.resolvedModel ? ` · ${entry.resolvedModel}` : ""}`
+            : `${entry.targetLabel} · ${entry.providerProfile}${entry.thinkingMode === "thinking" ? " · thinking" : ""}${entry.resolvedModel ? ` · ${entry.resolvedModel}` : ""}`,
         tone: (["cyan", "emerald", "amber", "violet"] as const)[index % 4],
         firstTokenValues: entry.points.map((point) => point.avgFirstTokenLatencyMs),
         totalLatencyValues: entry.points.map((point) => point.avgLatencyMs),
@@ -2647,22 +2854,39 @@ export function AdminDashboard() {
     () => benchmarkTargets.filter((target) => benchmarkTargetIds.includes(target.id)),
     [benchmarkTargets, benchmarkTargetIds]
   );
+  const benchmarkTargetVersionMap = useMemo(
+    () =>
+      new Map(
+        (data?.benchmarkTargetVersions || []).map((entry) => [
+          entry.targetId,
+          {
+            standard: entry.standardResolvedModel,
+            thinking: entry.thinkingResolvedModel
+          }
+        ])
+      ),
+    [data]
+  );
   const benchmarkHeatmapScopeSummary = useMemo(() => {
     if (!selectedBenchmarkTargets.length) {
       return locale.startsWith("en") ? "No benchmark target selected." : "当前没有选中 benchmark 目标。";
     }
     if (selectedBenchmarkTargets.length === 1) {
       const target = selectedBenchmarkTargets[0];
+      const version = benchmarkTargetVersionMap.get(target.id);
+      const versionLabel = version
+        ? formatTargetModelVersion(version.standard, version.thinking || undefined)
+        : formatTargetModelVersion(target.modelDefault, target.thinkingModelDefault);
       return locale.startsWith("en")
-        ? `Current target: ${target.label} · ${formatTargetModelVersion(target.modelDefault, target.thinkingModelDefault)}`
-        : `当前评测对象：${target.label} · ${formatTargetModelVersion(target.modelDefault, target.thinkingModelDefault)}`;
+        ? `Current target: ${target.label} · ${versionLabel}`
+        : `当前评测对象：${target.label} · ${versionLabel}`;
     }
     const preview = selectedBenchmarkTargets.slice(0, 3).map((target) => target.label).join(" / ");
     const extra = selectedBenchmarkTargets.length > 3 ? ` +${selectedBenchmarkTargets.length - 3}` : "";
     return locale.startsWith("en")
       ? `Current scope: ${selectedBenchmarkTargets.length} targets aggregated · ${preview}${extra}`
       : `当前评测对象：${selectedBenchmarkTargets.length} 个 target 聚合 · ${preview}${extra}`;
-  }, [locale, selectedBenchmarkTargets]);
+  }, [benchmarkTargetVersionMap, locale, selectedBenchmarkTargets]);
   const benchmarkHeatmapScopeHint = useMemo(
     () =>
       locale.startsWith("en")
@@ -2687,6 +2911,43 @@ export function AdminDashboard() {
           )
         : null,
     [benchmarkData]
+  );
+  const selectedBenchmarkVersionRows = useMemo(
+    () =>
+      selectedBenchmarkTargets.map((target) => {
+        const version = benchmarkTargetVersionMap.get(target.id);
+        return {
+          id: target.id,
+          label: target.label,
+          execution: target.execution,
+          standardModel: version?.standard || target.modelDefault,
+          thinkingModel: version?.thinking || target.thinkingModelDefault || null
+        };
+      }),
+    [benchmarkTargetVersionMap, selectedBenchmarkTargets]
+  );
+  const benchmarkQueueSections = useMemo(
+    () =>
+      benchmarkProgress
+        ? [
+            {
+              key: "active" as const,
+              label: formatBenchmarkQueueSectionTitle("active", locale),
+              values: benchmarkProgress.activeGroups || []
+            },
+            {
+              key: "pending" as const,
+              label: formatBenchmarkQueueSectionTitle("pending", locale),
+              values: benchmarkProgress.pendingGroups || []
+            },
+            {
+              key: "recent" as const,
+              label: formatBenchmarkQueueSectionTitle("recent", locale),
+              values: benchmarkProgress.recentGroups || []
+            }
+          ].filter((section) => section.values.length > 0)
+        : [],
+    [benchmarkProgress, locale]
   );
 
   return (
@@ -3347,6 +3608,7 @@ export function AdminDashboard() {
                     <div className="space-y-2">
                       {localBenchmarkTargets.map((target) => {
                         const checked = benchmarkTargetIds.includes(target.id);
+                        const version = benchmarkTargetVersionMap.get(target.id);
                         return (
                           <label key={target.id} className="flex items-start gap-2 text-sm text-slate-300">
                             <input
@@ -3364,7 +3626,10 @@ export function AdminDashboard() {
                             <span>
                               <span className="block text-sm text-slate-200">{target.label}</span>
                               <span className="mt-1 block text-[11px] leading-5 text-slate-500">
-                                {formatTargetModelVersion(target.modelDefault, target.thinkingModelDefault)}
+                                {formatTargetModelVersion(
+                                  version?.standard || target.modelDefault,
+                                  version?.thinking || target.thinkingModelDefault
+                                )}
                               </span>
                             </span>
                           </label>
@@ -3377,6 +3642,7 @@ export function AdminDashboard() {
                     <div className="space-y-2">
                       {remoteBenchmarkTargets.map((target) => {
                         const checked = benchmarkTargetIds.includes(target.id);
+                        const version = benchmarkTargetVersionMap.get(target.id);
                         return (
                           <label key={target.id} className="flex items-start gap-2 text-sm text-slate-300">
                             <input
@@ -3394,7 +3660,10 @@ export function AdminDashboard() {
                             <span>
                               <span className="block text-sm text-slate-200">{target.label}</span>
                               <span className="mt-1 block text-[11px] leading-5 text-slate-500">
-                                {formatTargetModelVersion(target.modelDefault, target.thinkingModelDefault)}
+                                {formatTargetModelVersion(
+                                  version?.standard || target.modelDefault,
+                                  version?.thinking || target.thinkingModelDefault
+                                )}
                               </span>
                             </span>
                           </label>
@@ -3405,6 +3674,54 @@ export function AdminDashboard() {
                 </div>
               </div>
             </div>
+
+            {selectedBenchmarkVersionRows.length ? (
+              <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.22em] text-slate-500">
+                      {locale.startsWith("en") ? "Resolved benchmark versions" : "当前对接模型版本"}
+                    </p>
+                    <p className="mt-1 text-xs leading-5 text-slate-500">
+                      {locale.startsWith("en")
+                        ? "The actual model ids used for the selected benchmark targets."
+                        : "这里显示当前选中 benchmark 目标实际会对接的模型版本。"}
+                    </p>
+                  </div>
+                </div>
+                <div className="mt-3 grid gap-2 xl:grid-cols-2">
+                  {selectedBenchmarkVersionRows.map((row) => (
+                    <div
+                      key={`benchmark-version:${row.id}`}
+                      className="rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-3 text-sm text-slate-300"
+                    >
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-medium text-white">{row.label}</span>
+                        <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] text-slate-300">
+                          {row.execution === "local" ? dictionary.common.local : dictionary.common.remote}
+                        </span>
+                      </div>
+                      <div className="mt-2 space-y-2">
+                        <div>
+                          <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">
+                            {locale.startsWith("en") ? "Standard" : "标准"}
+                          </p>
+                          <p className="mt-1 break-all font-mono text-[12px] leading-5 text-white">{row.standardModel}</p>
+                        </div>
+                        {row.thinkingModel ? (
+                          <div>
+                            <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">
+                              {locale.startsWith("en") ? "Thinking" : "Thinking"}
+                            </p>
+                            <p className="mt-1 break-all font-mono text-[12px] leading-5 text-white">{row.thinkingModel}</p>
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
 
             {benchmarkError ? (
               <div className="rounded-2xl border border-rose-400/30 bg-rose-400/10 px-4 py-3 text-sm text-rose-100">
@@ -3425,11 +3742,59 @@ export function AdminDashboard() {
                       {uiText.benchmarkProgressEta}: {formatDurationShort(benchmarkProgress.estimatedRemainingMs)}
                     </p>
                   </div>
-                  <div className="text-right text-xs text-cyan-50/80">
-                    <div>{benchmarkProgress.status}</div>
-                    <div className="mt-1">
-                      {benchmarkProgress.completedGroups}/{benchmarkProgress.totalGroups} groups
+                  <div className="flex flex-wrap items-center justify-end gap-2 text-right text-xs text-cyan-50/80">
+                    <div>
+                      <div>{formatBenchmarkProgressStatus(benchmarkProgress.status, locale)}</div>
+                      <div className="mt-1">
+                        {benchmarkProgress.completedGroups}/{benchmarkProgress.totalGroups} groups
+                      </div>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => void continueLatestBenchmarkProgress()}
+                      disabled={benchmarkControlPending !== ""}
+                      className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] text-cyan-50 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {benchmarkControlPending === "continue"
+                        ? locale.startsWith("en")
+                          ? "Connecting..."
+                          : "连接中..."
+                        : locale.startsWith("en")
+                          ? "Continue unfinished"
+                          : "继续未完成 run"}
+                    </button>
+                    {(benchmarkProgress.status === "running" || benchmarkProgress.status === "pending") ? (
+                      <button
+                        type="button"
+                        onClick={() => void handleBenchmarkProgressAction("stop")}
+                        disabled={benchmarkControlPending !== ""}
+                        className="rounded-full border border-amber-300/20 bg-amber-400/10 px-3 py-1.5 text-[11px] text-amber-100 transition hover:bg-amber-400/15 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {benchmarkControlPending === "stop"
+                          ? locale.startsWith("en")
+                            ? "Stopping..."
+                            : "停止中..."
+                          : locale.startsWith("en")
+                            ? "Stop run"
+                            : "停止当前 run"}
+                      </button>
+                    ) : null}
+                    {benchmarkProgress.status !== "abandoned" ? (
+                      <button
+                        type="button"
+                        onClick={() => void handleBenchmarkProgressAction("abandon")}
+                        disabled={benchmarkControlPending !== ""}
+                        className="rounded-full border border-white/10 bg-black/20 px-3 py-1.5 text-[11px] text-slate-300 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {benchmarkControlPending === "abandon"
+                          ? locale.startsWith("en")
+                            ? "Abandoning..."
+                            : "放弃中..."
+                          : locale.startsWith("en")
+                            ? "Abandon run"
+                            : "放弃旧 run"}
+                      </button>
+                    ) : null}
                   </div>
                 </div>
                 <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/10">
@@ -3469,24 +3834,48 @@ export function AdminDashboard() {
                     <div className="mt-1 break-all">{benchmarkProgress.runId}</div>
                   </div>
                 </div>
-                {benchmarkProgress.activeGroups?.length ? (
-                  <div className="mt-3 rounded-2xl border border-white/10 bg-black/20 px-3 py-2.5 text-xs text-cyan-50/80">
-                    <div className="text-cyan-100">Active groups</div>
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {benchmarkProgress.activeGroups.map((group) => (
-                        <span
-                          key={group.key}
-                          className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1"
-                        >
-                          {group.targetLabel} · {group.providerProfile} · {group.thinkingMode}
-                        </span>
-                      ))}
-                    </div>
+                {benchmarkQueueSections.length ? (
+                  <div className="mt-3 grid gap-2 xl:grid-cols-3">
+                    {benchmarkQueueSections.map((section) => (
+                      <div
+                        key={`queue:${section.key}`}
+                        className="rounded-2xl border border-white/10 bg-black/20 px-3 py-2.5 text-xs text-cyan-50/80"
+                      >
+                        <div className="text-cyan-100">{section.label}</div>
+                        <div className="mt-2 space-y-2">
+                          {section.values.slice(0, 6).map((group) => (
+                            <div
+                              key={group.key}
+                              className="rounded-xl border border-white/10 bg-white/[0.04] px-2.5 py-2"
+                            >
+                              <div className="font-medium text-white">
+                                {group.targetLabel} · {group.providerProfile} · {group.thinkingMode}
+                              </div>
+                              <div className="mt-1 text-[11px] text-slate-400">
+                                {(group.execution || "remote") === "local"
+                                  ? dictionary.common.local
+                                  : dictionary.common.remote}
+                                {group.sampleCount ? ` · n=${group.sampleCount}` : ""}
+                                {group.completedAt ? ` · ${new Date(group.completedAt).toLocaleTimeString()}` : ""}
+                              </div>
+                            </div>
+                          ))}
+                          {section.values.length > 6 ? (
+                            <div className="text-[11px] text-slate-500">+{section.values.length - 6}</div>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 ) : null}
                 {benchmarkProgress.status === "failed" && benchmarkProgress.error ? (
                   <div className="mt-3 rounded-2xl border border-rose-400/20 bg-rose-400/10 px-3 py-2.5 text-sm text-rose-100">
                     {benchmarkProgress.error}
+                  </div>
+                ) : null}
+                {benchmarkProgress.controlMessage ? (
+                  <div className="mt-3 rounded-2xl border border-white/10 bg-black/20 px-3 py-2 text-xs text-cyan-50/80">
+                    {benchmarkProgress.controlMessage}
                   </div>
                 ) : null}
                 {benchmarkResumeMessage ? (
@@ -3553,6 +3942,10 @@ export function AdminDashboard() {
                       {
                         label: locale.startsWith("en") ? "By workload" : "按 workload 分布",
                         values: currentBenchmarkFailureDistribution.byWorkload
+                      },
+                      {
+                        label: locale.startsWith("en") ? "By reason" : "按失败原因分布",
+                        values: currentBenchmarkFailureDistribution.byReason
                       }
                     ].map((section) => (
                       <div
@@ -4434,6 +4827,60 @@ export function AdminDashboard() {
           <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
             <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
               <div className="grid gap-3">
+                <div className="rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.22em] text-slate-500">
+                        {locale.startsWith("en") ? "Path import" : "路径导入"}
+                      </p>
+                      <p className="mt-2 text-xs leading-6 text-slate-400">
+                        {locale.startsWith("en")
+                          ? "Import a local file or directory into the knowledge base."
+                          : "把本地文件或目录直接导入知识库。"}
+                      </p>
+                    </div>
+                    <label className="flex items-center gap-2 text-xs text-slate-300">
+                      <input
+                        type="checkbox"
+                        checked={knowledgeImportRecursive}
+                        onChange={(event) => setKnowledgeImportRecursive(event.target.checked)}
+                      />
+                      {locale.startsWith("en") ? "Recursive" : "递归目录"}
+                    </label>
+                  </div>
+                  <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_180px]">
+                    <input
+                      value={knowledgeImportPath}
+                      onChange={(event) => setKnowledgeImportPath(event.target.value)}
+                      placeholder={locale.startsWith("en") ? "/absolute/path/to/docs" : "填写本地绝对路径"}
+                      className="rounded-2xl border border-white/10 bg-black/20 px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500"
+                    />
+                    <input
+                      value={knowledgeImportTags}
+                      onChange={(event) => setKnowledgeImportTags(event.target.value)}
+                      placeholder={locale.startsWith("en") ? "tags (comma separated)" : "标签（逗号分隔）"}
+                      className="rounded-2xl border border-white/10 bg-black/20 px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500"
+                    />
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void importKnowledgePath()}
+                      className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-400/20"
+                    >
+                      {knowledgePending
+                        ? uiText.runtimeRefreshing
+                        : locale.startsWith("en")
+                          ? "Import path"
+                          : "导入路径"}
+                    </button>
+                    <span className="self-center text-xs text-slate-500">
+                      {locale.startsWith("en")
+                        ? "Supported: md, txt, rst, json, yaml, ts, tsx, js, jsx, py"
+                        : "支持：md、txt、rst、json、yaml、ts、tsx、js、jsx、py"}
+                    </span>
+                  </div>
+                </div>
                 <label className="grid gap-2">
                   <span className="text-xs uppercase tracking-[0.22em] text-slate-500">{uiText.knowledgeTitle}</span>
                   <input
@@ -4691,30 +5138,18 @@ export function AdminDashboard() {
               const action = runtimeActionPending[target.id] || "";
               const runtimeMessage = runtimeMessages[target.id] || runtime?.message || "";
               const logExcerpt = runtimeLogExcerpts[target.id] || "";
+              const logSummary = runtimeLogSummaries[target.id];
+              const runtimePhase = describeRuntimePhase(runtime, locale);
+              const runtimeLogQuery = runtimeLogQueries[target.id] || "";
+              const runtimeLogLimit = runtimeLogLimits[target.id] || 120;
               return (
                 <article key={target.id} className="rounded-3xl border border-white/10 bg-black/20 p-4">
                   <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
                     <div>
                       <div className="flex flex-wrap items-center gap-2">
                         <p className="text-base font-semibold text-white">{target.label}</p>
-                        <span
-                          className={`rounded-full border px-2.5 py-1 text-[11px] ${
-                            runtime?.loadingAlias
-                              ? "border-amber-400/30 bg-amber-400/10 text-amber-100"
-                              : runtime?.available
-                              ? runtime.busy
-                                ? "border-amber-400/30 bg-amber-400/10 text-amber-100"
-                                : "border-emerald-400/30 bg-emerald-400/10 text-emerald-100"
-                              : "border-rose-400/30 bg-rose-400/10 text-rose-100"
-                          }`}
-                        >
-                          {runtime?.loadingAlias
-                            ? dictionary.common.active
-                            : runtime?.available
-                            ? runtime.busy
-                              ? dictionary.common.active
-                              : dictionary.common.ok
-                            : dictionary.common.failed}
+                        <span className={`rounded-full border px-2.5 py-1 text-[11px] ${runtimePhase.className}`}>
+                          {runtimePhase.label}
                         </span>
                       </div>
                       <p className="mt-2 text-xs text-slate-400">
@@ -4773,6 +5208,9 @@ export function AdminDashboard() {
                       <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-4">
                         <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Runtime trace</p>
                         <p className="mt-3 text-sm leading-6 text-slate-200">{runtimeMessage || uiText.runtimeNoLog}</p>
+                        {runtime?.phaseDetail ? (
+                          <p className="mt-2 text-xs leading-6 text-slate-400">{runtime.phaseDetail}</p>
+                        ) : null}
                         {runtime?.loadingAlias || runtime?.loadingError ? (
                           <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 px-3 py-3 text-xs text-slate-300">
                             {runtime?.loadingAlias ? (
@@ -4859,6 +5297,62 @@ export function AdminDashboard() {
 
                       <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-4 text-sm text-slate-300">
                         <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeLog}</p>
+                        <div className="mt-3 flex flex-col gap-2 xl:flex-row">
+                          <input
+                            value={runtimeLogQuery}
+                            onChange={(event) =>
+                              setRuntimeLogQueries((current) => ({
+                                ...current,
+                                [target.id]: event.target.value
+                              }))
+                            }
+                            placeholder={locale.startsWith("en") ? "Filter log keywords" : "筛选日志关键词"}
+                            className="w-full rounded-2xl border border-white/10 bg-black/20 px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500"
+                          />
+                          <select
+                            value={runtimeLogLimit}
+                            onChange={(event) =>
+                              setRuntimeLogLimits((current) => ({
+                                ...current,
+                                [target.id]: Number(event.target.value)
+                              }))
+                            }
+                            className="rounded-2xl border border-white/10 bg-black/20 px-3 py-2 text-sm text-slate-100 outline-none"
+                          >
+                            {[80, 120, 200].map((value) => (
+                              <option key={value} value={value}>
+                                {value}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            disabled={Boolean(action)}
+                            onClick={() => void handleRuntimeLogSearch(target.id)}
+                            className="rounded-full border border-white/10 bg-transparent px-3 py-2 text-[11px] text-slate-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:text-slate-500"
+                          >
+                            {action === "read_log" ? uiText.runtimeRefreshing : uiText.runtimeReadLog}
+                          </button>
+                        </div>
+                        {logSummary ? (
+                          <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-slate-300">
+                            <span className="rounded-full border border-white/10 bg-black/20 px-2.5 py-1">
+                              {locale.startsWith("en") ? "Matched" : "匹配"} {logSummary.matchedLines}/{logSummary.totalLines}
+                            </span>
+                            <span className="rounded-full border border-white/10 bg-black/20 px-2.5 py-1">
+                              {locale.startsWith("en") ? "Errors" : "错误"} {logSummary.errorLines}
+                            </span>
+                            <span className="rounded-full border border-white/10 bg-black/20 px-2.5 py-1">
+                              {locale.startsWith("en") ? "Warnings" : "警告"} {logSummary.warningLines}
+                            </span>
+                            <span className="rounded-full border border-white/10 bg-black/20 px-2.5 py-1">
+                              {locale.startsWith("en") ? "Restarts" : "重启"} {logSummary.restartMentions}
+                            </span>
+                            <span className="rounded-full border border-white/10 bg-black/20 px-2.5 py-1">
+                              {locale.startsWith("en") ? "Loading" : "加载"} {logSummary.loadingMentions}
+                            </span>
+                          </div>
+                        ) : null}
                         {logExcerpt ? (
                           <pre className="mt-3 max-h-52 overflow-auto whitespace-pre-wrap break-words rounded-2xl border border-white/10 bg-black/20 p-3 text-xs leading-6 text-slate-200">{logExcerpt}</pre>
                         ) : (

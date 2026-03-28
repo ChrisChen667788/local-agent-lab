@@ -209,6 +209,7 @@ function renderMarkdown(input: {
     "",
     `Generated at: ${input.generatedAt}`,
     `Window: last ${input.windowMinutes} minutes`,
+    "Export schema: 0.2.1",
     "",
     "## Workload",
     "",

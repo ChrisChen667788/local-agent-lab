@@ -270,6 +270,8 @@ export type AgentRuntimeStatus = {
   targetLabel: string;
   execution: AgentExecution;
   available: boolean;
+  phase?: "remote" | "ready" | "busy" | "loading" | "recovering" | "offline" | "error";
+  phaseDetail?: string;
   resolvedModel?: string;
   resolvedBaseUrl?: string;
   standardResolvedModel?: string;
@@ -308,7 +310,27 @@ export type AgentRuntimeActionResponse = {
   message: string;
   releasedAlias?: string | null;
   logExcerpt?: string;
+  logSummary?: AgentRuntimeLogSummary;
   runtime?: AgentRuntimeStatus;
+};
+
+export type AgentRuntimeLogSummary = {
+  totalLines: number;
+  matchedLines: number;
+  errorLines: number;
+  warningLines: number;
+  restartMentions: number;
+  loadingMentions: number;
+};
+
+export type AgentRuntimeLogResponse = {
+  ok: boolean;
+  targetId: string;
+  targetLabel: string;
+  query: string;
+  limit: number;
+  excerpt: string;
+  summary: AgentRuntimeLogSummary;
 };
 
 export type AgentRuntimePrewarmResponse = {
@@ -423,7 +445,7 @@ export type AgentBenchmarkResponse = {
 
 export type AgentBenchmarkProgress = {
   runId: string;
-  status: "pending" | "running" | "completed" | "failed";
+  status: "pending" | "running" | "completed" | "failed" | "stopped" | "abandoned";
   benchmarkMode?: AgentBenchmarkMode;
   suiteId?: string;
   suiteLabel?: string;
@@ -447,7 +469,34 @@ export type AgentBenchmarkProgress = {
     targetLabel: string;
     providerProfile: AgentProviderProfile;
     thinkingMode: AgentThinkingMode;
+    execution?: AgentExecution;
+    sampleCount?: number;
+    startedAt?: string;
+    completedAt?: string;
   }>;
+  pendingGroups?: Array<{
+    key: string;
+    targetLabel: string;
+    providerProfile: AgentProviderProfile;
+    thinkingMode: AgentThinkingMode;
+    execution?: AgentExecution;
+    sampleCount?: number;
+    startedAt?: string;
+    completedAt?: string;
+  }>;
+  recentGroups?: Array<{
+    key: string;
+    targetLabel: string;
+    providerProfile: AgentProviderProfile;
+    thinkingMode: AgentThinkingMode;
+    execution?: AgentExecution;
+    sampleCount?: number;
+    startedAt?: string;
+    completedAt?: string;
+  }>;
+  controlAction?: "stop-requested" | "abandon-requested";
+  controlRequestedAt?: string;
+  controlMessage?: string;
   error?: string;
 };
 

@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
-import { readBenchmarkProgress, readLatestBenchmarkProgress } from "@/lib/agent/benchmark-progress-store";
+import {
+  finalizeBenchmarkProgressControl,
+  readBenchmarkProgress,
+  readLatestBenchmarkProgress,
+  requestBenchmarkProgressControl
+} from "@/lib/agent/benchmark-progress-store";
 
 export const runtime = "nodejs";
 
@@ -21,4 +26,35 @@ export async function GET(request: Request) {
   }
 
   return NextResponse.json(progress);
+}
+
+export async function POST(request: Request) {
+  const body = (await request.json().catch(() => ({}))) as {
+    runId?: string;
+    action?: "stop" | "abandon";
+  };
+  const runId = typeof body.runId === "string" ? body.runId.trim() : "";
+  const action = body.action;
+
+  if (!runId) {
+    return NextResponse.json({ error: "runId is required." }, { status: 400 });
+  }
+  const current = readBenchmarkProgress(runId);
+  if (!current) {
+    return NextResponse.json({ error: "Progress record not found." }, { status: 404 });
+  }
+  if (action !== "stop" && action !== "abandon") {
+    return NextResponse.json({ error: "Unsupported action." }, { status: 400 });
+  }
+
+  const next =
+    current.status === "pending" || current.status === "running"
+      ? requestBenchmarkProgressControl(runId, action)
+      : finalizeBenchmarkProgressControl(runId, action, action === "stop" ? "Benchmark run stopped." : "Benchmark run abandoned.");
+
+  if (!next) {
+    return NextResponse.json({ error: "Failed to update progress record." }, { status: 500 });
+  }
+
+  return NextResponse.json(next);
 }

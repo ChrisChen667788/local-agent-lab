@@ -304,77 +304,94 @@ Last updated: 2026-03-28
    Scope: 在页面顶栏直接显示当前 `VERSION`，让 `/agent` 与 `/admin` 一眼可见当前稳定节点，减少“到底跑的是哪个版本”的不确定性。
 
 2. Agent 第一屏最终间距审计
-   Status: planned
+   Status: completed
    Scope: 逐块检查 `/agent` 第一屏的上下留白、卡片密度、标签权重，继续向验收截图靠拢，但不再改大结构。
 
 3. Admin 第一屏最终间距审计
-   Status: planned
+   Status: completed
    Scope: 逐块检查 `/admin` 第一屏 Benchmark 配置、进度、结果、趋势区的边距与层级，确保“先看主工作流，再看分析区”。
 
 4. 远端目标版本展示补齐
-   Status: planned
+   Status: completed
    Scope: 把远端目标的当前实际模型版本补齐到更多结果面板和 hover 细节里，避免历史结果里只看见 target 名不见版本。
 
 5. Benchmark 失败热点 drilldown
-   Status: planned
+   Status: completed
    Scope: 在失败分布基础上补更细的 drilldown，让 `target / profile / workload / reason` 的热点可一跳定位。
 
 6. Benchmark 运行中止与继续策略
-   Status: planned
+   Status: completed
    Scope: 明确支持“停止当前 run / 继续未完成 run / 放弃旧 run”三种动作，减少长跑时的模糊状态。
 
 7. Benchmark 执行队列可视化
-   Status: planned
+   Status: completed
    Scope: 把当前 active groups、待执行 groups、最近完成 groups 做成更清晰的队列视图。
 
 8. Benchmark 远端链路稳态继续压测
-   Status: planned
+   Status: completed
    Scope: 针对 `tool-first` 与 `thinking` 组合继续压测，确认 `terminated` 不会在不同时间窗内反弹。
 
 9. 本地 benchmark 稳态回归
-   Status: planned
+   Status: completed
    Scope: 重新做一轮本地 `milestone-formal / milestone-full` 的回归基线，确保本地链路不被远端修复掩盖。
 
 10. 本地运行时阶段态展示
-    Status: planned
+    Status: completed
     Scope: 把 `导入中 / 预热中 / 已加载 / 切换中 / 降级中` 等运行阶段以更清楚的阶段态显示在主界面。
 
 11. 网关日志筛选与摘要
-    Status: planned
+    Status: completed
     Scope: 运维页支持按 target、时间段和关键词快速筛日志，并自动生成最近异常摘要。
 
 12. 会话持久化下一阶段
-    Status: planned
+    Status: completed
     Scope: 评估并补强服务端会话持久化方案，让重要会话不只依赖浏览器本地存储。
 
 13. 导出包一致性收口
-    Status: planned
+    Status: completed
     Scope: 统一 Markdown / JSON / Benchmark report 的字段命名和头部元信息，减少导出格式间的不一致。
 
 14. 知识库导入体验优化
-    Status: planned
+    Status: completed
     Scope: 在现有 CRUD 基础上补“从文件/目录导入”的工作流，降低知识库维护成本。
 
 15. citation 点击回看能力
-    Status: planned
+    Status: completed
     Scope: 让引用标签可以直接回看命中的 chunk 与上下文，不只停留在轻量 badge。
 
 16. grounded 结果解释性增强
-    Status: planned
+    Status: completed
     Scope: 保持轻量展示前提下，让用户更容易区分“命中证据回答”与“普通常识直答”。
 
 17. smoke test 自动化脚本
-    Status: planned
+    Status: completed
     Scope: 把 Agent、Admin、local runtime、remote benchmark 的最小 smoke path 固成脚本，发版前一键跑。
 
 18. release note 生成收口
-    Status: planned
+    Status: completed
     Scope: 基于现有发布流程，把 benchmark 对比、运行状态和页面入口自动填进 release note 模板。
 
 19. v0.2.x 小修节奏
-    Status: planned
+    Status: completed
     Scope: 在 `0.2.x` 线内保持小步修整，不再大改结构，把剩余优化都压成可回溯小节点。
 
 20. v0.3.0 规划预研
-    Status: planned
+    Status: completed
     Scope: 当 `0.2.x` 线稳定后，再统一评估服务端持久化、检索增强第二阶段和更系统的 Agent 能力，决定是否进入 `v0.3.0`。
+
+### Post-v0.2.1 validation notes
+
+- `smoke-test.sh` 已验证通过，覆盖 `/agent`、`/admin`、dashboard 摘要、最新 benchmark 进度与本地 runtime 基础链路。
+- 远端 full-suite 稳态压测已完成：
+  - 旧 run `7cda7c5e-b783-4a0c-be86-5b8fd43905c2`
+    - `failed = 37`
+    - `terminated = 33`
+  - 新 run `ff0fa2b1-b735-4453-ba30-a5f8b7049a51`
+    - `failed = 1`
+    - `terminated = 0`
+    - 剩余唯一失败为单个 `502 Bad Gateway`
+- 本地 formal 回归已于 `2026-03-28` 再跑一轮：
+  - run `93911b58-58eb-4165-b39a-41ef8224542e`
+  - `Local Qwen3 0.6B`: `58/58`
+  - `Local Qwen3 4B 4-bit`: `58/58`
+  - 整体 `116/116`，`0 failed`

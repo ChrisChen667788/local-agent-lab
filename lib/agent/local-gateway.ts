@@ -411,3 +411,55 @@ export function readLocalGatewayRecentLog(lines = 40) {
     return readFileSync(SUPERVISOR_LOG_FILE, "utf8").slice(-4000);
   }
 }
+
+export function readLocalGatewayLogDiagnostics(options?: { lines?: number; query?: string }) {
+  const lines = Math.max(20, Math.min(options?.lines ?? 80, 400));
+  const query = (options?.query || "").trim();
+  const excerpt = readLocalGatewayRecentLog(lines);
+  const rawLines = excerpt
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter(Boolean);
+  const matcher = query ? query.toLowerCase() : "";
+  const matchedLines = matcher
+    ? rawLines.filter((line) => line.toLowerCase().includes(matcher))
+    : rawLines;
+  const normalized = matchedLines.map((line) => line.toLowerCase());
+  return {
+    excerpt: matchedLines.join("\n"),
+    summary: {
+      totalLines: rawLines.length,
+      matchedLines: matchedLines.length,
+      errorLines: normalized.filter(
+        (line) =>
+          line.includes("error") ||
+          line.includes("traceback") ||
+          line.includes("exception") ||
+          line.includes("failed")
+      ).length,
+      warningLines: normalized.filter(
+        (line) =>
+          line.includes("warn") ||
+          line.includes("timeout") ||
+          line.includes("terminated") ||
+          line.includes("aborted") ||
+          line.includes(" 502") ||
+          line.includes("bad gateway")
+      ).length,
+      restartMentions: normalized.filter(
+        (line) =>
+          line.includes("restart") ||
+          line.includes("starting") ||
+          line.includes("restarting") ||
+          line.includes("gateway_already_running")
+      ).length,
+      loadingMentions: normalized.filter(
+        (line) =>
+          line.includes("loading") ||
+          line.includes("prewarm") ||
+          line.includes("loaded alias") ||
+          line.includes("cold")
+      ).length
+    }
+  };
+}

@@ -127,6 +127,7 @@ const THINKING_MODE_OPTIONS: AgentThinkingMode[] = ["standard", "thinking"];
 const PREFERENCES_STORAGE_KEY = "agent-workbench:v1";
 const SESSIONS_STORAGE_KEY = "agent-workbench:sessions:v1";
 const MAX_STORED_SESSIONS = 12;
+const SERVER_SESSION_SYNC_DEBOUNCE_MS = 1200;
 
 function clampUiContextWindow(
   targetId: string,
@@ -147,6 +148,52 @@ function sortSessions(sessions: StoredAgentSession[]) {
     }
     return b.updatedAt.localeCompare(a.updatedAt);
   });
+}
+
+function normalizeStoredSessions(input: unknown): StoredAgentSession[] {
+  if (!Array.isArray(input)) return [];
+  return sortSessions(
+    input.flatMap((session) => {
+      if (!session || typeof session !== "object") return [];
+      const candidate = session as Partial<StoredAgentSession>;
+      if (typeof candidate.id !== "string" || typeof candidate.updatedAt !== "string") return [];
+      return [{
+        id: candidate.id,
+        title: typeof candidate.title === "string" ? candidate.title : "New session",
+        updatedAt: candidate.updatedAt,
+        pinned: Boolean(candidate.pinned),
+        selectedTargetId:
+          typeof candidate.selectedTargetId === "string" ? candidate.selectedTargetId : "anthropic-claude",
+        enableTools: Boolean(candidate.enableTools),
+        enableRetrieval: Boolean(candidate.enableRetrieval),
+        contextWindow: typeof candidate.contextWindow === "number" ? candidate.contextWindow : 8192,
+        providerProfile: PROVIDER_PROFILE_OPTIONS.includes(candidate.providerProfile as AgentProviderProfile)
+          ? (candidate.providerProfile as AgentProviderProfile)
+          : "balanced",
+        thinkingMode: THINKING_MODE_OPTIONS.includes(candidate.thinkingMode as AgentThinkingMode)
+          ? (candidate.thinkingMode as AgentThinkingMode)
+          : "standard",
+        input: typeof candidate.input === "string" ? candidate.input : "",
+        systemPrompt: typeof candidate.systemPrompt === "string" ? candidate.systemPrompt : "",
+        turns: Array.isArray(candidate.turns) ? (candidate.turns as AgentTurn[]) : [],
+        connectionChecksByTargetId:
+          candidate.connectionChecksByTargetId && typeof candidate.connectionChecksByTargetId === "object"
+            ? (candidate.connectionChecksByTargetId as Record<string, AgentConnectionCheckResponse>)
+            : {}
+      }];
+    })
+  ).slice(0, MAX_STORED_SESSIONS);
+}
+
+function mergeStoredSessions(localSessions: StoredAgentSession[], remoteSessions: StoredAgentSession[]) {
+  const merged = new Map<string, StoredAgentSession>();
+  for (const session of [...localSessions, ...remoteSessions]) {
+    const existing = merged.get(session.id);
+    if (!existing || session.updatedAt >= existing.updatedAt) {
+      merged.set(session.id, session);
+    }
+  }
+  return sortSessions([...merged.values()]).slice(0, MAX_STORED_SESSIONS);
 }
 
 function filterSessionsForExport(
@@ -173,6 +220,27 @@ function filterSessionsForExport(
       );
     })
   );
+}
+
+function buildSessionExportEnvelope(
+  sessions: StoredAgentSession[],
+  options: {
+    scope: "visible" | "pinned";
+    sessionTargetFilter: string;
+    sessionSearch: string;
+  }
+) {
+  return {
+    kind: "agent-session-export",
+    schemaVersion: "0.2.1",
+    generatedAt: new Date().toISOString(),
+    filters: {
+      scope: options.scope,
+      sessionTargetFilter: options.sessionTargetFilter,
+      sessionSearch: options.sessionSearch
+    },
+    sessions
+  };
 }
 
 function createSessionTitle(turns: AgentTurn[], fallback = "New session") {
@@ -218,6 +286,74 @@ function readBooleanField(source: ParsedToolOutput | null, key: string) {
 function readVerificationField(source: ParsedToolOutput | null) {
   const value = source?.verification;
   return Array.isArray(value) ? value : [];
+}
+
+function describeRuntimePhase(runtime: AgentRuntimeStatus | null, locale: string) {
+  const phase = runtime?.phase || "offline";
+  switch (phase) {
+    case "remote":
+      return {
+        label: locale.startsWith("en") ? "Remote" : "远端",
+        className: "bg-violet-400/15 text-violet-200"
+      };
+    case "ready":
+      return {
+        label: locale.startsWith("en") ? "Ready" : "已就绪",
+        className: "bg-emerald-400/15 text-emerald-200"
+      };
+    case "busy":
+      return {
+        label: locale.startsWith("en") ? "Busy" : "处理中",
+        className: "bg-amber-400/15 text-amber-200"
+      };
+    case "loading":
+      return {
+        label: locale.startsWith("en") ? "Loading" : "加载中",
+        className: "bg-amber-400/15 text-amber-200"
+      };
+    case "recovering":
+      return {
+        label: locale.startsWith("en") ? "Recovering" : "恢复中",
+        className: "bg-cyan-400/15 text-cyan-200"
+      };
+    case "error":
+      return {
+        label: locale.startsWith("en") ? "Error" : "异常",
+        className: "bg-rose-400/15 text-rose-200"
+      };
+    default:
+      return {
+        label: locale.startsWith("en") ? "Offline" : "离线",
+        className: "bg-rose-400/15 text-rose-200"
+      };
+  }
+}
+
+function buildRuntimeStageItems(runtime: AgentRuntimeStatus | null, locale: string) {
+  const labels = locale.startsWith("en")
+    ? {
+        offline: "Offline",
+        recovering: "Recovering",
+        loading: "Loading",
+        busy: "Busy",
+        ready: "Ready"
+      }
+    : {
+        offline: "离线",
+        recovering: "恢复中",
+        loading: "加载中",
+        busy: "处理中",
+        ready: "已就绪"
+      };
+  const steps: Array<keyof typeof labels> = ["offline", "recovering", "loading", "busy", "ready"];
+  const phase = runtime?.phase || "offline";
+  const phaseIndex = steps.indexOf(phase as keyof typeof labels);
+  return steps.map((step, index) => ({
+    key: step,
+    label: labels[step],
+    active: step === phase,
+    completed: phase !== "error" && phaseIndex >= 0 && index < phaseIndex
+  }));
 }
 
 function readNumberField(source: ParsedToolOutput | null, key: string) {
@@ -400,6 +536,8 @@ function buildTurnMarkdownLines(turns: AgentTurn[]) {
   for (const turn of turns) {
     lines.push(`## ${turn.targetLabel} · ${turn.providerLabel}`);
     lines.push("");
+    lines.push(`- Resolved model: ${turn.resolvedModel}`);
+    lines.push(`- Resolved endpoint: ${turn.resolvedBaseUrl}`);
     if (turn.providerProfile) {
       lines.push(`- Provider profile used: ${turn.providerProfile}`);
     }
@@ -490,6 +628,7 @@ function buildTurnMarkdownLines(turns: AgentTurn[]) {
       if (turn.verification.notes.length) {
         lines.push("- Notes:");
         turn.verification.notes.forEach((note) => lines.push(`  - ${note}`));
+      }
     }
     if (turn.plannerSteps?.length) {
       lines.push("", "### Planner", "");
@@ -498,9 +637,6 @@ function buildTurnMarkdownLines(turns: AgentTurn[]) {
     if (turn.memorySummary) {
       lines.push("", "### Memory", "", turn.memorySummary);
     }
-    lines.push("");
-  }
-
     lines.push("### Assistant");
     lines.push("");
     lines.push("```text");
@@ -513,14 +649,26 @@ function buildTurnMarkdownLines(turns: AgentTurn[]) {
 }
 
 function serializeTurnsAsMarkdown(turns: AgentTurn[]) {
-  const lines: string[] = ["# Agent Transcript", "", `Generated: ${new Date().toISOString()}`, ""];
+  const lines: string[] = [
+    "# Agent Transcript",
+    "",
+    `Generated: ${new Date().toISOString()}`,
+    "Export schema: 0.2.1",
+    ""
+  ];
   lines.push(...buildTurnMarkdownLines(turns));
 
   return lines.join("\n");
 }
 
 function serializeSessionsAsMarkdown(sessions: StoredAgentSession[]) {
-  const lines: string[] = ["# Agent Sessions", "", `Generated: ${new Date().toISOString()}`, ""];
+  const lines: string[] = [
+    "# Agent Sessions",
+    "",
+    `Generated: ${new Date().toISOString()}`,
+    "Export schema: 0.2.1",
+    ""
+  ];
   for (const session of sessions) {
     lines.push(`## ${session.title}`);
     lines.push("");
@@ -591,6 +739,7 @@ export function AgentWorkbench() {
   const [prewarmMessage, setPrewarmMessage] = useState("");
   const [runtimeActionPending, setRuntimeActionPending] = useState<"" | "release" | "restart" | "read_log">("");
   const [runtimeLogExcerpt, setRuntimeLogExcerpt] = useState("");
+  const [expandedCitationKey, setExpandedCitationKey] = useState("");
   const [toolDecisionBusyKey, setToolDecisionBusyKey] = useState("");
   const [toolDecisionStatusByToken, setToolDecisionStatusByToken] = useState<Record<string, "approved" | "rejected">>(
     {}
@@ -602,13 +751,17 @@ export function AgentWorkbench() {
   const [connectionCheckPending, setConnectionCheckPending] = useState(false);
   const [connectionCheckError, setConnectionCheckError] = useState("");
   const [preferencesReady, setPreferencesReady] = useState(false);
+  const [serverSessionSyncState, setServerSessionSyncState] = useState<"" | "syncing" | "synced" | "error">("");
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const runtimeRequestInFlightRef = useRef(false);
+  const sessionSyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const selectedTarget = useMemo(
     () => agentTargets.find((target) => target.id === selectedTargetId) || agentTargets[0],
     [selectedTargetId]
   );
+  const runtimePhase = useMemo(() => describeRuntimePhase(runtimeStatus, locale), [runtimeStatus, locale]);
+  const runtimeStageItems = useMemo(() => buildRuntimeStageItems(runtimeStatus, locale), [runtimeStatus, locale]);
   const lastChatTurn = useMemo(
     () => [...turns].reverse().find((turn) => turn.kind !== "check" && turn.targetId === selectedTargetId),
     [selectedTargetId, turns]
@@ -668,6 +821,18 @@ export function AgentWorkbench() {
   const supportsConnectionCheck = selectedTarget.execution === "remote" && Boolean(selectedTarget.apiKeyEnv);
   const connectionCheck = connectionChecksByTargetId[selectedTargetId] || null;
   const previousLocaleRef = useRef(locale);
+  const sessionSyncLabel = useMemo(() => {
+    if (serverSessionSyncState === "syncing") {
+      return locale.startsWith("en") ? "Syncing server copy" : "同步服务端快照中";
+    }
+    if (serverSessionSyncState === "synced") {
+      return locale.startsWith("en") ? "Server snapshot synced" : "服务端快照已同步";
+    }
+    if (serverSessionSyncState === "error") {
+      return locale.startsWith("en") ? "Server snapshot unavailable" : "服务端快照暂不可用";
+    }
+    return locale.startsWith("en") ? "Local-first session storage" : "本地优先会话存储";
+  }, [locale, serverSessionSyncState]);
   const uiText = useMemo(() => {
     switch (locale) {
       case "zh-TW":
@@ -1546,12 +1711,11 @@ export function AgentWorkbench() {
       format === "markdown"
         ? serializeSessionsAsMarkdown(sessions)
         : JSON.stringify(
-            {
-              generatedAt: new Date().toISOString(),
+            buildSessionExportEnvelope(sessions, {
+              scope: sessionExportScope,
               sessionTargetFilter,
-              sessionExportScope,
-              sessions
-            },
+              sessionSearch
+            }),
             null,
             2
           );
@@ -1592,74 +1756,94 @@ export function AgentWorkbench() {
   }, [locale, starterPrompts]);
 
   useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(PREFERENCES_STORAGE_KEY);
-      const rawSessions = window.localStorage.getItem(SESSIONS_STORAGE_KEY);
-      let parsedSessions: StoredAgentSession[] = [];
-      if (rawSessions) {
-        parsedSessions = (JSON.parse(rawSessions) as StoredAgentSession[])
-          .filter((session) => session && typeof session.id === "string")
-          .sort((a, b) => {
-            if (Boolean(a.pinned) !== Boolean(b.pinned)) {
-              return a.pinned ? -1 : 1;
-            }
-            return b.updatedAt.localeCompare(a.updatedAt);
-          });
-        setSavedSessions(parsedSessions);
-      }
-      if (!raw) {
-        if (parsedSessions.length) {
-          restoreSession(parsedSessions[0]);
+    let cancelled = false;
+
+    async function hydrateWorkbenchState() {
+      try {
+        const raw = window.localStorage.getItem(PREFERENCES_STORAGE_KEY);
+        const rawSessions = window.localStorage.getItem(SESSIONS_STORAGE_KEY);
+        const localSessions = rawSessions ? normalizeStoredSessions(JSON.parse(rawSessions)) : [];
+        let mergedSessions = localSessions;
+
+        if (!cancelled && localSessions.length) {
+          setSavedSessions(localSessions);
         }
-        setPreferencesReady(true);
-        return;
+
+        try {
+          const response = await fetch("/api/agent/sessions", { cache: "no-store" });
+          const payload = (await response.json()) as { sessions?: unknown; error?: string };
+          if (!response.ok) {
+            throw new Error(payload.error || "Failed to load server sessions.");
+          }
+          mergedSessions = mergeStoredSessions(localSessions, normalizeStoredSessions(payload.sessions || []));
+          if (!cancelled) {
+            setSavedSessions(mergedSessions);
+            window.localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(mergedSessions));
+            setServerSessionSyncState("synced");
+          }
+        } catch {
+          if (!cancelled) {
+            setServerSessionSyncState(localSessions.length ? "error" : "");
+          }
+        }
+
+        if (raw) {
+          const parsed = JSON.parse(raw) as {
+            selectedTargetId?: string;
+            enableTools?: boolean;
+            enableRetrieval?: boolean;
+            contextWindow?: number;
+            providerProfile?: AgentProviderProfile;
+            thinkingMode?: AgentThinkingMode;
+          };
+          if (
+            typeof parsed.selectedTargetId === "string" &&
+            agentTargets.some((target) => target.id === parsed.selectedTargetId)
+          ) {
+            setSelectedTargetId(parsed.selectedTargetId);
+          }
+          if (typeof parsed.enableTools === "boolean") {
+            setEnableTools(parsed.enableTools);
+          }
+          if (typeof parsed.enableRetrieval === "boolean") {
+            setEnableRetrieval(parsed.enableRetrieval);
+          }
+          if (
+            typeof parsed.contextWindow === "number" &&
+            CONTEXT_WINDOW_OPTIONS.includes(parsed.contextWindow)
+          ) {
+            setContextWindow(parsed.contextWindow);
+          }
+          if (
+            typeof parsed.providerProfile === "string" &&
+            PROVIDER_PROFILE_OPTIONS.includes(parsed.providerProfile as AgentProviderProfile)
+          ) {
+            setProviderProfile(parsed.providerProfile as AgentProviderProfile);
+          }
+          if (
+            typeof parsed.thinkingMode === "string" &&
+            THINKING_MODE_OPTIONS.includes(parsed.thinkingMode as AgentThinkingMode)
+          ) {
+            setThinkingMode(parsed.thinkingMode as AgentThinkingMode);
+          }
+        }
+
+        if (mergedSessions.length && !cancelled) {
+          restoreSession(mergedSessions[0]);
+        }
+      } catch {
+        // Ignore invalid local state and fall back to defaults.
+      } finally {
+        if (!cancelled) {
+          setPreferencesReady(true);
+        }
       }
-      const parsed = JSON.parse(raw) as {
-        selectedTargetId?: string;
-        enableTools?: boolean;
-        enableRetrieval?: boolean;
-        contextWindow?: number;
-        providerProfile?: AgentProviderProfile;
-        thinkingMode?: AgentThinkingMode;
-      };
-      if (
-        typeof parsed.selectedTargetId === "string" &&
-        agentTargets.some((target) => target.id === parsed.selectedTargetId)
-      ) {
-        setSelectedTargetId(parsed.selectedTargetId);
-      }
-      if (typeof parsed.enableTools === "boolean") {
-        setEnableTools(parsed.enableTools);
-      }
-      if (typeof parsed.enableRetrieval === "boolean") {
-        setEnableRetrieval(parsed.enableRetrieval);
-      }
-      if (
-        typeof parsed.contextWindow === "number" &&
-        CONTEXT_WINDOW_OPTIONS.includes(parsed.contextWindow)
-      ) {
-        setContextWindow(parsed.contextWindow);
-      }
-      if (
-        typeof parsed.providerProfile === "string" &&
-        PROVIDER_PROFILE_OPTIONS.includes(parsed.providerProfile as AgentProviderProfile)
-      ) {
-        setProviderProfile(parsed.providerProfile as AgentProviderProfile);
-      }
-      if (
-        typeof parsed.thinkingMode === "string" &&
-        THINKING_MODE_OPTIONS.includes(parsed.thinkingMode as AgentThinkingMode)
-      ) {
-        setThinkingMode(parsed.thinkingMode as AgentThinkingMode);
-      }
-      if (parsedSessions.length) {
-        restoreSession(parsedSessions[0]);
-      }
-    } catch {
-      // Ignore invalid local state and fall back to defaults.
-    } finally {
-      setPreferencesReady(true);
     }
+
+    void hydrateWorkbenchState();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -1725,6 +1909,37 @@ export function AgentWorkbench() {
     turns,
     uiText
   ]);
+
+  useEffect(() => {
+    if (!preferencesReady) return;
+    if (sessionSyncTimeoutRef.current) {
+      clearTimeout(sessionSyncTimeoutRef.current);
+    }
+    sessionSyncTimeoutRef.current = setTimeout(async () => {
+      setServerSessionSyncState("syncing");
+      try {
+        const response = await fetch("/api/agent/sessions", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessions: savedSessions })
+        });
+        const payload = (await response.json()) as { error?: string };
+        if (!response.ok) {
+          throw new Error(payload.error || "Failed to sync server sessions.");
+        }
+        setServerSessionSyncState("synced");
+      } catch {
+        setServerSessionSyncState("error");
+      }
+    }, SERVER_SESSION_SYNC_DEBOUNCE_MS);
+
+    return () => {
+      if (sessionSyncTimeoutRef.current) {
+        clearTimeout(sessionSyncTimeoutRef.current);
+        sessionSyncTimeoutRef.current = null;
+      }
+    };
+  }, [preferencesReady, savedSessions]);
 
   useEffect(() => {
     if (!transcriptRef.current) return;
@@ -2560,6 +2775,7 @@ export function AgentWorkbench() {
                   <p className="mt-1 text-xs text-cyan-100/80">
                     {uiText.sessionSaved} · {currentSession?.updatedAt ? new Date(currentSession.updatedAt).toLocaleString() : "--"}
                   </p>
+                  <p className="mt-1 text-[11px] text-cyan-100/70">{sessionSyncLabel}</p>
                   {currentSession ? (
                     <div className="mt-3 flex flex-wrap gap-2">
                       <button
@@ -3257,19 +3473,63 @@ export function AgentWorkbench() {
                               <p className="text-[11px] uppercase tracking-[0.24em] text-emerald-200">
                                 {uiText.retrievalGrounding}
                               </p>
-                              <span className="rounded-full bg-emerald-400/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.22em] text-emerald-100">
-                                {uiText.retrievalHits}: {turn.retrieval.hitCount}
-                              </span>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="rounded-full bg-emerald-400/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.22em] text-emerald-100">
+                                  {uiText.retrievalHits}: {turn.retrieval.hitCount}
+                                </span>
+                                <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-200">
+                                  {turn.retrieval.bypassGrounding
+                                    ? locale.startsWith("en")
+                                      ? "General answer"
+                                      : "常识直答"
+                                    : locale.startsWith("en")
+                                      ? "Evidence-backed"
+                                      : "证据回答"}
+                                </span>
+                              </div>
                             </div>
                             {turn.retrieval.lowConfidence ? (
                               <p className="mt-2 text-xs leading-6 text-amber-100">{uiText.retrievalLowConfidence}</p>
                             ) : null}
+                            {turn.retrieval.bypassGrounding ? (
+                              <div className="mt-2 rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs leading-6 text-slate-200">
+                                <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">
+                                  {locale.startsWith("en") ? "General answer mode" : "常识直答模式"}
+                                </span>
+                                <p className="mt-2">
+                                  {turn.retrieval.bypassReason === "general-question-no-evidence"
+                                    ? locale.startsWith("en")
+                                      ? "No local evidence was required for this question, so the answer could rely on general knowledge."
+                                      : "这个问题不依赖本地知识证据，因此允许直接按常识回答。"
+                                    : locale.startsWith("en")
+                                      ? "Retrieval confidence was too low, so the answer stayed conservative and separated evidence from general guidance."
+                                      : "检索信心偏低，因此回答会把本地证据与一般性建议分开表达。"}
+                                </p>
+                              </div>
+                            ) : null}
                             {turn.retrieval.results.length ? (
                               <div className="mt-3 space-y-2.5">
-                                {turn.retrieval.results.slice(0, 2).map((result) => (
-                                  <div
+                                {turn.retrieval.results
+                                  .slice(
+                                    0,
+                                    Math.max(
+                                      2,
+                                      turn.retrieval.results.findIndex(
+                                        (result) => `${turn.id}:${result.chunkId}` === expandedCitationKey
+                                      ) + 1
+                                    )
+                                  )
+                                  .map((result) => (
+                                  <button
                                     key={`${turn.id}:${result.chunkId}`}
-                                    className="rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2.5"
+                                    id={`citation:${turn.id}:${result.chunkId}`}
+                                    type="button"
+                                    onClick={() =>
+                                      setExpandedCitationKey((current) =>
+                                        current === `${turn.id}:${result.chunkId}` ? "" : `${turn.id}:${result.chunkId}`
+                                      )
+                                    }
+                                    className="w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2.5 text-left transition hover:border-white/20 hover:bg-slate-950/80"
                                   >
                                     <div className="flex flex-wrap items-center justify-between gap-2">
                                       <p className="text-xs font-semibold text-white">
@@ -3284,9 +3544,22 @@ export function AgentWorkbench() {
                                       {result.source ? ` · ${result.source}` : ""}
                                     </p>
                                     <p className="mt-2 text-xs leading-6 text-slate-200">
-                                      {result.content.length > 220 ? `${result.content.slice(0, 220)}…` : result.content}
+                                      {expandedCitationKey === `${turn.id}:${result.chunkId}`
+                                        ? result.content
+                                        : result.content.length > 220
+                                          ? `${result.content.slice(0, 220)}…`
+                                          : result.content}
                                     </p>
-                                  </div>
+                                    <p className="mt-2 text-[11px] text-cyan-300">
+                                      {expandedCitationKey === `${turn.id}:${result.chunkId}`
+                                        ? locale.startsWith("en")
+                                          ? "Click again to collapse"
+                                          : "再次点击可收起"
+                                        : locale.startsWith("en")
+                                          ? "Click to inspect full citation"
+                                          : "点击查看完整引用"}
+                                    </p>
+                                  </button>
                                 ))}
                                 {turn.retrieval.results.length > 2 ? (
                                   <p className="px-1 text-xs leading-6 text-slate-400">
@@ -3335,12 +3608,38 @@ export function AgentWorkbench() {
                               <p>
                                 {uiText.groundedLexicalScore}: {turn.verification.lexicalGroundingScore.toFixed(3)}
                               </p>
-                              <p>
-                                {uiText.groundedCitations}:{" "}
-                                {turn.verification.citedLabels.length
-                                  ? turn.verification.citedLabels.join(", ")
-                                  : "--"}
-                              </p>
+                              <div>
+                                <p>{uiText.groundedCitations}</p>
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                  {turn.verification.citedLabels.length ? (
+                                    turn.verification.citedLabels.map((label) => {
+                                      const matchedResult = turn.retrieval?.results.find((result) => result.citationLabel === label);
+                                      return (
+                                        <button
+                                          key={`${turn.id}:cited:${label}`}
+                                          type="button"
+                                          onClick={() => {
+                                            if (!matchedResult) return;
+                                            const nextKey = `${turn.id}:${matchedResult.chunkId}`;
+                                            setExpandedCitationKey(nextKey);
+                                            window.requestAnimationFrame(() => {
+                                              document.getElementById(`citation:${turn.id}:${matchedResult.chunkId}`)?.scrollIntoView({
+                                                behavior: "smooth",
+                                                block: "nearest"
+                                              });
+                                            });
+                                          }}
+                                          className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-100 transition hover:bg-white/[0.08]"
+                                        >
+                                          {label}
+                                        </button>
+                                      );
+                                    })
+                                  ) : (
+                                    <span className="text-slate-500">--</span>
+                                  )}
+                                </div>
+                              </div>
                               {turn.verification.unsupportedLabels.length ? (
                                 <p>
                                   {uiText.groundedUnsupportedCitations}:{" "}
@@ -3574,20 +3873,8 @@ export function AgentWorkbench() {
                   <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span
-                          className={`rounded-full px-2.5 py-1 text-[10px] uppercase tracking-[0.22em] ${
-                            runtimeStatus.available
-                              ? runtimeStatus.busy
-                                ? "bg-amber-400/15 text-amber-200"
-                                : "bg-emerald-400/15 text-emerald-200"
-                              : "bg-rose-400/15 text-rose-200"
-                          }`}
-                        >
-                          {runtimeStatus.available
-                            ? runtimeStatus.busy
-                              ? dictionary.agent.runtimeBusy
-                              : dictionary.agent.runtimeIdle
-                            : dictionary.agent.runtimeOffline}
+                        <span className={`rounded-full px-2.5 py-1 text-[10px] uppercase tracking-[0.22em] ${runtimePhase.className}`}>
+                          {runtimePhase.label}
                         </span>
                         {typeof runtimeStatus.queueDepth === "number" ? (
                           <span className="rounded-full bg-white/5 px-2.5 py-1 text-[10px] uppercase tracking-[0.22em] text-slate-300">
@@ -3625,11 +3912,12 @@ export function AgentWorkbench() {
                       </div>
                     </div>
                     <p className="mt-2 text-xs leading-6 text-slate-400">
-                      {runtimeStatus.available
-                        ? runtimeStatus.busy
-                          ? uiText.runtimeSerializing
-                          : uiText.runtimeReady
-                        : runtimeStatus.message || uiText.runtimeUnavailable}
+                      {runtimeStatus.phaseDetail ||
+                        (runtimeStatus.available
+                          ? runtimeStatus.busy
+                            ? uiText.runtimeSerializing
+                            : uiText.runtimeReady
+                          : runtimeStatus.message || uiText.runtimeUnavailable)}
                     </p>
                     {runtimeStatus.loadingAlias ? (
                       <div className="mt-2 rounded-2xl border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-xs leading-6 text-amber-100">
@@ -3884,20 +4172,8 @@ export function AgentWorkbench() {
                   <div className="flex items-center justify-between gap-3">
                     <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{dictionary.agent.localRuntime}</p>
                     {selectedTarget.execution === "local" ? (
-                      <span
-                        className={`rounded-full px-2 py-[3px] text-[10px] uppercase tracking-[0.2em] ${
-                          runtimeStatus?.available
-                            ? runtimeStatus.busy
-                              ? "bg-amber-400/15 text-amber-200"
-                              : "bg-emerald-400/15 text-emerald-200"
-                            : "bg-rose-400/15 text-rose-200"
-                        }`}
-                      >
-                        {runtimeStatus?.available
-                          ? runtimeStatus.busy
-                            ? dictionary.agent.runtimeBusy
-                            : dictionary.agent.runtimeIdle
-                          : dictionary.agent.runtimeOffline}
+                      <span className={`rounded-full px-2 py-[3px] text-[10px] uppercase tracking-[0.2em] ${runtimePhase.className}`}>
+                        {runtimePhase.label}
                       </span>
                     ) : null}
                   </div>
@@ -3927,7 +4203,28 @@ export function AgentWorkbench() {
                       </div>
                       <div>
                         <p className="text-slate-500">{uiText.runtimeMessage}</p>
-                        <p className="mt-1 leading-6">{runtimeStatus.message || dictionary.common.unknown}</p>
+                        <p className="mt-1 leading-6">
+                          {runtimeStatus.phaseDetail || runtimeStatus.message || dictionary.common.unknown}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-slate-500">{locale.startsWith("en") ? "Runtime stage" : "运行阶段"}</p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {runtimeStageItems.map((step) => (
+                            <span
+                              key={`runtime-stage:${step.key}`}
+                              className={`rounded-full border px-2 py-[3px] text-[10px] uppercase tracking-[0.2em] ${
+                                step.active
+                                  ? "border-cyan-400/20 bg-cyan-400/10 text-cyan-200"
+                                  : step.completed
+                                    ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-200"
+                                    : "border-white/10 bg-white/[0.04] text-slate-400"
+                              }`}
+                            >
+                              {step.label}
+                            </span>
+                          ))}
+                        </div>
                       </div>
                       <div className="grid gap-3 sm:grid-cols-2">
                         <div>

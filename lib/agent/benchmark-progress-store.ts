@@ -3,6 +3,7 @@ import type {
   AgentBenchmarkMode,
   AgentBenchmarkProfileBatchScope,
   AgentBenchmarkProgress,
+  AgentExecution,
   AgentProviderProfile,
   AgentThinkingMode
 } from "@/lib/agent/types";
@@ -31,6 +32,14 @@ export function createBenchmarkProgress(input: {
   profileBatchScope?: AgentBenchmarkProfileBatchScope;
   totalGroups: number;
   totalSamples: number;
+  pendingGroups?: Array<{
+    key: string;
+    targetLabel: string;
+    providerProfile: AgentProviderProfile;
+    thinkingMode: AgentThinkingMode;
+    execution?: AgentExecution;
+    sampleCount?: number;
+  }>;
 }) {
   const now = new Date().toISOString();
   const progress: AgentBenchmarkProgress = {
@@ -50,7 +59,12 @@ export function createBenchmarkProgress(input: {
     updatedAt: now,
     elapsedMs: 0,
     estimatedRemainingMs: null,
-    activeGroups: []
+    activeGroups: [],
+    pendingGroups:
+      input.pendingGroups?.map((group) => ({
+        ...group
+      })) || [],
+    recentGroups: []
   };
   writeProgress(progress);
   return progress;
@@ -117,7 +131,10 @@ export function markBenchmarkProgressRunning(runId: string) {
   return updateBenchmarkProgress(runId, (current) => ({
     ...current,
     status: "running",
-    updatedAt: new Date().toISOString()
+    updatedAt: new Date().toISOString(),
+    controlAction: undefined,
+    controlRequestedAt: undefined,
+    controlMessage: undefined
   }));
 }
 
@@ -128,22 +145,32 @@ export function startBenchmarkProgressGroup(
     targetLabel: string;
     providerProfile: AgentProviderProfile;
     thinkingMode: AgentThinkingMode;
+    execution?: AgentExecution;
+    sampleCount?: number;
   }
 ) {
-  return updateBenchmarkProgress(runId, (current) => ({
-    ...current,
-    status: current.status === "pending" ? "running" : current.status,
-    updatedAt: new Date().toISOString(),
-    activeGroups: [
-      ...(current.activeGroups || []).filter((entry) => entry.key !== group.key),
-      {
-        key: group.key,
-        targetLabel: group.targetLabel,
-        providerProfile: group.providerProfile,
-        thinkingMode: group.thinkingMode
-      }
-    ]
-  }));
+  return updateBenchmarkProgress(runId, (current) => {
+    const now = new Date().toISOString();
+    const pendingGroups = (current.pendingGroups || []).filter((entry) => entry.key !== group.key);
+    return {
+      ...current,
+      status: current.status === "pending" ? "running" : current.status,
+      updatedAt: now,
+      activeGroups: [
+        ...(current.activeGroups || []).filter((entry) => entry.key !== group.key),
+        {
+          key: group.key,
+          targetLabel: group.targetLabel,
+          providerProfile: group.providerProfile,
+          thinkingMode: group.thinkingMode,
+          execution: group.execution,
+          sampleCount: group.sampleCount,
+          startedAt: now
+        }
+      ],
+      pendingGroups
+    };
+  });
 }
 
 export function advanceBenchmarkProgress(
@@ -178,13 +205,25 @@ export function advanceBenchmarkProgress(
 
 export function completeBenchmarkProgressGroup(runId: string, groupKey: string) {
   return updateBenchmarkProgress(runId, (current) => {
+    const now = new Date().toISOString();
+    const activeGroup = (current.activeGroups || []).find((entry) => entry.key === groupKey);
+    const pendingGroup = (current.pendingGroups || []).find((entry) => entry.key === groupKey);
+    const recentGroups = [
+      {
+        ...(activeGroup || pendingGroup || { key: groupKey, targetLabel: groupKey, providerProfile: "balanced" as AgentProviderProfile, thinkingMode: "standard" as AgentThinkingMode }),
+        completedAt: now
+      },
+      ...(current.recentGroups || []).filter((entry) => entry.key !== groupKey)
+    ].slice(0, 8);
     const elapsedMs = Date.now() - new Date(current.startedAt).getTime();
     const next: AgentBenchmarkProgress = {
       ...current,
       completedGroups: Math.min(current.completedGroups + 1, current.totalGroups),
-      updatedAt: new Date().toISOString(),
+      updatedAt: now,
       elapsedMs,
-      activeGroups: (current.activeGroups || []).filter((entry) => entry.key !== groupKey)
+      activeGroups: (current.activeGroups || []).filter((entry) => entry.key !== groupKey),
+      pendingGroups: (current.pendingGroups || []).filter((entry) => entry.key !== groupKey),
+      recentGroups
     };
     next.estimatedRemainingMs = estimateRemainingMs(next);
     return next;
@@ -198,7 +237,40 @@ export function completeBenchmarkProgress(runId: string) {
     updatedAt: new Date().toISOString(),
     elapsedMs: Date.now() - new Date(current.startedAt).getTime(),
     estimatedRemainingMs: 0,
-    activeGroups: []
+    activeGroups: [],
+    pendingGroups: [],
+    controlAction: undefined,
+    controlRequestedAt: undefined,
+    controlMessage: undefined
+  }));
+}
+
+export function requestBenchmarkProgressControl(runId: string, action: "stop" | "abandon") {
+  return updateBenchmarkProgress(runId, (current) => ({
+    ...current,
+    updatedAt: new Date().toISOString(),
+    controlAction: action === "stop" ? "stop-requested" : "abandon-requested",
+    controlRequestedAt: new Date().toISOString(),
+    controlMessage: action === "stop" ? "Stop requested." : "Abandon requested."
+  }));
+}
+
+export function finalizeBenchmarkProgressControl(
+  runId: string,
+  action: "stop" | "abandon",
+  message?: string
+) {
+  return updateBenchmarkProgress(runId, (current) => ({
+    ...current,
+    status: action === "stop" ? "stopped" : "abandoned",
+    updatedAt: new Date().toISOString(),
+    elapsedMs: Date.now() - new Date(current.startedAt).getTime(),
+    estimatedRemainingMs: null,
+    activeGroups: [],
+    pendingGroups: action === "abandon" ? [] : current.pendingGroups || [],
+    controlAction: undefined,
+    controlRequestedAt: undefined,
+    controlMessage: message || (action === "stop" ? "Benchmark run stopped." : "Benchmark run abandoned.")
   }));
 }
 
@@ -210,6 +282,9 @@ export function failBenchmarkProgress(runId: string, error: string) {
     elapsedMs: Date.now() - new Date(current.startedAt).getTime(),
     estimatedRemainingMs: null,
     activeGroups: [],
+    controlAction: undefined,
+    controlRequestedAt: undefined,
+    controlMessage: undefined,
     error
   }));
 }

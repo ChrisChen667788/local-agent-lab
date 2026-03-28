@@ -29,6 +29,7 @@ cd "/Users/chenhaorui/Documents/New project"
 
 4. Run the minimum verification set
    - `./node_modules/.bin/tsc --noEmit`
+   - `./scripts/smoke-test.sh`
    - verify [http://localhost:3011/agent](http://localhost:3011/agent)
    - verify [http://localhost:3011/admin](http://localhost:3011/admin)
    - record one benchmark summary if the release touches runtime or benchmark behavior
@@ -50,3 +51,5 @@ cd "/Users/chenhaorui/Documents/New project"
 
 - Keep release notes short and factual.
 - If a release is UI-only, benchmark can be a smoke summary rather than a full formal suite.
+- `v0.2.x` cadence guidance: [v0.2.x-cadence.md](/Users/chenhaorui/Documents/New%20project/docs/v0.2.x-cadence.md)
+- `v0.3.0` preread: [v0.3.0-preread.md](/Users/chenhaorui/Documents/New%20project/docs/v0.3.0-preread.md)

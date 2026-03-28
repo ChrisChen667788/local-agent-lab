@@ -3,6 +3,7 @@ import { getAgentTarget } from "@/lib/agent/catalog";
 import {
   ensureLocalGatewayAvailableDetailed,
   getLocalGatewaySupervisorInfo,
+  readLocalGatewayLogDiagnostics,
   readLocalGatewayRecentLog,
   restartLocalGateway
 } from "@/lib/agent/local-gateway";
@@ -14,7 +15,54 @@ export const runtime = "nodejs";
 type RuntimeActionBody = {
   targetId?: string;
   action?: AgentRuntimeAction;
+  query?: string;
+  limit?: number;
 };
+
+function deriveRuntimePhase(input: {
+  available: boolean;
+  busy?: boolean;
+  loadingAlias?: string | null;
+  loadingError?: string | null;
+  supervisorAlive?: boolean;
+  gatewayAlive?: boolean;
+  message?: string;
+}) {
+  if (input.loadingError) {
+    return {
+      phase: "error" as const,
+      phaseDetail: input.loadingError
+    };
+  }
+  if (input.loadingAlias) {
+    return {
+      phase: "loading" as const,
+      phaseDetail: `Loading ${input.loadingAlias}`
+    };
+  }
+  if (input.available && input.busy) {
+    return {
+      phase: "busy" as const,
+      phaseDetail: "The local runtime is serializing requests."
+    };
+  }
+  if (input.available) {
+    return {
+      phase: "ready" as const,
+      phaseDetail: "The local runtime is ready."
+    };
+  }
+  if (input.supervisorAlive || input.gatewayAlive) {
+    return {
+      phase: "recovering" as const,
+      phaseDetail: input.message || "The local runtime is starting or recovering."
+    };
+  }
+  return {
+    phase: "offline" as const,
+    phaseDetail: input.message || "The local runtime is unavailable."
+  };
+}
 
 function buildRuntimeStatus(
   targetId: string,
@@ -25,6 +73,18 @@ function buildRuntimeStatus(
 ): AgentRuntimeStatus {
   const supervisor = getLocalGatewaySupervisorInfo();
   return {
+    ...deriveRuntimePhase({
+      available: Boolean(payload),
+      busy: Boolean(payload?.busy),
+      loadingAlias:
+        typeof payload?.loading_alias === "string" || payload?.loading_alias === null
+          ? (payload.loading_alias as string | null)
+          : null,
+      loadingError: typeof payload?.loading_error === "string" ? (payload.loading_error as string) : null,
+      supervisorAlive: supervisor.supervisorAlive,
+      gatewayAlive: supervisor.gatewayAlive,
+      message
+    }),
     targetId,
     targetLabel,
     execution,
@@ -82,7 +142,9 @@ export async function POST(request: Request) {
     const baseUrl = resolvedTarget.resolvedBaseUrl;
 
     if (body.action === "read_log") {
-      const logExcerpt = readLocalGatewayRecentLog(80);
+      const query = typeof body.query === "string" ? body.query.trim() : "";
+      const limit = typeof body.limit === "number" ? body.limit : 80;
+      const logDiagnostics = readLocalGatewayLogDiagnostics({ lines: limit, query });
       const ensureResult = await ensureLocalGatewayAvailableDetailed(baseUrl, { waitMs: 5000 }).catch(() => ({
         ok: false,
         reason: "Gateway ensure check failed.",
@@ -103,7 +165,8 @@ export async function POST(request: Request) {
         targetId: body.targetId,
         targetLabel: target.label,
         message: "Loaded recent gateway log.",
-        logExcerpt,
+        logExcerpt: logDiagnostics.excerpt || readLocalGatewayRecentLog(80),
+        logSummary: logDiagnostics.summary,
         runtime
       } satisfies AgentRuntimeActionResponse);
     }

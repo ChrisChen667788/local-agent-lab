@@ -57,6 +57,58 @@ async function readLocalHealth(healthUrl: string, timeoutMs = 1500) {
   }
 }
 
+function deriveRuntimePhase(input: {
+  execution: "local" | "remote";
+  available: boolean;
+  busy?: boolean;
+  loadingAlias?: string | null;
+  loadingError?: string | null;
+  supervisorAlive?: boolean;
+  gatewayAlive?: boolean;
+  message?: string;
+}) {
+  if (input.execution === "remote") {
+    return {
+      phase: "remote" as const,
+      phaseDetail: "Remote target. No local runtime queue."
+    };
+  }
+  if (input.loadingError) {
+    return {
+      phase: "error" as const,
+      phaseDetail: input.loadingError
+    };
+  }
+  if (input.loadingAlias) {
+    return {
+      phase: "loading" as const,
+      phaseDetail: `Loading ${input.loadingAlias}`
+    };
+  }
+  if (input.available && input.busy) {
+    return {
+      phase: "busy" as const,
+      phaseDetail: "The local runtime is serializing requests."
+    };
+  }
+  if (input.available) {
+    return {
+      phase: "ready" as const,
+      phaseDetail: "The local runtime is ready."
+    };
+  }
+  if (input.supervisorAlive || input.gatewayAlive) {
+    return {
+      phase: "recovering" as const,
+      phaseDetail: input.message || "The local runtime is starting or recovering."
+    };
+  }
+  return {
+    phase: "offline" as const,
+    phaseDetail: input.message || "The local runtime is unavailable."
+  };
+}
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const targetId = searchParams.get("targetId");
@@ -85,11 +137,17 @@ export async function GET(request: Request) {
       : false;
 
   if (target.execution !== "local") {
+    const phase = deriveRuntimePhase({
+      execution: target.execution,
+      available: true
+    });
     const payload: AgentRuntimeStatus = {
       targetId,
       targetLabel: target.label,
       execution: target.execution,
       available: true,
+      phase: phase.phase,
+      phaseDetail: phase.phaseDetail,
       resolvedModel: resolvedTarget.resolvedModel,
       resolvedBaseUrl: resolvedTarget.resolvedBaseUrl,
       standardResolvedModel: standardResolvedTarget.resolvedModel,
@@ -125,11 +183,13 @@ export async function GET(request: Request) {
           throw new Error(ensureResult.reason);
         }
       } else {
-        const payload: AgentRuntimeStatus = {
+      const payload: AgentRuntimeStatus = {
           targetId,
           targetLabel: target.label,
           execution: target.execution,
           available: false,
+          phase: "recovering",
+          phaseDetail: "Local runtime is starting, restarting, or temporarily busy.",
           resolvedModel: resolvedTarget.resolvedModel,
           resolvedBaseUrl: resolvedTarget.resolvedBaseUrl,
           standardResolvedModel: standardResolvedTarget.resolvedModel,
@@ -164,6 +224,18 @@ export async function GET(request: Request) {
       throw new Error(ensureReason || "Local runtime health endpoint is unavailable.");
     }
     const payload: AgentRuntimeStatus = {
+      ...deriveRuntimePhase({
+        execution: target.execution,
+        available: typeof data.loading_alias === "string" ? false : true,
+        busy: Boolean(data.busy),
+        loadingAlias:
+          typeof data.loading_alias === "string" || data.loading_alias === null
+            ? (data.loading_alias as string | null)
+            : null,
+        loadingError: typeof data.loading_error === "string" ? data.loading_error : null,
+        supervisorAlive: supervisor.supervisorAlive,
+        gatewayAlive: supervisor.gatewayAlive
+      }),
       targetId,
       targetLabel: target.label,
       execution: target.execution,
@@ -207,6 +279,13 @@ export async function GET(request: Request) {
     return NextResponse.json(payload);
   } catch (error) {
     const payload: AgentRuntimeStatus = {
+      ...deriveRuntimePhase({
+        execution: target.execution,
+        available: false,
+        supervisorAlive: supervisor.supervisorAlive,
+        gatewayAlive: supervisor.gatewayAlive,
+        message: error instanceof Error ? error.message : "Local runtime unavailable."
+      }),
       targetId,
       targetLabel: target.label,
       execution: target.execution,

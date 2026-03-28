@@ -24,7 +24,9 @@ import {
   completeBenchmarkProgressGroup,
   createBenchmarkProgress,
   failBenchmarkProgress,
+  finalizeBenchmarkProgressControl,
   markBenchmarkProgressRunning,
+  readBenchmarkProgress,
   startBenchmarkProgressGroup
 } from "@/lib/agent/benchmark-progress-store";
 import {
@@ -41,6 +43,7 @@ import type {
   AgentBenchmarkDatasetItem,
   AgentBenchmarkMode,
   AgentBenchmarkProfileBatchScope,
+  AgentExecution,
   AgentProviderProfile,
   AgentThinkingMode,
   AgentBenchmarkWorkloadSummary,
@@ -202,10 +205,33 @@ const REMOTE_PROFILE_COMPARISON_WORKLOAD_IDS = new Set([
   "bfcl-starter"
 ]);
 
+class BenchmarkControlError extends Error {
+  action: "stop" | "abandon";
+
+  constructor(action: "stop" | "abandon") {
+    super(action === "stop" ? "Benchmark run stopped." : "Benchmark run abandoned.");
+    this.action = action;
+    this.name = "BenchmarkControlError";
+  }
+}
+
 function average(values: Array<number | null | undefined>) {
   const filtered = values.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
   if (!filtered.length) return 0;
   return Number((filtered.reduce((sum, value) => sum + value, 0) / filtered.length).toFixed(2));
+}
+
+function readRequestedBenchmarkControl(runId: string) {
+  const progress = readBenchmarkProgress(runId);
+  if (!progress?.controlAction) return null;
+  return progress.controlAction === "stop-requested" ? "stop" : "abandon";
+}
+
+function assertBenchmarkRunActive(runId: string) {
+  const action = readRequestedBenchmarkControl(runId);
+  if (action) {
+    throw new BenchmarkControlError(action);
+  }
 }
 
 function sleep(ms: number) {
@@ -1067,7 +1093,10 @@ async function runBenchmarkTasksSequentially(
 async function runBenchmarkTasksWithConcurrency(
   tasks: PlannedSampleTask[],
   concurrency: number,
-  runner: (task: PlannedSampleTask) => Promise<AgentBenchmarkSample>
+  runner: (task: PlannedSampleTask) => Promise<AgentBenchmarkSample>,
+  options?: {
+    beforeEach?: () => void | Promise<void>;
+  }
 ) {
   const safeConcurrency = Math.max(1, Math.min(concurrency, tasks.length || 1));
   const results = new Array<AgentBenchmarkSample>(tasks.length);
@@ -1075,6 +1104,9 @@ async function runBenchmarkTasksWithConcurrency(
 
   async function worker() {
     while (true) {
+      if (options?.beforeEach) {
+        await options.beforeEach();
+      }
       const currentIndex = nextIndex;
       nextIndex += 1;
       if (currentIndex >= tasks.length) return;
@@ -1086,13 +1118,22 @@ async function runBenchmarkTasksWithConcurrency(
   return results;
 }
 
-async function runWithConcurrency<T>(tasks: Array<() => Promise<T>>, concurrency: number) {
+async function runWithConcurrency<T>(
+  tasks: Array<() => Promise<T>>,
+  concurrency: number,
+  options?: {
+    beforeEach?: () => void | Promise<void>;
+  }
+) {
   const safeConcurrency = Math.max(1, Math.min(concurrency, tasks.length || 1));
   const results = new Array<T>(tasks.length);
   let nextIndex = 0;
 
   async function worker() {
     while (true) {
+      if (options?.beforeEach) {
+        await options.beforeEach();
+      }
       const currentIndex = nextIndex;
       nextIndex += 1;
       if (currentIndex >= tasks.length) return;
@@ -1176,6 +1217,20 @@ function isFatalLocalBenchmarkFailure(sample: AgentBenchmarkSample) {
 
 export async function POST(request: Request) {
   let requestRunId = "";
+  let responseContext:
+    | {
+        runId: string;
+        plan: BenchmarkPlan;
+        contextWindow: number;
+        runs: number;
+        profileBatchScope?: AgentBenchmarkProfileBatchScope;
+        profileModes: Array<{
+          providerProfile: AgentProviderProfile;
+          thinkingMode: AgentThinkingMode;
+        }>;
+        results: AgentBenchmarkResult[];
+      }
+    | null = null;
   try {
     const body = (await request.json()) as BenchmarkRequestBody;
     requestRunId = typeof body.runId === "string" && body.runId.trim() ? body.runId.trim() : "";
@@ -1210,6 +1265,15 @@ export async function POST(request: Request) {
         ? deriveComparisonSubsetTasks(plannedTasks)
         : plannedTasks;
     const results: AgentBenchmarkResult[] = [];
+    responseContext = {
+      runId,
+      plan: resolvedPlan,
+      contextWindow,
+      runs,
+      profileBatchScope: profileModes.length > 1 ? profileBatchScope : undefined,
+      profileModes,
+      results
+    };
 
     const localTargets = selectedTargets.filter((target) => target.execution === "local");
     const remoteTargets = selectedTargets.filter((target) => target.execution === "remote");
@@ -1219,6 +1283,29 @@ export async function POST(request: Request) {
       remoteTargets.length *
         profileModes.length *
         (profileModes.length > 1 ? remoteComparisonTasks.length : plannedTasks.length);
+    const plannedGroups = [
+      ...localTargets.map((target) => ({
+        key: buildGroupKey(target.id, requestedProviderProfile, "standard"),
+        targetLabel: target.label,
+        providerProfile: requestedProviderProfile,
+        thinkingMode: "standard" as AgentThinkingMode,
+        execution: target.execution as AgentExecution,
+        sampleCount: plannedTasks.length
+      })),
+      ...remoteTargets.flatMap((target) =>
+        profileModes.map((mode) => ({
+          key: buildGroupKey(target.id, mode.providerProfile, mode.thinkingMode),
+          targetLabel: target.label,
+          providerProfile: mode.providerProfile,
+          thinkingMode: mode.thinkingMode,
+          execution: target.execution as AgentExecution,
+          sampleCount:
+            profileModes.length > 1 && profileBatchScope === "comparison-subset"
+              ? remoteComparisonTasks.length
+              : plannedTasks.length
+        }))
+      )
+    ];
 
     createBenchmarkProgress({
       runId,
@@ -1227,14 +1314,47 @@ export async function POST(request: Request) {
       suiteLabel: plan.suiteLabel,
       profileBatchScope: profileModes.length > 1 ? profileBatchScope : "full-suite",
       totalGroups,
-      totalSamples
+      totalSamples,
+      pendingGroups: plannedGroups
     });
     markBenchmarkProgressRunning(runId);
+
+    const buildPayload = (inputResults: AgentBenchmarkResult[]): AgentBenchmarkResponse => ({
+      ok: inputResults.some((result) => result.okRuns > 0),
+      generatedAt: new Date().toISOString(),
+      benchmarkMode: resolvedPlan.benchmarkMode,
+      prompt: resolvedPlan.prompt,
+      promptSetId: resolvedPlan.promptSetId,
+      promptSetLabel: resolvedPlan.promptSetLabel,
+      promptSetPromptCount: resolvedPlan.promptSetPromptCount,
+      datasetId: resolvedPlan.datasetId,
+      datasetLabel: resolvedPlan.datasetLabel,
+      datasetSourceLabel: resolvedPlan.datasetSourceLabel,
+      datasetSourceUrl: resolvedPlan.datasetSourceUrl,
+      datasetSampleCount: resolvedPlan.datasetSampleCount,
+      suiteId: resolvedPlan.suiteId,
+      suiteLabel: resolvedPlan.suiteLabel,
+      suiteWorkloadCount: resolvedPlan.suiteWorkloadCount,
+      workloads: resolvedPlan.workloads,
+      contextWindow,
+      runs,
+      providerProfile: profileModes.length === 1 ? profileModes[0].providerProfile : undefined,
+      thinkingMode: profileModes.length === 1 ? profileModes[0].thinkingMode : undefined,
+      runId,
+      profileBatchScope: profileModes.length > 1 ? profileBatchScope : undefined,
+      profileModes: profileModes.length > 1 ? profileModes : undefined,
+      comparisonsToLast: computeComparisonsToLast(inputResults, contextWindow, {
+        ...resolvedPlan,
+        profileBatchScope: profileModes.length > 1 ? profileBatchScope : undefined
+      }),
+      results: inputResults
+    });
 
     async function runResultGroup(
       target: (typeof selectedTargets)[number],
       mode: { providerProfile: AgentProviderProfile; thinkingMode: AgentThinkingMode }
     ) {
+      assertBenchmarkRunActive(runId);
       const resolvedTarget = resolveTargetWithMode(target.id, mode.thinkingMode);
       const effectiveContextWindow = clampContextWindowForTarget(target.id, contextWindow, {
         enableTools: false,
@@ -1250,10 +1370,13 @@ export async function POST(request: Request) {
         key: groupKey,
         targetLabel: target.label,
         providerProfile: mode.providerProfile,
-        thinkingMode: mode.thinkingMode
+        thinkingMode: mode.thinkingMode,
+        execution: target.execution,
+        sampleCount: tasksForGroup.length
       });
 
       const runner = async (task: PlannedSampleTask) => {
+        assertBenchmarkRunActive(runId);
         let sample = await runSingleBenchmarkSample(
           resolvedTarget,
           effectiveContextWindow,
@@ -1327,7 +1450,10 @@ export async function POST(request: Request) {
         samples = await runBenchmarkTasksWithConcurrency(
           tasksForGroup,
           REMOTE_BENCHMARK_SAMPLE_CONCURRENCY,
-          runner
+          runner,
+          {
+            beforeEach: () => assertBenchmarkRunActive(runId)
+          }
         );
       } else {
         let localSamples: AgentBenchmarkSample[] | null = null;
@@ -1349,6 +1475,7 @@ export async function POST(request: Request) {
           }
 
           for (let taskIndex = 0; taskIndex < workloadGroup.tasks.length; taskIndex += 1) {
+            assertBenchmarkRunActive(runId);
             const task = workloadGroup.tasks[taskIndex];
             const sample = await runner(task);
             collected.push(sample);
@@ -1475,9 +1602,21 @@ export async function POST(request: Request) {
     }
 
     for (const target of localTargets) {
+      assertBenchmarkRunActive(runId);
       try {
         await prewarmTarget(target.id);
       } catch (error) {
+        const groupKey = buildGroupKey(target.id, requestedProviderProfile, "standard");
+        for (const task of plannedTasks) {
+          advanceBenchmarkProgress(runId, {
+            ok: false,
+            targetLabel: target.label,
+            providerProfile: requestedProviderProfile,
+            thinkingMode: "standard",
+            workloadLabel: task.workloadLabel
+          });
+        }
+        completeBenchmarkProgressGroup(runId, groupKey);
         results.push({
           targetId: target.id,
           targetLabel: target.label,
@@ -1495,18 +1634,20 @@ export async function POST(request: Request) {
           firstTokenLatencyPercentiles: buildPercentiles([]),
           totalLatencyPercentiles: buildPercentiles([]),
           tokenThroughputPercentiles: buildPercentiles([]),
-          samples: [
-            {
-              run: 1,
-              firstTokenLatencyMs: null,
-              latencyMs: 0,
-              completionTokens: 0,
-              totalTokens: 0,
-              tokenThroughputTps: null,
-              ok: false,
-              warning: error instanceof Error ? error.message : "Prewarm failed."
-            }
-          ]
+          samples: plannedTasks.map((task) => ({
+            run: task.sampleRun,
+            workloadId: task.workloadId,
+            workloadLabel: task.workloadLabel,
+            itemId: task.itemId,
+            expectedAnswerPreview: task.expectedAnswerPreview,
+            firstTokenLatencyMs: null,
+            latencyMs: 0,
+            completionTokens: 0,
+            totalTokens: 0,
+            tokenThroughputTps: null,
+            ok: false,
+            warning: error instanceof Error ? error.message : "Prewarm failed."
+          }))
         });
         continue;
       }
@@ -1523,40 +1664,14 @@ export async function POST(request: Request) {
       remoteTargets.flatMap((target) =>
         profileModes.map((mode) => () => runResultGroup(target, mode))
       ),
-      REMOTE_BENCHMARK_GROUP_CONCURRENCY
+      REMOTE_BENCHMARK_GROUP_CONCURRENCY,
+      {
+        beforeEach: () => assertBenchmarkRunActive(runId)
+      }
     );
     results.push(...remoteResultGroups);
 
-    const payload: AgentBenchmarkResponse = {
-      ok: results.some((result) => result.okRuns > 0),
-      generatedAt: new Date().toISOString(),
-      benchmarkMode: resolvedPlan.benchmarkMode,
-      prompt: resolvedPlan.prompt,
-      promptSetId: resolvedPlan.promptSetId,
-      promptSetLabel: resolvedPlan.promptSetLabel,
-      promptSetPromptCount: resolvedPlan.promptSetPromptCount,
-      datasetId: resolvedPlan.datasetId,
-      datasetLabel: resolvedPlan.datasetLabel,
-      datasetSourceLabel: resolvedPlan.datasetSourceLabel,
-      datasetSourceUrl: resolvedPlan.datasetSourceUrl,
-      datasetSampleCount: resolvedPlan.datasetSampleCount,
-      suiteId: resolvedPlan.suiteId,
-      suiteLabel: resolvedPlan.suiteLabel,
-      suiteWorkloadCount: resolvedPlan.suiteWorkloadCount,
-      workloads: resolvedPlan.workloads,
-      contextWindow,
-      runs,
-      providerProfile: profileModes.length === 1 ? profileModes[0].providerProfile : undefined,
-      thinkingMode: profileModes.length === 1 ? profileModes[0].thinkingMode : undefined,
-      runId,
-      profileBatchScope: profileModes.length > 1 ? profileBatchScope : undefined,
-      profileModes: profileModes.length > 1 ? profileModes : undefined,
-      comparisonsToLast: computeComparisonsToLast(results, contextWindow, {
-        ...resolvedPlan,
-        profileBatchScope: profileModes.length > 1 ? profileBatchScope : undefined
-      }),
-      results
-    };
+    const payload = buildPayload(results);
 
     appendBenchmarkLog({
       kind: "benchmark",
@@ -1567,6 +1682,45 @@ export async function POST(request: Request) {
 
     return NextResponse.json(payload);
   } catch (error) {
+    if (error instanceof BenchmarkControlError && requestRunId) {
+      finalizeBenchmarkProgressControl(requestRunId, error.action, error.message);
+      if (responseContext) {
+        return NextResponse.json({
+          ok: responseContext.results.some((result) => result.okRuns > 0),
+          generatedAt: new Date().toISOString(),
+          benchmarkMode: responseContext.plan.benchmarkMode,
+          prompt: responseContext.plan.prompt,
+          promptSetId: responseContext.plan.promptSetId,
+          promptSetLabel: responseContext.plan.promptSetLabel,
+          promptSetPromptCount: responseContext.plan.promptSetPromptCount,
+          datasetId: responseContext.plan.datasetId,
+          datasetLabel: responseContext.plan.datasetLabel,
+          datasetSourceLabel: responseContext.plan.datasetSourceLabel,
+          datasetSourceUrl: responseContext.plan.datasetSourceUrl,
+          datasetSampleCount: responseContext.plan.datasetSampleCount,
+          suiteId: responseContext.plan.suiteId,
+          suiteLabel: responseContext.plan.suiteLabel,
+          suiteWorkloadCount: responseContext.plan.suiteWorkloadCount,
+          workloads: responseContext.plan.workloads,
+          contextWindow: responseContext.contextWindow,
+          runs: responseContext.runs,
+          providerProfile:
+            responseContext.profileModes.length === 1 ? responseContext.profileModes[0].providerProfile : undefined,
+          thinkingMode:
+            responseContext.profileModes.length === 1 ? responseContext.profileModes[0].thinkingMode : undefined,
+          runId: responseContext.runId,
+          profileBatchScope: responseContext.profileBatchScope,
+          profileModes: responseContext.profileModes.length > 1 ? responseContext.profileModes : undefined,
+          comparisonsToLast: computeComparisonsToLast(responseContext.results, responseContext.contextWindow, {
+            ...responseContext.plan,
+            profileBatchScope: responseContext.profileBatchScope
+          }),
+          results: responseContext.results,
+          warning: error.message
+        });
+      }
+      return NextResponse.json({ ok: false, runId: requestRunId, warning: error.message });
+    }
     const message = error instanceof Error ? error.message : "Benchmark failed.";
     if (requestRunId) {
       failBenchmarkProgress(requestRunId, message);
