@@ -881,6 +881,7 @@ export function AdminDashboard() {
   const [knowledgeImportRecursive, setKnowledgeImportRecursive] = useState(true);
   const [knowledgeImportTags, setKnowledgeImportTags] = useState("");
   const [knowledgeImportPreview, setKnowledgeImportPreview] = useState<KnowledgeImportPreview | null>(null);
+  const [highlightedKnowledgeDocumentIds, setHighlightedKnowledgeDocumentIds] = useState<string[]>([]);
   const [knowledgeRecommendedPaths, setKnowledgeRecommendedPaths] = useState<string[]>([]);
   const [knowledgeRecentPaths, setKnowledgeRecentPaths] = useState<KnowledgeRecentPathEntry[]>([]);
   const [knowledgeWorkspaceRoot, setKnowledgeWorkspaceRoot] = useState("");
@@ -942,6 +943,7 @@ export function AdminDashboard() {
   const [prewarmAllPending, setPrewarmAllPending] = useState(false);
   const [prewarmAllMessage, setPrewarmAllMessage] = useState("");
   const knowledgeImportInputRef = useRef<HTMLInputElement | null>(null);
+  const knowledgeHighlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [windowMinutes, setWindowMinutes] = useState(60);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [pending, setPending] = useState(false);
@@ -1906,6 +1908,19 @@ export function AdminDashboard() {
     }
   }
 
+  function highlightImportedKnowledgeDocuments(documentIds: string[]) {
+    const nextIds = documentIds.filter(Boolean);
+    if (!nextIds.length) return;
+    if (knowledgeHighlightTimeoutRef.current) {
+      clearTimeout(knowledgeHighlightTimeoutRef.current);
+    }
+    setHighlightedKnowledgeDocumentIds(nextIds);
+    knowledgeHighlightTimeoutRef.current = setTimeout(() => {
+      setHighlightedKnowledgeDocumentIds([]);
+      knowledgeHighlightTimeoutRef.current = null;
+    }, 12000);
+  }
+
   async function saveKnowledgeDocument() {
     if (!knowledgeEditor.title.trim() || !knowledgeEditor.content.trim()) {
       setBenchmarkError("Knowledge title and content are required.");
@@ -2043,6 +2058,7 @@ export function AdminDashboard() {
       const payload = (await response.json()) as {
         error?: string;
         importedCount?: number;
+        importedDocuments?: AgentKnowledgeDocument[];
         inspection?: KnowledgeImportPreview;
         supportedExtensions?: string[];
       };
@@ -2059,6 +2075,7 @@ export function AdminDashboard() {
           : null
       );
       rememberKnowledgeImportPath(normalizedPath);
+      highlightImportedKnowledgeDocuments((payload.importedDocuments || []).map((document) => document.id));
       setKnowledgeMessage(
         locale.startsWith("en")
           ? `Imported ${payload.importedCount || 0} documents from path.`
@@ -2125,6 +2142,7 @@ export function AdminDashboard() {
       const importPayload = (await importResponse.json()) as {
         error?: string;
         importedCount?: number;
+        importedDocuments?: AgentKnowledgeDocument[];
         inspection?: KnowledgeImportPreview;
         supportedExtensions?: string[];
       };
@@ -2146,6 +2164,7 @@ export function AdminDashboard() {
             : null
       );
       rememberKnowledgeImportPath(normalizedPath);
+      highlightImportedKnowledgeDocuments((importPayload.importedDocuments || []).map((document) => document.id));
       setKnowledgeMessage(
         locale.startsWith("en")
           ? `Scanned and imported ${importPayload.importedCount || 0} documents.`
@@ -5401,10 +5420,24 @@ export function AdminDashboard() {
                 <div className="mt-3 max-h-[320px] space-y-3 overflow-auto pr-1">
                   {knowledgeDocuments.length ? (
                     knowledgeDocuments.map((document) => (
-                      <div key={document.id} className="rounded-2xl border border-white/10 bg-slate-950/60 px-3 py-3">
+                      <div
+                        key={document.id}
+                        className={`rounded-2xl border px-3 py-3 transition ${
+                          highlightedKnowledgeDocumentIds.includes(document.id)
+                            ? "border-cyan-400/30 bg-cyan-400/10 shadow-[0_0_0_1px_rgba(34,211,238,0.15)]"
+                            : "border-white/10 bg-slate-950/60"
+                        }`}
+                      >
                         <div className="flex items-start justify-between gap-3">
                           <div>
-                            <p className="text-sm font-semibold text-white">{document.title}</p>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="text-sm font-semibold text-white">{document.title}</p>
+                              {highlightedKnowledgeDocumentIds.includes(document.id) ? (
+                                <span className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-cyan-100">
+                                  {locale.startsWith("en") ? "New import" : "新导入"}
+                                </span>
+                              ) : null}
+                            </div>
                             <p className="mt-1 text-xs text-slate-500">
                               {document.chunkCount} chunks · {new Date(document.updatedAt).toLocaleString()}
                             </p>

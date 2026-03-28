@@ -558,6 +558,23 @@ function buildReplayComparison(turn: AgentTurn, locale: string) {
   };
 }
 
+function buildReplayComparisonSummaryText(
+  comparison: ReturnType<typeof buildReplayComparison>,
+  locale: string
+) {
+  if (!comparison) return "";
+  return [
+    locale.startsWith("en") ? "Replay compare" : "回放对比",
+    comparison.sourceLabel,
+    `${comparison.replayModeLabel} · ${comparison.targetModeLabel}`,
+    `${locale.startsWith("en") ? "Response delta" : "响应长度变化"}: ${comparison.responseDelta > 0 ? "+" : ""}${comparison.responseDelta}`,
+    comparison.summary,
+    ...comparison.keyDiffs.map((diff, index) =>
+      `${locale.startsWith("en") ? "Diff" : "差异"} ${index + 1}: ${diff}`
+    )
+  ].join("\n");
+}
+
 function collectToolReviewItems(turn: AgentTurn) {
   return turn.toolRuns.flatMap((toolRun, index) => {
     const parsed = parseToolOutput(toolRun.output);
@@ -3848,8 +3865,11 @@ export function AgentWorkbench() {
                                                         <div className="flex flex-wrap items-center justify-end gap-2">
                                                           {workspaceFileOpen &&
                                                           workspaceFileFocusState?.path === file.path &&
-                                                          workspaceFileFocusState.anchors.length > 1 ? (
+                                                          workspaceFileFocusState.anchors.length ? (
                                                             <>
+                                                              <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">
+                                                                {workspaceFileFocusState.index + 1}/{workspaceFileFocusState.anchors.length}
+                                                              </span>
                                                               <button
                                                                 type="button"
                                                                 disabled={workspaceFileFocusState.index === 0}
@@ -4249,16 +4269,34 @@ export function AgentWorkbench() {
 
                         {replayComparison ? (
                           <div className="rounded-2xl border border-violet-400/20 bg-violet-400/[0.06] px-3 py-3">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="rounded-full border border-violet-400/20 bg-violet-400/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-violet-100">
-                                {locale.startsWith("en") ? "Replay compare" : "回放对比"}
-                              </span>
-                              <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-200">
-                                {replayComparison.replayModeLabel}
-                              </span>
-                              <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-200">
-                                {replayComparison.targetModeLabel}
-                              </span>
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="rounded-full border border-violet-400/20 bg-violet-400/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-violet-100">
+                                  {locale.startsWith("en") ? "Replay compare" : "回放对比"}
+                                </span>
+                                <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-200">
+                                  {replayComparison.replayModeLabel}
+                                </span>
+                                <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-200">
+                                  {replayComparison.targetModeLabel}
+                                </span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleCopy(
+                                    buildReplayComparisonSummaryText(replayComparison, locale),
+                                    `${turn.id}:replay-compare`
+                                  )
+                                }
+                                className="rounded-full border border-violet-400/20 bg-violet-400/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-violet-100 transition hover:bg-violet-400/20"
+                              >
+                                {copyState === `${turn.id}:replay-compare`
+                                  ? dictionary.common.copied
+                                  : locale.startsWith("en")
+                                    ? "Copy diff summary"
+                                    : "复制差异摘要"}
+                              </button>
                             </div>
                             <p className="mt-2 text-xs leading-6 text-slate-200">{replayComparison.sourceLabel}</p>
                             <p className="mt-1 text-xs leading-6 text-slate-300">
