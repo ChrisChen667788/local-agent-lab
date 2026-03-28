@@ -5,6 +5,7 @@ import {
   readLatestBenchmarkProgress,
   requestBenchmarkProgressControl
 } from "@/lib/agent/benchmark-progress-store";
+import { abortBenchmarkRun } from "@/lib/agent/benchmark-run-control";
 
 export const runtime = "nodejs";
 
@@ -49,7 +50,11 @@ export async function POST(request: Request) {
 
   const next =
     current.status === "pending" || current.status === "running"
-      ? requestBenchmarkProgressControl(runId, action)
+      ? (() => {
+          const updated = requestBenchmarkProgressControl(runId, action);
+          abortBenchmarkRun(runId);
+          return updated;
+        })()
       : finalizeBenchmarkProgressControl(runId, action, action === "stop" ? "Benchmark run stopped." : "Benchmark run abandoned.");
 
   if (!next) {

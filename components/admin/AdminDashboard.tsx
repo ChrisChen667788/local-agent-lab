@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { agentTargets } from "@/lib/agent/catalog";
 import {
   benchmarkDatasets,
@@ -854,6 +854,7 @@ export function AdminDashboard() {
   const [knowledgeChunks, setKnowledgeChunks] = useState<KnowledgeBaseResponse["chunks"]>([]);
   const [knowledgePending, setKnowledgePending] = useState(false);
   const [knowledgeMessage, setKnowledgeMessage] = useState("");
+  const [knowledgeMessageTone, setKnowledgeMessageTone] = useState<"success" | "error">("success");
   const [knowledgeQuery, setKnowledgeQuery] = useState("");
   const [knowledgeQueryPending, setKnowledgeQueryPending] = useState(false);
   const [knowledgeResults, setKnowledgeResults] = useState<AgentRetrievalSummary | null>(null);
@@ -916,6 +917,7 @@ export function AdminDashboard() {
   const [runtimeMessages, setRuntimeMessages] = useState<Record<string, string>>({});
   const [prewarmAllPending, setPrewarmAllPending] = useState(false);
   const [prewarmAllMessage, setPrewarmAllMessage] = useState("");
+  const knowledgeImportInputRef = useRef<HTMLInputElement | null>(null);
   const [windowMinutes, setWindowMinutes] = useState(60);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [pending, setPending] = useState(false);
@@ -1850,6 +1852,7 @@ export function AdminDashboard() {
       content: ""
     });
     setKnowledgeMessage("");
+    setKnowledgeMessageTone("success");
   }
 
   async function loadKnowledgeBase(documentId?: string) {
@@ -1867,6 +1870,7 @@ export function AdminDashboard() {
       setKnowledgeStats(payload.stats || null);
       setKnowledgeChunks(payload.chunks || []);
       setKnowledgeMessage("");
+      setKnowledgeMessageTone("success");
     } catch (knowledgeError) {
       setBenchmarkError((current) =>
         current || (knowledgeError instanceof Error ? knowledgeError.message : "Failed to load knowledge base.")
@@ -1904,6 +1908,7 @@ export function AdminDashboard() {
       }
       await loadKnowledgeBase(payload.document?.id);
       setKnowledgeMessage(uiText.knowledgeSave);
+      setKnowledgeMessageTone("success");
       if (payload.document) {
         setKnowledgeEditor({
           id: payload.document.id,
@@ -1924,10 +1929,15 @@ export function AdminDashboard() {
 
   async function importKnowledgePath() {
     if (!knowledgeImportPath.trim()) {
-      setBenchmarkError(locale.startsWith("en") ? "Knowledge import path is required." : "需要填写知识库导入路径。");
+      setKnowledgeMessage(
+        locale.startsWith("en") ? "Please fill in an absolute local path before importing." : "请先填写本地绝对路径，再执行导入。"
+      );
+      setKnowledgeMessageTone("error");
+      knowledgeImportInputRef.current?.focus();
       return;
     }
     setKnowledgePending(true);
+    setKnowledgeMessage("");
     try {
       const response = await fetch("/api/admin/knowledge-base", {
         method: "POST",
@@ -1952,13 +1962,26 @@ export function AdminDashboard() {
           ? `Imported ${payload.importedCount || 0} documents from path.`
           : `已从路径导入 ${payload.importedCount || 0} 个文档。`
       );
+      setKnowledgeMessageTone("success");
     } catch (knowledgeError) {
-      setBenchmarkError(
+      setKnowledgeMessage(
         knowledgeError instanceof Error ? knowledgeError.message : "Failed to import knowledge path."
       );
+      setKnowledgeMessageTone("error");
     } finally {
       setKnowledgePending(false);
     }
+  }
+
+  function fillKnowledgeImportWorkspacePath() {
+    setKnowledgeImportPath("/Users/chenhaorui/Documents/New project/docs");
+    setKnowledgeMessage(
+      locale.startsWith("en")
+        ? "Filled with the current workspace docs path. You can still edit it before importing."
+        : "已填入当前工作区 docs 路径，导入前仍可自行修改。"
+    );
+    setKnowledgeMessageTone("success");
+    knowledgeImportInputRef.current?.focus();
   }
 
   function editKnowledgeDocument(document: AgentKnowledgeDocument) {
@@ -4850,8 +4873,15 @@ export function AdminDashboard() {
                   </div>
                   <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_180px]">
                     <input
+                      ref={knowledgeImportInputRef}
                       value={knowledgeImportPath}
                       onChange={(event) => setKnowledgeImportPath(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          void importKnowledgePath();
+                        }
+                      }}
                       placeholder={locale.startsWith("en") ? "/absolute/path/to/docs" : "填写本地绝对路径"}
                       className="rounded-2xl border border-white/10 bg-black/20 px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500"
                     />
@@ -4863,6 +4893,13 @@ export function AdminDashboard() {
                     />
                   </div>
                   <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={fillKnowledgeImportWorkspacePath}
+                      className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10"
+                    >
+                      {locale.startsWith("en") ? "Use workspace docs" : "填入当前工作区 docs"}
+                    </button>
                     <button
                       type="button"
                       onClick={() => void importKnowledgePath()}
@@ -4880,6 +4917,17 @@ export function AdminDashboard() {
                         : "支持：md、txt、rst、json、yaml、ts、tsx、js、jsx、py"}
                     </span>
                   </div>
+                  {knowledgeMessage ? (
+                    <div
+                      className={`mt-3 rounded-2xl border px-3 py-2 text-sm ${
+                        knowledgeMessageTone === "error"
+                          ? "border-rose-400/30 bg-rose-400/10 text-rose-100"
+                          : "border-cyan-400/20 bg-cyan-400/10 text-cyan-100"
+                      }`}
+                    >
+                      {knowledgeMessage}
+                    </div>
+                  ) : null}
                 </div>
                 <label className="grid gap-2">
                   <span className="text-xs uppercase tracking-[0.22em] text-slate-500">{uiText.knowledgeTitle}</span>
@@ -4932,7 +4980,13 @@ export function AdminDashboard() {
                     {uiText.knowledgeReset}
                   </button>
                   {knowledgeMessage ? (
-                    <span className="self-center text-sm text-cyan-100">{knowledgeMessage}</span>
+                    <span
+                      className={`self-center text-sm ${
+                        knowledgeMessageTone === "error" ? "text-rose-100" : "text-cyan-100"
+                      }`}
+                    >
+                      {knowledgeMessage}
+                    </span>
                   ) : null}
                 </div>
               </div>

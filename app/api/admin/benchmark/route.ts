@@ -30,6 +30,11 @@ import {
   startBenchmarkProgressGroup
 } from "@/lib/agent/benchmark-progress-store";
 import {
+  clearBenchmarkRunController,
+  getBenchmarkRunSignal,
+  registerBenchmarkRunController
+} from "@/lib/agent/benchmark-run-control";
+import {
   normalizeProviderProfile,
   normalizeThinkingMode,
   resolveTargetWithMode,
@@ -228,6 +233,10 @@ function readRequestedBenchmarkControl(runId: string) {
 }
 
 function assertBenchmarkRunActive(runId: string) {
+  const signal = getBenchmarkRunSignal(runId);
+  if (signal?.aborted) {
+    throw new BenchmarkControlError(readRequestedBenchmarkControl(runId) || "stop");
+  }
   const action = readRequestedBenchmarkControl(runId);
   if (action) {
     throw new BenchmarkControlError(action);
@@ -285,8 +294,16 @@ function getRemoteBenchmarkStreamIdleTimeoutMs(totalTimeoutMs: number) {
   return Math.max(90000, Math.min(180000, Math.floor(totalTimeoutMs * 0.8)));
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number) {
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number, externalSignal?: AbortSignal) {
   const controller = new AbortController();
+  const abortFromExternal = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort();
+    } else {
+      externalSignal.addEventListener("abort", abortFromExternal, { once: true });
+    }
+  }
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, {
@@ -295,6 +312,9 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
     });
   } finally {
     clearTimeout(timer);
+    if (externalSignal) {
+      externalSignal.removeEventListener("abort", abortFromExternal);
+    }
   }
 }
 
@@ -753,7 +773,7 @@ async function runSingleBenchmarkSample(
   maxTokens: number,
   prompt: string,
   providerProfile: AgentProviderProfile,
-  options?: { ensureGateway?: boolean; workloadId?: string; thinkingMode?: AgentThinkingMode }
+  options?: { ensureGateway?: boolean; workloadId?: string; thinkingMode?: AgentThinkingMode; runId?: string }
 ): Promise<AgentBenchmarkSample> {
   const startedAt = Date.now();
   let firstTokenLatencyMs: number | null = null;
@@ -765,6 +785,7 @@ async function runSingleBenchmarkSample(
     maxTokens,
     suggestMaxTokens(target.execution, false, prompt, providerProfile)
   );
+  const runSignal = options?.runId ? getBenchmarkRunSignal(options.runId) : undefined;
 
   async function requestLocalStream() {
     try {
@@ -780,8 +801,11 @@ async function runSingleBenchmarkSample(
           max_tokens: effectiveMaxTokens,
           context_window: contextWindow
         })
-      }, LOCAL_BENCHMARK_STREAM_TIMEOUT_MS);
+      }, LOCAL_BENCHMARK_STREAM_TIMEOUT_MS, runSignal);
     } catch {
+      if (options?.runId) {
+        assertBenchmarkRunActive(options.runId);
+      }
       const reachable = await probeLocalGateway(target.resolvedBaseUrl, 5000);
       if (reachable) {
         return fetchWithTimeout(`${target.resolvedBaseUrl.replace(/\/v1$/, "")}/v1/chat/completions/stream`, {
@@ -796,7 +820,7 @@ async function runSingleBenchmarkSample(
             max_tokens: effectiveMaxTokens,
             context_window: contextWindow
           })
-        }, LOCAL_BENCHMARK_STREAM_TIMEOUT_MS);
+        }, LOCAL_BENCHMARK_STREAM_TIMEOUT_MS, runSignal);
       }
       const restarted = await restartLocalGateway(target.resolvedBaseUrl, {
         waitMs: LOCAL_BENCHMARK_WARMUP_WAIT_MS
@@ -816,7 +840,7 @@ async function runSingleBenchmarkSample(
           max_tokens: effectiveMaxTokens,
           context_window: contextWindow
         })
-      }, LOCAL_BENCHMARK_STREAM_TIMEOUT_MS);
+      }, LOCAL_BENCHMARK_STREAM_TIMEOUT_MS, runSignal);
     }
   }
 
@@ -832,6 +856,9 @@ async function runSingleBenchmarkSample(
 
     while (attempt <= REMOTE_BENCHMARK_MAX_ATTEMPTS) {
       try {
+        if (options?.runId) {
+          assertBenchmarkRunActive(options.runId);
+        }
         const response = await fetchWithTimeout(`${target.resolvedBaseUrl}/chat/completions`, {
           method: "POST",
           headers: {
@@ -848,7 +875,7 @@ async function runSingleBenchmarkSample(
             stream: true,
             stream_options: { include_usage: true }
           })
-        }, remoteTimeoutMs);
+        }, remoteTimeoutMs, runSignal);
         if (!response.ok) {
           const warning = await response.text();
           lastWarning = warning || `Remote benchmark request failed with HTTP ${response.status}.`;
@@ -957,6 +984,9 @@ async function runSingleBenchmarkSample(
           ok: true
         };
       } catch (error) {
+        if (options?.runId) {
+          assertBenchmarkRunActive(options.runId);
+        }
         lastWarning = error instanceof Error ? error.message : "Unknown remote benchmark error.";
         if (attempt < REMOTE_BENCHMARK_MAX_ATTEMPTS && isRetryableRemoteBenchmarkFailure(lastWarning)) {
           await sleep(1000 * attempt);
@@ -1065,6 +1095,9 @@ async function runSingleBenchmarkSample(
       ok: true
     };
   } catch (error) {
+    if (options?.runId) {
+      assertBenchmarkRunActive(options.runId);
+    }
     return {
       run: 0,
       firstTokenLatencyMs: null,
@@ -1145,12 +1178,16 @@ async function runWithConcurrency<T>(
   return results;
 }
 
-async function prewarmTarget(targetId: string) {
+async function prewarmTarget(targetId: string, runId?: string) {
   const target = resolveTargetWithMode(targetId, "standard");
   const prewarmUrl = `${target.resolvedBaseUrl.replace(/\/v1$/, "")}/v1/models/prewarm`;
   const errors: string[] = [];
+  const runSignal = runId ? getBenchmarkRunSignal(runId) : undefined;
 
   for (let attempt = 1; attempt <= 3; attempt += 1) {
+    if (runId) {
+      assertBenchmarkRunActive(runId);
+    }
     const ensureResult = await ensureLocalBenchmarkGateway(target.resolvedBaseUrl);
     if (!ensureResult.ok) {
       errors.push(`attempt ${attempt}: ${ensureResult.reason}`);
@@ -1165,7 +1202,8 @@ async function prewarmTarget(targetId: string) {
               model: target.resolvedModel
             })
           },
-          LOCAL_BENCHMARK_PREWARM_TIMEOUT_MS
+          LOCAL_BENCHMARK_PREWARM_TIMEOUT_MS,
+          runSignal
         );
 
         if (response.ok) {
@@ -1257,6 +1295,7 @@ export async function POST(request: Request) {
     }
 
     const runId = requestRunId || crypto.randomUUID();
+    registerBenchmarkRunController(runId);
     const profileBatchScope: AgentBenchmarkProfileBatchScope =
       body.profileBatchScope === "comparison-subset" ? "comparison-subset" : "full-suite";
     const plannedTasks = expandPlanTasks(resolvedPlan, contextWindow, maxTokens);
@@ -1383,7 +1422,7 @@ export async function POST(request: Request) {
           task.maxTokens,
           task.prompt,
           mode.providerProfile,
-          { ensureGateway: false, workloadId: task.workloadId, thinkingMode: mode.thinkingMode }
+          { ensureGateway: false, workloadId: task.workloadId, thinkingMode: mode.thinkingMode, runId }
         );
 
         if (target.execution === "local" && isRetryableLocalSampleFailure(sample)) {
@@ -1392,14 +1431,14 @@ export async function POST(request: Request) {
           });
           if (restarted) {
             try {
-              await prewarmTarget(target.id);
+              await prewarmTarget(target.id, runId);
               sample = await runSingleBenchmarkSample(
                 resolvedTarget,
                 effectiveContextWindow,
                 task.maxTokens,
                 task.prompt,
                 mode.providerProfile,
-                { ensureGateway: false, workloadId: task.workloadId, thinkingMode: mode.thinkingMode }
+                { ensureGateway: false, workloadId: task.workloadId, thinkingMode: mode.thinkingMode, runId }
               );
             } catch {
               // Keep the original failed sample if recovery also failed.
@@ -1468,7 +1507,7 @@ export async function POST(request: Request) {
 
           if (groupIndex > 0 && resolvedPlan.benchmarkMode === "suite") {
             try {
-              await prewarmTarget(target.id);
+              await prewarmTarget(target.id, runId);
             } catch {
               // Let the first sample in the next workload surface the failure; do not abort the whole run here.
             }
@@ -1604,7 +1643,7 @@ export async function POST(request: Request) {
     for (const target of localTargets) {
       assertBenchmarkRunActive(runId);
       try {
-        await prewarmTarget(target.id);
+        await prewarmTarget(target.id, runId);
       } catch (error) {
         const groupKey = buildGroupKey(target.id, requestedProviderProfile, "standard");
         for (const task of plannedTasks) {
@@ -1729,5 +1768,10 @@ export async function POST(request: Request) {
       { error: message },
       { status: 500 }
     );
+  } finally {
+    const runId = responseContext?.runId || requestRunId;
+    if (runId) {
+      clearBenchmarkRunController(runId);
+    }
   }
 }
