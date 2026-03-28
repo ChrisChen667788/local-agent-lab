@@ -194,7 +194,7 @@ function buildSuitePlan(
 const REMOTE_BENCHMARK_SAMPLE_CONCURRENCY = 1;
 const REMOTE_BENCHMARK_GROUP_CONCURRENCY = 1;
 const REMOTE_BENCHMARK_MAX_ATTEMPTS = 4;
-const REMOTE_BENCHMARK_TIMEOUT_MS = 90000;
+const REMOTE_BENCHMARK_TIMEOUT_MS = 120000;
 const REMOTE_PROFILE_COMPARISON_WORKLOAD_IDS = new Set([
   "latency-smoke",
   "instruction-following-lite",
@@ -224,10 +224,39 @@ function isRetryableRemoteBenchmarkFailure(message: string) {
     normalized.includes("fetch failed") ||
     normalized.includes("network") ||
     normalized.includes("socket hang up") ||
+    normalized.includes("aborted") ||
+    normalized.includes("terminated") ||
+    normalized.includes("stream idle timeout") ||
     normalized.includes("temporarily unavailable") ||
     normalized.includes("bad gateway") ||
     normalized.includes("service unavailable")
   );
+}
+
+function getRemoteBenchmarkTimeoutMs(
+  workloadId: string,
+  providerProfile: AgentProviderProfile,
+  thinkingMode: AgentThinkingMode
+) {
+  let timeoutMs = REMOTE_BENCHMARK_TIMEOUT_MS;
+  if (thinkingMode === "thinking") timeoutMs += 45000;
+  if (providerProfile === "tool-first") timeoutMs += 30000;
+  if (
+    workloadId === "grounded-kb-qa" ||
+    workloadId === "code-rag-repo-qa" ||
+    workloadId === "agent-flow-lite" ||
+    workloadId === "longbench-starter"
+  ) {
+    timeoutMs += 30000;
+  }
+  if (workloadId === "humaneval-starter" || workloadId === "mbppplus-starter") {
+    timeoutMs += 45000;
+  }
+  return timeoutMs;
+}
+
+function getRemoteBenchmarkStreamIdleTimeoutMs(totalTimeoutMs: number) {
+  return Math.max(90000, Math.min(180000, Math.floor(totalTimeoutMs * 0.8)));
 }
 
 async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number) {
@@ -698,7 +727,7 @@ async function runSingleBenchmarkSample(
   maxTokens: number,
   prompt: string,
   providerProfile: AgentProviderProfile,
-  options?: { ensureGateway?: boolean }
+  options?: { ensureGateway?: boolean; workloadId?: string; thinkingMode?: AgentThinkingMode }
 ): Promise<AgentBenchmarkSample> {
   const startedAt = Date.now();
   let firstTokenLatencyMs: number | null = null;
@@ -768,6 +797,12 @@ async function runSingleBenchmarkSample(
   async function executeRemoteSample(): Promise<AgentBenchmarkSample> {
     let attempt = 1;
     let lastWarning = "Unknown remote benchmark error.";
+    const remoteTimeoutMs = getRemoteBenchmarkTimeoutMs(
+      options?.workloadId || "custom-prompt",
+      providerProfile,
+      options?.thinkingMode || "standard"
+    );
+    const remoteStreamIdleTimeoutMs = getRemoteBenchmarkStreamIdleTimeoutMs(remoteTimeoutMs);
 
     while (attempt <= REMOTE_BENCHMARK_MAX_ATTEMPTS) {
       try {
@@ -787,7 +822,7 @@ async function runSingleBenchmarkSample(
             stream: true,
             stream_options: { include_usage: true }
           })
-        }, REMOTE_BENCHMARK_TIMEOUT_MS);
+        }, remoteTimeoutMs);
         if (!response.ok) {
           const warning = await response.text();
           lastWarning = warning || `Remote benchmark request failed with HTTP ${response.status}.`;
@@ -820,7 +855,23 @@ async function runSingleBenchmarkSample(
                 const decoder = new TextDecoder();
                 let buffer = "";
                 while (true) {
-                  const { done, value } = await reader.read();
+                  const { done, value } = await new Promise<ReadableStreamReadResult<Uint8Array>>(
+                    (resolve, reject) => {
+                      const timer = setTimeout(() => {
+                        reject(new Error("Remote benchmark stream idle timeout."));
+                      }, remoteStreamIdleTimeoutMs);
+                      reader
+                        .read()
+                        .then((result) => {
+                          clearTimeout(timer);
+                          resolve(result);
+                        })
+                        .catch((error) => {
+                          clearTimeout(timer);
+                          reject(error);
+                        });
+                    }
+                  );
                   if (done) break;
                   buffer += decoder.decode(value, { stream: true });
                   const events = buffer.split("\n\n");
@@ -1209,7 +1260,7 @@ export async function POST(request: Request) {
           task.maxTokens,
           task.prompt,
           mode.providerProfile,
-          { ensureGateway: false }
+          { ensureGateway: false, workloadId: task.workloadId, thinkingMode: mode.thinkingMode }
         );
 
         if (target.execution === "local" && isRetryableLocalSampleFailure(sample)) {
@@ -1225,7 +1276,7 @@ export async function POST(request: Request) {
                 task.maxTokens,
                 task.prompt,
                 mode.providerProfile,
-                { ensureGateway: false }
+                { ensureGateway: false, workloadId: task.workloadId, thinkingMode: mode.thinkingMode }
               );
             } catch {
               // Keep the original failed sample if recovery also failed.

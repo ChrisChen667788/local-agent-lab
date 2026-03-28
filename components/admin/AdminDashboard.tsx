@@ -111,6 +111,16 @@ type DashboardResponse = {
       passRate?: number | null;
       okRuns: number;
       runs: number;
+      samples: Array<{
+        firstTokenLatencyMs: number | null;
+        latencyMs: number;
+        completionTokens: number;
+        tokenThroughputTps: number | null;
+        ok: boolean;
+        warning?: string | null;
+        workloadId?: string | null;
+        itemId?: string | null;
+      }>;
     }>;
   }>;
   benchmarkTrends: Array<{
@@ -434,17 +444,17 @@ function MultiSeriesCard({
   const max = Math.max(...allValues, 1);
 
   return (
-    <div className="rounded-3xl border border-white/10 bg-slate-950/70 p-4">
-      <p className="text-sm text-slate-300">{title}</p>
-      <div className="mt-3 flex flex-wrap gap-2">
+    <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-3.5">
+      <p className="text-xs font-medium text-slate-400">{title}</p>
+      <div className="mt-2.5 flex flex-wrap gap-1.5">
         {lines.map((line) => (
-          <span key={line.label} className="inline-flex items-center gap-2 rounded-full bg-white/5 px-2.5 py-1 text-[11px] text-slate-300">
-            <span className="h-2 w-2 rounded-full" style={{ backgroundColor: strokeMap[line.tone] }} />
+          <span key={line.label} className="inline-flex items-center gap-1.5 rounded-full bg-white/5 px-2 py-0.5 text-[10px] text-slate-300">
+            <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: strokeMap[line.tone] }} />
             {line.label}
           </span>
         ))}
       </div>
-      <div className="mt-4 h-32 rounded-2xl border border-white/10 bg-black/20 p-3">
+      <div className="mt-3 h-28 rounded-2xl border border-white/10 bg-black/20 p-2.5">
         {allValues.length ? (
           <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="h-full w-full">
             {lines.map((line) => {
@@ -525,6 +535,207 @@ function buildDirectionalHeatmapCellClass(value: number, min: number, max: numbe
     return "bg-white/5";
   }
   return buildHeatmapCellClass(higherIsBetter ? max - value + min : value, min, max);
+}
+
+function getHeatmapRecommendation(providerProfile: string, thinkingMode: string, hasSamples: boolean, locale: string) {
+  if (!hasSamples) {
+    return locale.startsWith("en") ? "No samples yet. Run this combination first." : "暂无样本，先跑一次该组合再比较。";
+  }
+
+  const key = `${providerProfile}:${thinkingMode}`;
+  const zhMap: Record<string, string> = {
+    "speed:standard": "推荐短答、低等待成本场景，优先看首字体验。",
+    "speed:thinking": "推荐少量试验型深想任务，先观察样本再决定是否长期使用。",
+    "balanced:standard": "推荐默认主工作流，适合日常稳定对比。",
+    "balanced:thinking": "推荐复杂问答与较长推理，兼顾稳定与质量。",
+    "tool-first:standard": "推荐工具调用、仓库问答、函数调用型任务。",
+    "tool-first:thinking": "推荐复杂多步任务，适合工具 + 深度推理。"
+  };
+  const enMap: Record<string, string> = {
+    "speed:standard": "Best for short replies and fast first-token checks.",
+    "speed:thinking": "Use sparingly for exploratory deep-thinking runs.",
+    "balanced:standard": "Best default for day-to-day stable workloads.",
+    "balanced:thinking": "Best for more complex reasoning with stable quality.",
+    "tool-first:standard": "Best for tool use, repo QA, and function calling.",
+    "tool-first:thinking": "Best for multi-step tasks with tools and deep reasoning."
+  };
+
+  return (locale.startsWith("en") ? enMap : zhMap)[key] || (locale.startsWith("en") ? "General-purpose benchmark mode." : "通用 benchmark 策略组合。");
+}
+
+function classifyBenchmarkFailure(warning?: string) {
+  const raw = (warning || "").trim();
+  const normalized = raw.toLowerCase();
+  if (!raw) {
+    return {
+      key: "unknown",
+      label: "未知失败",
+      detail: "没有记录到明确 warning。",
+      operational: true
+    };
+  }
+  if (normalized.includes("terminated")) {
+    return {
+      key: "terminated",
+      label: "执行被终止",
+      detail: "请求在执行过程中被终止，通常是长时间流式执行后连接被中断或超时。少量可接受，但如果这一类明显偏多，通常不算正常波动，说明执行链稳定性还需要继续加固。",
+      operational: true
+    };
+  }
+  if (normalized.includes("aborted")) {
+    return {
+      key: "aborted",
+      label: "请求中止",
+      detail: "请求被 AbortController 或上游连接中止，属于执行链中断型失败。少量出现通常算正常波动，但如果持续增长，说明 timeout 或中断策略需要复核。",
+      operational: true
+    };
+  }
+  if (normalized.includes("502 bad gateway")) {
+    return {
+      key: "bad-gateway",
+      label: "上游网关 502",
+      detail: "上游网关瞬时错误，属于远端服务或代理抖动。少量出现通常是正常远端波动，但连续增多说明上游或代理链路不稳定。",
+      operational: true
+    };
+  }
+  if (normalized.includes("fetch failed")) {
+    return {
+      key: "fetch-failed",
+      label: "网络请求失败",
+      detail: "网络或连接建立失败，通常不是模型能力问题。少量属于链路抖动，偏多则说明网络或代理环境需要排查。",
+      operational: true
+    };
+  }
+  return {
+    key: raw,
+    label: raw.length > 48 ? `${raw.slice(0, 48)}…` : raw,
+    detail: raw,
+    operational: false
+  };
+}
+
+function summarizeBenchmarkFailures(
+  results: Array<{
+    targetLabel: string;
+    providerProfile?: string | null;
+    thinkingMode?: string | null;
+    samples: Array<{
+      ok: boolean;
+      warning?: string | null;
+      workloadId?: string | null;
+      itemId?: string | null;
+      latencyMs?: number | null;
+    }>;
+  }>,
+  fallbackProfile?: string | null,
+  fallbackThinkingMode?: string | null
+) {
+  const failedSamples = results.flatMap((result) =>
+    result.samples
+      .filter((sample) => !sample.ok)
+      .map((sample) => ({
+        targetLabel: result.targetLabel,
+        providerProfile: result.providerProfile || fallbackProfile || "default",
+        thinkingMode: result.thinkingMode || fallbackThinkingMode || "standard",
+        workloadId: sample.workloadId || "--",
+        itemId: sample.itemId || "--",
+        latencyMs: sample.latencyMs,
+        classified: classifyBenchmarkFailure(sample.warning || undefined)
+      }))
+  );
+  if (!failedSamples.length) return null;
+  const grouped = new Map<
+    string,
+    {
+      label: string;
+      detail: string;
+      operational: boolean;
+      count: number;
+    }
+  >();
+  for (const sample of failedSamples) {
+    const current = grouped.get(sample.classified.key) || {
+      label: sample.classified.label,
+      detail: sample.classified.detail,
+      operational: sample.classified.operational,
+      count: 0
+    };
+    current.count += 1;
+    grouped.set(sample.classified.key, current);
+  }
+  const groups = [...grouped.values()].sort((a, b) => b.count - a.count);
+  return {
+    total: failedSamples.length,
+    mostlyOperational:
+      groups.filter((group) => group.operational).reduce((sum, group) => sum + group.count, 0) >= failedSamples.length * 0.7,
+    groups,
+    examples: failedSamples.slice(0, 6)
+  };
+}
+
+function getFailureSummaryHeadline(
+  summary: ReturnType<typeof summarizeBenchmarkFailures>,
+  locale: string
+) {
+  if (!summary) return "";
+  return locale.startsWith("en")
+    ? `Failure summary · ${summary.total}`
+    : `失败摘要 · ${summary.total}`;
+}
+
+function getFailureSummaryNarrative(
+  summary: ReturnType<typeof summarizeBenchmarkFailures>,
+  locale: string
+) {
+  if (!summary) return "";
+  if (summary.mostlyOperational) {
+    return locale.startsWith("en")
+      ? "Current failed samples are mostly execution-chain or upstream fluctuations, and should not be read directly as model-quality regressions."
+      : "当前 failed 主要属于执行链或上游波动，不应直接解读成模型质量退化。";
+  }
+  return locale.startsWith("en")
+    ? "Current failed samples include execution-chain problems, and should be reviewed sample by sample before drawing model conclusions."
+    : "当前 failed 混有执行链问题，得先逐样本复核，再判断是否真是模型退化。";
+}
+
+function summarizeBenchmarkFailureDistribution(
+  results: Array<{
+    targetLabel: string;
+    providerProfile?: string | null;
+    thinkingMode?: string | null;
+    samples: Array<{
+      ok: boolean;
+      workloadId?: string | null;
+      workloadLabel?: string | null;
+      warning?: string | null;
+    }>;
+  }>,
+  fallbackProfile?: string | null,
+  fallbackThinkingMode?: string | null
+) {
+  const failedSamples = results.flatMap((result) =>
+    result.samples
+      .filter((sample) => !sample.ok)
+      .map((sample) => ({
+        targetLabel: result.targetLabel,
+        profileLabel: `${result.providerProfile || fallbackProfile || "default"} · ${result.thinkingMode || fallbackThinkingMode || "standard"}`,
+        workloadLabel: sample.workloadLabel || sample.workloadId || "--"
+      }))
+  );
+  if (!failedSamples.length) return null;
+  const summarize = (values: string[]) => {
+    const counts = new Map<string, number>();
+    for (const value of values) counts.set(value, (counts.get(value) || 0) + 1);
+    return [...counts.entries()]
+      .map(([label, count]) => ({ label, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 4);
+  };
+  return {
+    byTarget: summarize(failedSamples.map((sample) => sample.targetLabel)),
+    byProfile: summarize(failedSamples.map((sample) => `${sample.targetLabel} · ${sample.profileLabel}`)),
+    byWorkload: summarize(failedSamples.map((sample) => sample.workloadLabel))
+  };
 }
 
 function formatSignedNumber(value?: number | null, digits = 1, suffix = "") {
@@ -2432,6 +2643,51 @@ export function AdminDashboard() {
     : 0;
   const benchmarkHeatmapHigherIsBetter =
     benchmarkHeatmapMetric === "throughput" || benchmarkHeatmapMetric === "success-rate";
+  const selectedBenchmarkTargets = useMemo(
+    () => benchmarkTargets.filter((target) => benchmarkTargetIds.includes(target.id)),
+    [benchmarkTargets, benchmarkTargetIds]
+  );
+  const benchmarkHeatmapScopeSummary = useMemo(() => {
+    if (!selectedBenchmarkTargets.length) {
+      return locale.startsWith("en") ? "No benchmark target selected." : "当前没有选中 benchmark 目标。";
+    }
+    if (selectedBenchmarkTargets.length === 1) {
+      const target = selectedBenchmarkTargets[0];
+      return locale.startsWith("en")
+        ? `Current target: ${target.label} · ${formatTargetModelVersion(target.modelDefault, target.thinkingModelDefault)}`
+        : `当前评测对象：${target.label} · ${formatTargetModelVersion(target.modelDefault, target.thinkingModelDefault)}`;
+    }
+    const preview = selectedBenchmarkTargets.slice(0, 3).map((target) => target.label).join(" / ");
+    const extra = selectedBenchmarkTargets.length > 3 ? ` +${selectedBenchmarkTargets.length - 3}` : "";
+    return locale.startsWith("en")
+      ? `Current scope: ${selectedBenchmarkTargets.length} targets aggregated · ${preview}${extra}`
+      : `当前评测对象：${selectedBenchmarkTargets.length} 个 target 聚合 · ${preview}${extra}`;
+  }, [locale, selectedBenchmarkTargets]);
+  const benchmarkHeatmapScopeHint = useMemo(
+    () =>
+      locale.startsWith("en")
+        ? "This heatmap compares strategy combinations for the selected benchmark targets, not a single-model leaderboard."
+        : "这个热力图比较的是所选 benchmark 目标在不同策略组合下的表现，不是单一模型能力榜单。",
+    [locale]
+  );
+  const currentBenchmarkFailureSummary = useMemo(
+    () =>
+      benchmarkData?.results?.length
+        ? summarizeBenchmarkFailures(benchmarkData.results, benchmarkData.providerProfile, benchmarkData.thinkingMode)
+        : null,
+    [benchmarkData]
+  );
+  const currentBenchmarkFailureDistribution = useMemo(
+    () =>
+      benchmarkData?.results?.length
+        ? summarizeBenchmarkFailureDistribution(
+            benchmarkData.results,
+            benchmarkData.providerProfile,
+            benchmarkData.thinkingMode
+          )
+        : null,
+    [benchmarkData]
+  );
 
   return (
     <section className="min-h-[calc(100vh-4rem)] bg-[radial-gradient(circle_at_top,_rgba(14,165,233,0.14),_transparent_26%),linear-gradient(180deg,_#020617_0%,_#0f172a_100%)] px-4 py-6 text-slate-100 sm:px-6">
@@ -3241,6 +3497,116 @@ export function AdminDashboard() {
               </div>
             ) : null}
 
+            {currentBenchmarkFailureSummary ? (
+              <div className="rounded-3xl border border-amber-400/20 bg-amber-400/5 px-4 py-3">
+                <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-amber-100">
+                      {locale.startsWith("en") ? "Benchmark 失败摘要" : "Benchmark 失败摘要"}
+                    </p>
+                    <p className="mt-1 text-xs leading-6 text-amber-50/80">
+                      {getFailureSummaryNarrative(currentBenchmarkFailureSummary, locale)}
+                    </p>
+                  </div>
+                  <div className="text-right text-xs text-amber-50/80">
+                    <div>{locale.startsWith("en") ? "Failed samples" : "Failed samples"}</div>
+                    <div className="mt-1 text-base font-semibold text-amber-100">{currentBenchmarkFailureSummary.total}</div>
+                  </div>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {currentBenchmarkFailureSummary.groups.slice(0, 4).map((group) => (
+                    <span
+                      key={`failure-group:${group.label}`}
+                      className="rounded-full border border-amber-300/20 bg-black/20 px-3 py-1.5 text-xs text-amber-100"
+                      title={group.detail}
+                    >
+                      {group.label} · {group.count}
+                    </span>
+                  ))}
+                </div>
+                <div className="mt-3 grid gap-2 text-xs text-amber-50/80 md:grid-cols-2 xl:grid-cols-3">
+                  {currentBenchmarkFailureSummary.examples.map((example, index) => (
+                    <div
+                      key={`failure-example:${example.targetLabel}:${example.workloadId}:${example.itemId}:${index}`}
+                      className="rounded-2xl border border-white/10 bg-black/20 px-3 py-2.5"
+                    >
+                      <div className="font-medium text-amber-100">
+                        {example.targetLabel} · {example.providerProfile} · {example.thinkingMode}
+                      </div>
+                      <div className="mt-1">{example.workloadId} · {example.itemId}</div>
+                      <div className="mt-1">{example.classified.label}</div>
+                      <div className="mt-1">{typeof example.latencyMs === "number" ? `${example.latencyMs.toFixed(0)} ms` : "--"}</div>
+                    </div>
+                  ))}
+                </div>
+                {currentBenchmarkFailureDistribution ? (
+                  <div className="mt-3 grid gap-2 xl:grid-cols-3">
+                    {[
+                      {
+                        label: locale.startsWith("en") ? "By target" : "按目标分布",
+                        values: currentBenchmarkFailureDistribution.byTarget
+                      },
+                      {
+                        label: locale.startsWith("en") ? "By profile" : "按档位/思考模式分布",
+                        values: currentBenchmarkFailureDistribution.byProfile
+                      },
+                      {
+                        label: locale.startsWith("en") ? "By workload" : "按 workload 分布",
+                        values: currentBenchmarkFailureDistribution.byWorkload
+                      }
+                    ].map((section) => (
+                      <div
+                        key={`failure-distribution:${section.label}`}
+                        className="rounded-2xl border border-white/10 bg-black/20 px-3 py-2.5 text-xs text-amber-50/80"
+                      >
+                        <div className="text-amber-100">{section.label}</div>
+                        <div className="mt-2 space-y-2">
+                          {section.values.map((entry) => (
+                            <div
+                              key={`${section.label}:${entry.label}`}
+                              className="flex items-start justify-between gap-3"
+                            >
+                              <div className="min-w-0 flex-1 leading-5">{entry.label}</div>
+                              <div className="rounded-full border border-amber-300/20 bg-white/5 px-2 py-0.5 text-[11px] text-amber-100">
+                                {entry.count}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            <div className="grid gap-3 xl:grid-cols-3">
+              <MultiSeriesCard
+                title={uiText.firstTokenLatency}
+                lines={benchmarkTrendLines.map((line) => ({
+                  label: `${line.label} · ${uiText.benchmarkSuccessRate} ${line.latestSuccessRate.toFixed(0)}%`,
+                  values: line.firstTokenValues,
+                  tone: line.tone
+                }))}
+              />
+              <MultiSeriesCard
+                title={uiText.totalLatency}
+                lines={benchmarkTrendLines.map((line) => ({
+                  label: `${line.label} · ${uiText.benchmarkSuccessRate} ${line.latestSuccessRate.toFixed(0)}%`,
+                  values: line.totalLatencyValues,
+                  tone: line.tone
+                }))}
+              />
+              <MultiSeriesCard
+                title={uiText.tokenThroughput}
+                lines={benchmarkTrendLines.map((line) => ({
+                  label: `${line.label} · ${uiText.benchmarkSuccessRate} ${line.latestSuccessRate.toFixed(0)}%`,
+                  values: line.throughputValues,
+                  tone: line.tone
+                }))}
+              />
+            </div>
+
             {comparisonBaseline ? (
               <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/5 px-4 py-2.5 text-sm text-emerald-100">
                 <span className="font-semibold">{uiText.benchmarkBaselineComparisonTarget}</span>
@@ -3489,6 +3855,11 @@ export function AdminDashboard() {
                       <div className="space-y-3">
                         {group.rows.map((row) => {
                           const hasMetrics = hasSuccessfulBenchmarkMetrics(row);
+                          const failureSummary = summarizeBenchmarkFailures(
+                            [row],
+                            row.providerProfile || benchmarkData.providerProfile,
+                            row.thinkingMode || benchmarkData.thinkingMode
+                          );
                           return (
                             <article
                               key={`${row.targetId}:${row.providerProfile || "default"}:${row.thinkingMode || "standard"}`}
@@ -3517,6 +3888,23 @@ export function AdminDashboard() {
                                       {row.resolvedModel}
                                     </span>
                                   </div>
+                                  {failureSummary ? (
+                                    <div className="mt-3 rounded-2xl border border-amber-400/20 bg-amber-400/5 px-3 py-2.5 text-xs text-amber-50/80">
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <span className="font-medium text-amber-100">{getFailureSummaryHeadline(failureSummary, locale)}</span>
+                                        {failureSummary.groups.slice(0, 3).map((item) => (
+                                          <span
+                                            key={`${row.targetId}:${row.providerProfile || "default"}:${row.thinkingMode || "standard"}:${item.label}`}
+                                            className="rounded-full border border-amber-300/20 bg-black/20 px-2.5 py-1 text-[11px] text-amber-100"
+                                            title={item.detail}
+                                          >
+                                            {item.label} · {item.count}
+                                          </span>
+                                        ))}
+                                      </div>
+                                      <div className="mt-2 text-[11px] text-amber-50/70">{getFailureSummaryNarrative(failureSummary, locale)}</div>
+                                    </div>
+                                  ) : null}
                                 </div>
                                 <div className="grid gap-3 text-xs text-slate-400 sm:grid-cols-2 xl:min-w-[520px] xl:grid-cols-5">
                                   <div>
@@ -3735,9 +4123,14 @@ export function AdminDashboard() {
                           .join(" · ");
                         const profileLabel = entryProfiles.length === 1 ? entryProfiles[0] : "mixed";
                         const thinkingLabel = entryThinkingModes.length === 1 ? entryThinkingModes[0] : "mixed";
+                        const failureSummary = summarizeBenchmarkFailures(
+                          entry.results,
+                          entry.providerProfile,
+                          entry.thinkingMode
+                        );
                         return (
                           <div className="flex flex-col gap-2 xl:flex-row xl:items-start xl:justify-between">
-                            <div>
+                            <div className="min-w-0 flex-1">
                               <p className="text-base font-semibold text-white">{new Date(entry.generatedAt).toLocaleString()}</p>
                               <div className="mt-2 space-y-1 text-xs text-slate-500">
                                 <p>
@@ -3760,6 +4153,32 @@ export function AdminDashboard() {
                                   {entryExecutionSummary ? ` · ${entryExecutionSummary}` : ""}
                                 </p>
                               </div>
+                              {failureSummary ? (
+                                <div className="mt-3 rounded-2xl border border-amber-400/20 bg-amber-400/5 px-3 py-2.5 text-xs text-amber-50/80">
+                                  <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
+                                    <div className="font-medium text-amber-100">{getFailureSummaryHeadline(failureSummary, locale)}</div>
+                                    <div>
+                                      {getFailureSummaryNarrative(failureSummary, locale)}
+                                    </div>
+                                  </div>
+                                  <div className="mt-2 flex flex-wrap gap-2">
+                                    {failureSummary.groups.slice(0, 4).map((group) => (
+                                      <span
+                                        key={`${entry.id}:failure:${group.label}`}
+                                        className="rounded-full border border-amber-300/20 bg-black/20 px-2.5 py-1 text-[11px] text-amber-100"
+                                        title={group.detail}
+                                      >
+                                        {group.label} · {group.count}
+                                      </span>
+                                    ))}
+                                  </div>
+                                  {failureSummary.examples[0] ? (
+                                    <div className="mt-2 text-[11px] text-amber-50/70">
+                                      例如：{failureSummary.examples[0].targetLabel} · {failureSummary.examples[0].providerProfile} · {failureSummary.examples[0].thinkingMode} · {failureSummary.examples[0].workloadId} · {failureSummary.examples[0].classified.label}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              ) : null}
                             </div>
                             <div className="text-[11px] text-slate-500">{entry.results.length} results</div>
                           </div>
@@ -3862,36 +4281,9 @@ export function AdminDashboard() {
               </div>
             </div>
 
-            <div className="grid gap-3 xl:grid-cols-3">
-              <MultiSeriesCard
-                title={uiText.firstTokenLatency}
-                lines={benchmarkTrendLines.map((line) => ({
-                  label: `${line.label} · ${uiText.benchmarkSuccessRate} ${line.latestSuccessRate.toFixed(0)}%`,
-                  values: line.firstTokenValues,
-                  tone: line.tone
-                }))}
-              />
-              <MultiSeriesCard
-                title={uiText.totalLatency}
-                lines={benchmarkTrendLines.map((line) => ({
-                  label: `${line.label} · ${uiText.benchmarkSuccessRate} ${line.latestSuccessRate.toFixed(0)}%`,
-                  values: line.totalLatencyValues,
-                  tone: line.tone
-                }))}
-              />
-              <MultiSeriesCard
-                title={uiText.tokenThroughput}
-                lines={benchmarkTrendLines.map((line) => ({
-                  label: `${line.label} · ${uiText.benchmarkSuccessRate} ${line.latestSuccessRate.toFixed(0)}%`,
-                  values: line.throughputValues,
-                  tone: line.tone
-                }))}
-              />
-            </div>
-
-            <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3">
+            <div className="rounded-2xl border border-white/10 bg-black/20 px-3.5 py-3">
               <div className="flex items-center justify-between gap-3">
-                <p className="text-sm text-slate-300">{uiText.benchmarkHeatmap}</p>
+                <p className="text-xs font-medium text-slate-400">{uiText.benchmarkHeatmap}</p>
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-[11px] text-slate-500">{uiText.providerProfile} × {uiText.benchmarkThinkingMode}</span>
                   <select
@@ -3934,6 +4326,10 @@ export function AdminDashboard() {
                   </select>
                 </div>
               </div>
+              <div className="mt-2.5 rounded-2xl border border-white/10 bg-white/[0.03] px-3 py-2.5">
+                <p className="text-xs font-medium text-slate-100">{benchmarkHeatmapScopeSummary}</p>
+                <p className="mt-1 text-xs leading-6 text-slate-500">{benchmarkHeatmapScopeHint}</p>
+              </div>
               <div className="mt-3 overflow-hidden rounded-2xl border border-white/10">
                 <table className="w-full text-left text-sm">
                   <thead className="bg-white/5 text-slate-400">
@@ -3948,24 +4344,38 @@ export function AdminDashboard() {
                       <tr key={`heatmap:${row.providerProfile}`} className="border-t border-white/10">
                         <td className="px-3 py-2 text-slate-100">{row.providerProfile}</td>
                         {row.cells.map((cell) => (
-                          <td key={`heatmap:${row.providerProfile}:${cell.thinkingMode}`} className="px-3 py-2">
+                        <td key={`heatmap:${row.providerProfile}:${cell.thinkingMode}`} className="px-3 py-2">
+                          {(() => {
+                            const hasSamples = cell.sampleCount > 0;
+                            const metricValue = benchmarkHeatmapMetric === "first-token"
+                              ? cell.avgFirstTokenLatencyMs
+                              : benchmarkHeatmapMetric === "throughput"
+                                ? cell.avgTokenThroughputTps
+                                : benchmarkHeatmapMetric === "success-rate"
+                                  ? cell.avgSuccessRate
+                                  : cell.avgLatencyMs;
+                            const recommendation = getHeatmapRecommendation(
+                              row.providerProfile,
+                              cell.thinkingMode,
+                              hasSamples,
+                              locale
+                            );
+                            return (
                             <div
-                              className={`rounded-xl border border-white/10 px-3 py-3 ${buildDirectionalHeatmapCellClass(
-                                benchmarkHeatmapMetric === "first-token"
-                                  ? cell.avgFirstTokenLatencyMs
-                                  : benchmarkHeatmapMetric === "throughput"
-                                    ? cell.avgTokenThroughputTps
-                                    : benchmarkHeatmapMetric === "success-rate"
-                                      ? cell.avgSuccessRate
-                                      : cell.avgLatencyMs,
-                                benchmarkHeatmapMetricMin,
-                                benchmarkHeatmapMetricMax,
-                                benchmarkHeatmapHigherIsBetter
-                              )}`}
+                              className={`rounded-xl border border-white/10 px-3 py-3 ${
+                                hasSamples
+                                  ? buildDirectionalHeatmapCellClass(
+                                      metricValue,
+                                      benchmarkHeatmapMetricMin,
+                                      benchmarkHeatmapMetricMax,
+                                      benchmarkHeatmapHigherIsBetter
+                                    )
+                                  : "bg-slate-950/70"
+                              }`}
                             >
                               <div className="text-xs uppercase tracking-[0.2em] text-slate-200">{cell.thinkingMode}</div>
                               <div className="mt-2 text-sm font-semibold text-white">
-                                {cell.sampleCount
+                                {hasSamples
                                   ? benchmarkHeatmapMetric === "first-token"
                                     ? `${cell.avgFirstTokenLatencyMs.toFixed(1)} ms`
                                     : benchmarkHeatmapMetric === "throughput"
@@ -3973,19 +4383,24 @@ export function AdminDashboard() {
                                       : benchmarkHeatmapMetric === "success-rate"
                                         ? `${cell.avgSuccessRate.toFixed(1)}%`
                                         : `${cell.avgLatencyMs.toFixed(1)} ms`
-                                  : "--"}
+                                  : locale.startsWith("en")
+                                    ? "No samples yet"
+                                    : "暂无样本"}
                               </div>
                               <div className="mt-2 text-xs leading-6 text-slate-100">
-                                <div>{uiText.firstTokenLatency}: {cell.sampleCount ? `${cell.avgFirstTokenLatencyMs.toFixed(1)} ms` : "--"}</div>
-                                <div>{uiText.totalLatency}: {cell.sampleCount ? `${cell.avgLatencyMs.toFixed(1)} ms` : "--"}</div>
-                                <div>{uiText.tokenThroughput}: {cell.sampleCount ? `${cell.avgTokenThroughputTps.toFixed(2)} ${uiText.tokensPerSecond}` : "--"}</div>
-                                <div>{uiText.benchmarkSuccessRate}: {cell.sampleCount ? `${cell.avgSuccessRate.toFixed(1)}%` : "--"}</div>
-                                <div>n={cell.sampleCount}</div>
+                                <div>{uiText.firstTokenLatency}: {hasSamples ? `${cell.avgFirstTokenLatencyMs.toFixed(1)} ms` : locale.startsWith("en") ? "No samples yet" : "暂无样本"}</div>
+                                <div>{uiText.totalLatency}: {hasSamples ? `${cell.avgLatencyMs.toFixed(1)} ms` : locale.startsWith("en") ? "No samples yet" : "暂无样本"}</div>
+                                <div>{uiText.tokenThroughput}: {hasSamples ? `${cell.avgTokenThroughputTps.toFixed(2)} ${uiText.tokensPerSecond}` : locale.startsWith("en") ? "No samples yet" : "暂无样本"}</div>
+                                <div>{uiText.benchmarkSuccessRate}: {hasSamples ? `${cell.avgSuccessRate.toFixed(1)}%` : locale.startsWith("en") ? "No samples yet" : "暂无样本"}</div>
+                                <div>{locale.startsWith("en") ? "Recommended use" : "推荐用途"}: {recommendation}</div>
+                                <div>{hasSamples ? `n=${cell.sampleCount}` : locale.startsWith("en") ? "No samples yet" : "暂无样本"}</div>
                               </div>
                             </div>
-                          </td>
-                        ))}
-                      </tr>
+                            );
+                          })()}
+                        </td>
+                      ))}
+                    </tr>
                     ))}
                   </tbody>
                 </table>
