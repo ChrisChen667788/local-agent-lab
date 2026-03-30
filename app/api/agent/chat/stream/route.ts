@@ -40,6 +40,7 @@ import type {
 export const runtime = "nodejs";
 const LOCAL_STREAM_CONNECT_TIMEOUT_MS = 300000;
 const LOCAL_STREAM_WARMUP_WAIT_MS = 300000;
+const LOCAL_COMPARISON_4B_TARGET_IDS = new Set(["local-qwen3-4b-4bit", "local-qwen35-4b-4bit"]);
 
 function isValidMessageArray(value: unknown): value is AgentMessage[] {
   return (
@@ -136,6 +137,20 @@ async function fetchWithAbortTimeout(
 
 function combineWarnings(...values: Array<string | undefined>) {
   return values.filter(Boolean).join(" ").trim() || undefined;
+}
+
+function buildLocalChatTemplateExtraBody(
+  targetId: string,
+  thinkingMode: "standard" | "thinking"
+) {
+  if (targetId !== "local-qwen35-4b-4bit") {
+    return undefined;
+  }
+  return {
+    chat_template_kwargs: {
+      enable_thinking: thinkingMode === "thinking"
+    }
+  };
 }
 
 function withRetrieval(
@@ -553,7 +568,8 @@ export async function POST(request: Request) {
                     { role: "system", content: systemPrompt },
                     ...buildProviderMessages(body.messages!, body.input!, contextWindow)
                   ],
-                  max_tokens: 192
+                  max_tokens: 192,
+                  extra_body: buildLocalChatTemplateExtraBody(body.targetId!, thinkingMode)
                 })
               }, LOCAL_STREAM_CONNECT_TIMEOUT_MS);
 
@@ -593,11 +609,11 @@ export async function POST(request: Request) {
                 }
               });
 
-              if (!sanitizeAssistantContent(finalContent).trim() && target.id === "local-qwen3-4b-4bit") {
-                throw new Error("Primary local 4B stream completed without a visible answer.");
+              if (!sanitizeAssistantContent(finalContent).trim() && LOCAL_COMPARISON_4B_TARGET_IDS.has(target.id)) {
+                throw new Error("Primary local 4B-class stream completed without a visible answer.");
               }
             } catch (localStreamError) {
-              if (target.id !== "local-qwen3-4b-4bit") {
+              if (!LOCAL_COMPARISON_4B_TARGET_IDS.has(target.id)) {
                 throw localStreamError;
               }
 

@@ -28,24 +28,49 @@ export const agentTargets: AgentTarget[] = [
     ]
   },
   {
+    id: "local-qwen35-4b-4bit",
+    label: "Local Qwen3.5 4B 4-bit",
+    providerLabel: "Local MLX Gateway",
+    transport: "openai-compatible",
+    execution: "local",
+    description:
+      "Primary local 4B profile for richer answers, stronger coding quality, and cleaner direct-answer benchmark behavior on Apple Silicon.",
+    modelEnv: "LOCAL_QWEN35_4B_4BIT_MODEL",
+    modelDefault: "local-qwen35-4b-4bit",
+    baseUrlEnv: "LOCAL_AGENT_BASE_URL",
+    baseUrlDefault: "http://127.0.0.1:4000/v1",
+    supportsTools: true,
+    recommendedContext: "8K-16K",
+    memoryProfile: "Primary 4B slot. Use it with a cleaner desktop session and avoid keeping multiple 4B models hot.",
+    notes: [
+      "This target maps to mlx-community/Qwen3.5-4B-4bit in the Python gateway.",
+      "Standard mode now forces enable_thinking=false so formal benchmark runs stay in a direct-answer shape.",
+      "If memory pressure is already yellow or swap is high, fall back to 0.6B."
+    ],
+    launchHints: [
+      "export LOCAL_QWEN35_4B_4BIT_REPO=mlx-community/Qwen3.5-4B-4bit",
+      "python scripts/local_model_gateway_supervisor.py"
+    ]
+  },
+  {
     id: "local-qwen3-4b-4bit",
     label: "Local Qwen3 4B 4-bit",
     providerLabel: "Local MLX Gateway",
     transport: "openai-compatible",
     execution: "local",
     description:
-      "Balanced local profile for richer answers and better coding quality. Intended for a 4-bit MLX model on Apple Silicon.",
+      "Legacy local 4B comparison profile kept for side-by-side checks against the newer Qwen3.5 4B target.",
     modelEnv: "LOCAL_QWEN_4B_4BIT_MODEL",
     modelDefault: "local-qwen3-4b-4bit",
     baseUrlEnv: "LOCAL_AGENT_BASE_URL",
     baseUrlDefault: "http://127.0.0.1:4000/v1",
     supportsTools: true,
     recommendedContext: "8K-16K",
-    memoryProfile: "Requires a cleaner desktop session. Close heavy apps before use.",
+    memoryProfile: "Legacy 4B comparison slot. Use it only when you need an apples-to-apples check against Qwen3.5 4B.",
     notes: [
-      "This target is meant to map to mlx-community/Qwen3-4B-Instruct-2507-4bit in the Python gateway.",
-      "If memory pressure is already yellow or swap is high, fall back to 0.6B.",
-      "Use this when you want local file-aware reasoning without switching to a cloud model."
+      "This target maps to mlx-community/Qwen3-4B-Instruct-2507-4bit in the Python gateway.",
+      "Keep it as a comparison target while we validate Qwen3.5 4B in real usage and formal benchmarks.",
+      "If memory pressure or swap is already elevated, fall back to 0.6B instead of keeping two 4B models active."
     ],
     launchHints: [
       "export LOCAL_QWEN_4B_4BIT_REPO=mlx-community/Qwen3-4B-Instruct-2507-4bit",

@@ -335,6 +335,7 @@ export type AgentRuntimeLogResponse = {
 
 export type AgentRuntimePrewarmResponse = {
   ok: boolean;
+  status?: "ready" | "loading" | "queued" | "failed";
   targetId: string;
   targetLabel: string;
   loadedAlias?: string | null;
@@ -368,6 +369,7 @@ export type AgentBenchmarkSample = {
   totalTokens: number;
   tokenThroughputTps: number | null;
   outputPreview?: string;
+  outputText?: string;
   score?: number | null;
   passed?: boolean | null;
   expectedAnswerPreview?: string;

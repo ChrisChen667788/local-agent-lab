@@ -104,6 +104,9 @@ MODEL_REPOS = {
     "local-qwen3-4b-4bit": os.getenv(
         "LOCAL_QWEN_4B_4BIT_REPO", "mlx-community/Qwen3-4B-Instruct-2507-4bit"
     ),
+    "local-qwen35-4b-4bit": os.getenv(
+        "LOCAL_QWEN35_4B_4BIT_REPO", "mlx-community/Qwen3.5-4B-4bit"
+    ),
 }
 WORKSPACE_ROOT = Path(os.getenv("LOCAL_AGENT_WORKSPACE_ROOT", os.getcwd())).resolve()
 MAX_TOOL_STEPS = max(1, min(8, int(os.getenv("LOCAL_AGENT_TOOL_STEPS", "6"))))
@@ -116,7 +119,7 @@ MAX_CONTENT_PREVIEW_CHARS = 2_000
 DEFAULT_COMMAND_TIMEOUT_MS = 20_000
 MAX_COMMAND_TIMEOUT_MS = 120_000
 CONFIRMATION_TTL_MS = 10 * 60 * 1000
-FORCED_TOOL_MODELS = {"local-qwen3-4b-4bit"}
+FORCED_TOOL_MODELS = {"local-qwen3-4b-4bit", "local-qwen35-4b-4bit"}
 PROTECTED_SOURCE_PREFIXES = ("app/", "lib/", "components/")
 NEVER_ALLOW_COMMAND_PATTERNS = [
     re.compile(r"\brm\s+-rf\b", re.IGNORECASE),
@@ -229,6 +232,7 @@ class ChatCompletionsRequest(BaseModel):
     max_tokens: int = Field(default=512, ge=1, le=2048)
     tools: list[ChatTool] | None = None
     tool_choice: str | None = None
+    extra_body: dict[str, Any] | None = None
 
 
 class DirectToolRequest(BaseModel):
@@ -1134,13 +1138,35 @@ def release_loaded_runtime():
     return released_alias
 
 
-def build_prompt(tokenizer: Any, messages: list[dict[str, str]]):
+def extract_chat_template_kwargs(request: ChatCompletionsRequest) -> dict[str, Any]:
+    if not request.extra_body or not isinstance(request.extra_body, dict):
+        return {}
+    raw = request.extra_body.get("chat_template_kwargs")
+    return raw if isinstance(raw, dict) else {}
+
+
+def build_prompt(
+    tokenizer: Any,
+    messages: list[dict[str, str]],
+    chat_template_kwargs: dict[str, Any] | None = None,
+):
+    kwargs = dict(chat_template_kwargs or {})
     try:
         return tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            **kwargs,
         )
     except TypeError:
-        return tokenizer.apply_chat_template(messages, add_generation_prompt=True)
+        try:
+            return tokenizer.apply_chat_template(
+                messages,
+                add_generation_prompt=True,
+                **kwargs,
+            )
+        except TypeError:
+            return tokenizer.apply_chat_template(messages, add_generation_prompt=True)
 
 
 def project_visible_content(raw: str) -> str:
@@ -1408,9 +1434,15 @@ def build_empty_response_recovery_messages(messages: list[dict[str, str]]) -> li
     return recovered
 
 
-def generate_once(model: Any, tokenizer: Any, messages: list[dict[str, str]], max_tokens: int) -> str:
+def generate_once(
+    model: Any,
+    tokenizer: Any,
+    messages: list[dict[str, str]],
+    max_tokens: int,
+    chat_template_kwargs: dict[str, Any] | None = None,
+) -> str:
     generate_fn, _, _ = get_mlx_runtime()
-    prompt = build_prompt(tokenizer, messages)
+    prompt = build_prompt(tokenizer, messages, chat_template_kwargs)
     return generate_fn(
         model,
         tokenizer,
@@ -1430,9 +1462,15 @@ def count_tokens(tokenizer: Any, text: str) -> int:
         return max(1, len(text) // 4)
 
 
-def generate_with_usage(model: Any, tokenizer: Any, messages: list[dict[str, str]], max_tokens: int):
+def generate_with_usage(
+    model: Any,
+    tokenizer: Any,
+    messages: list[dict[str, str]],
+    max_tokens: int,
+    chat_template_kwargs: dict[str, Any] | None = None,
+):
     generate_fn, _, _ = get_mlx_runtime()
-    prompt = build_prompt(tokenizer, messages)
+    prompt = build_prompt(tokenizer, messages, chat_template_kwargs)
     raw_completion = generate_fn(
         model,
         tokenizer,
@@ -1450,9 +1488,15 @@ def generate_with_usage(model: Any, tokenizer: Any, messages: list[dict[str, str
     }
 
 
-def stream_plain_completion(model: Any, tokenizer: Any, messages: list[dict[str, str]], max_tokens: int):
+def stream_plain_completion(
+    model: Any,
+    tokenizer: Any,
+    messages: list[dict[str, str]],
+    max_tokens: int,
+    chat_template_kwargs: dict[str, Any] | None = None,
+):
     _, _, stream_generate_fn = get_mlx_runtime()
-    prompt = build_prompt(tokenizer, messages)
+    prompt = build_prompt(tokenizer, messages, chat_template_kwargs)
     prompt_tokens = count_tokens(tokenizer, prompt)
 
     def generate_events():
@@ -1509,7 +1553,7 @@ def stream_plain_completion(model: Any, tokenizer: Any, messages: list[dict[str,
             if not completion_text.strip():
                 retry_messages = build_empty_response_recovery_messages(messages)
                 retry_completion, retry_usage = generate_with_usage(
-                    model, tokenizer, retry_messages, max_tokens
+                    model, tokenizer, retry_messages, max_tokens, chat_template_kwargs
                 )
                 total_prompt_tokens += retry_usage["prompt_tokens"]
                 total_completion_tokens += retry_usage["completion_tokens"]
@@ -1608,6 +1652,7 @@ def run_tool_handler(tool_name: str, arguments: dict[str, Any]) -> str:
 
 def run_local_tool_loop(model_alias: str, model: Any, tokenizer: Any, request: ChatCompletionsRequest):
     working_messages = normalize_conversation(request.messages, tool_mode=True)
+    chat_template_kwargs = extract_chat_template_kwargs(request)
     tool_runs: list[dict[str, Any]] = []
     warning = None
     retry_count = 0
@@ -1633,7 +1678,13 @@ def run_local_tool_loop(model_alias: str, model: Any, tokenizer: Any, request: C
             warning = warning or f"Forced tool routing was used for {tool_name} to stabilize the local 4-bit 4B agent."
             continue
 
-        raw_output, step_usage = generate_with_usage(model, tokenizer, working_messages, request.max_tokens)
+        raw_output, step_usage = generate_with_usage(
+            model,
+            tokenizer,
+            working_messages,
+            request.max_tokens,
+            chat_template_kwargs,
+        )
         usage["prompt_tokens"] += step_usage["prompt_tokens"]
         usage["completion_tokens"] += step_usage["completion_tokens"]
         usage["total_tokens"] += step_usage["total_tokens"]
@@ -1712,7 +1763,13 @@ def run_local_tool_loop(model_alias: str, model: Any, tokenizer: Any, request: C
         tool_runs.append({"name": tool_name, "input": arguments, "output": output})
         append_tool_result(working_messages, tool_name, arguments, output)
 
-    final_output, final_usage = generate_with_usage(model, tokenizer, working_messages, request.max_tokens)
+    final_output, final_usage = generate_with_usage(
+        model,
+        tokenizer,
+        working_messages,
+        request.max_tokens,
+        chat_template_kwargs,
+    )
     usage["prompt_tokens"] += final_usage["prompt_tokens"]
     usage["completion_tokens"] += final_usage["completion_tokens"]
     usage["total_tokens"] += final_usage["total_tokens"]
@@ -1851,17 +1908,29 @@ def chat_completions(request: ChatCompletionsRequest):
                 active_requests += 1
                 promoted_to_active = True
 
+            chat_template_kwargs = extract_chat_template_kwargs(request)
+
             if tool_mode:
                 completion, tool_runs, warning, usage = run_local_tool_loop(request.model, model, tokenizer, request)
             else:
                 prompt_messages = normalize_conversation(request.messages, tool_mode=False)
-                completion, usage = generate_with_usage(model, tokenizer, prompt_messages, request.max_tokens)
+                completion, usage = generate_with_usage(
+                    model,
+                    tokenizer,
+                    prompt_messages,
+                    request.max_tokens,
+                    chat_template_kwargs,
+                )
                 tool_runs = []
                 warning = None
                 if not completion.strip():
                     retry_messages = build_empty_response_recovery_messages(prompt_messages)
                     retry_completion, retry_usage = generate_with_usage(
-                        model, tokenizer, retry_messages, request.max_tokens
+                        model,
+                        tokenizer,
+                        retry_messages,
+                        request.max_tokens,
+                        chat_template_kwargs,
                     )
                     usage = {
                         "prompt_tokens": usage["prompt_tokens"] + retry_usage["prompt_tokens"],
@@ -1937,7 +2006,13 @@ def chat_completions_stream(request: ChatCompletionsRequest):
                     promoted_to_active = True
 
                 prompt_messages = normalize_conversation(request.messages, tool_mode=False)
-                yield from stream_plain_completion(model, tokenizer, prompt_messages, request.max_tokens)
+                yield from stream_plain_completion(
+                    model,
+                    tokenizer,
+                    prompt_messages,
+                    request.max_tokens,
+                    extract_chat_template_kwargs(request),
+                )
         finally:
             with state_lock:
                 if promoted_to_active:

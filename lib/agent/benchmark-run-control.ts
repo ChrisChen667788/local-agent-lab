@@ -1,5 +1,10 @@
 const benchmarkRunControllers = new Map<string, AbortController>();
 
+export function hasActiveBenchmarkRunController(runId: string) {
+  const controller = benchmarkRunControllers.get(runId);
+  return Boolean(controller && !controller.signal.aborted);
+}
+
 export function registerBenchmarkRunController(runId: string) {
   const current = benchmarkRunControllers.get(runId);
   if (current && !current.signal.aborted) {

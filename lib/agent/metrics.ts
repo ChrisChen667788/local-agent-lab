@@ -17,7 +17,7 @@ export function clampContextWindowForTarget(
     return Math.min(normalized, retrievalOrTools ? 4096 : 8192);
   }
 
-  if (targetId === "local-qwen3-4b-4bit") {
+  if (targetId === "local-qwen3-4b-4bit" || targetId === "local-qwen35-4b-4bit") {
     return Math.min(normalized, retrievalOrTools ? 8192 : 16384);
   }
 

@@ -542,7 +542,8 @@ export function getLocalizedTargetDescription(locale: AppLocale, targetId: strin
   const map: Record<AppLocale, Record<string, string>> = {
     "zh-CN": {
       "local-qwen3-0.6b": "轻量本地配置，适合日常办公状态下的仓库问答、摘要和低压力 Agent 流程。",
-      "local-qwen3-4b-4bit": "平衡型本地配置，适合更好的代码理解与本地文件感知推理。",
+      "local-qwen35-4b-4bit": "默认本地 4B 主力配置，适合更好的代码理解、文件感知推理和正式直答评测。",
+      "local-qwen3-4b-4bit": "保留的上一代本地 4B 对比配置，用于和 Qwen3.5-4B 做并排验证。",
       "openai-codex": "远端 Codex 类编码目标，适合高质量编码与复杂工具链任务。",
       "anthropic-claude": "通过 Aipro OpenAI-compatible 网关接入的 Claude 目标，适合稳定工具调用。",
       "kimi-api": "Moonshot OpenAI-compatible 目标，适合和本地 Qwen 做对比。",
@@ -551,7 +552,8 @@ export function getLocalizedTargetDescription(locale: AppLocale, targetId: strin
     },
     "zh-TW": {
       "local-qwen3-0.6b": "輕量本地配置，適合日常辦公狀態下的倉庫問答、摘要與低壓力 Agent 流程。",
-      "local-qwen3-4b-4bit": "平衡型本地配置，適合更好的程式碼理解與本地檔案感知推理。",
+      "local-qwen35-4b-4bit": "預設本地 4B 主力配置，適合更好的程式碼理解、檔案感知推理與正式直答評測。",
+      "local-qwen3-4b-4bit": "保留的上一代本地 4B 對比配置，用於和 Qwen3.5-4B 做並排驗證。",
       "openai-codex": "遠端 Codex 類編碼目標，適合高品質編碼與複雜工具鏈任務。",
       "anthropic-claude": "透過 Aipro OpenAI-compatible 閘道接入的 Claude 目標，適合穩定工具呼叫。",
       "kimi-api": "Moonshot OpenAI-compatible 目標，適合和本地 Qwen 做比較。",
@@ -560,7 +562,8 @@ export function getLocalizedTargetDescription(locale: AppLocale, targetId: strin
     },
     en: {
       "local-qwen3-0.6b": "Light local profile for repo Q&A, summaries, and low-pressure agent flows during a normal workday.",
-      "local-qwen3-4b-4bit": "Balanced local profile for stronger code understanding and file-aware local reasoning.",
+      "local-qwen35-4b-4bit": "Default local 4B profile for stronger code understanding, file-aware reasoning, and cleaner direct-answer benchmarking.",
+      "local-qwen3-4b-4bit": "Legacy local 4B comparison profile kept for side-by-side validation against Qwen3.5-4B.",
       "openai-codex": "Remote Codex-style coding target for higher quality code tasks and deeper tool loops.",
       "anthropic-claude": "Claude routed through the Aipro OpenAI-compatible gateway for stable tool calling.",
       "kimi-api": "Moonshot OpenAI-compatible target for comparison against local Qwen.",
@@ -569,7 +572,8 @@ export function getLocalizedTargetDescription(locale: AppLocale, targetId: strin
     },
     ko: {
       "local-qwen3-0.6b": "가벼운 로컬 프로필로, 일반 업무 중에도 저장소 질의응답과 요약, 저부하 Agent 흐름에 적합합니다.",
-      "local-qwen3-4b-4bit": "코드 이해와 로컬 파일 인식 추론을 강화한 균형형 로컬 프로필입니다.",
+      "local-qwen35-4b-4bit": "코드 이해, 파일 인식 추론, 정답형 벤치마크에 더 적합한 기본 로컬 4B 프로필입니다.",
+      "local-qwen3-4b-4bit": "Qwen3.5-4B와 나란히 검증하기 위해 남겨 둔 이전 세대 로컬 4B 비교 프로필입니다.",
       "openai-codex": "더 강한 코딩 품질과 복잡한 도구 루프에 적합한 원격 Codex 계열 대상입니다.",
       "anthropic-claude": "Aipro OpenAI-compatible 게이트웨이를 통한 Claude 대상이며 도구 호출 안정성이 높습니다.",
       "kimi-api": "로컬 Qwen과 비교하기 좋은 Moonshot OpenAI-compatible 대상입니다.",
@@ -578,7 +582,8 @@ export function getLocalizedTargetDescription(locale: AppLocale, targetId: strin
     },
     ja: {
       "local-qwen3-0.6b": "軽量なローカル構成で、通常の作業中でもリポジトリ Q&A や要約、低負荷の Agent フローに向いています。",
-      "local-qwen3-4b-4bit": "コード理解とローカルファイル認識推論を強化したバランス型ローカル構成です。",
+      "local-qwen35-4b-4bit": "コード理解、ファイル認識推論、正式ベンチマークの直答口径に向いた既定のローカル 4B 構成です。",
+      "local-qwen3-4b-4bit": "Qwen3.5-4B と並行検証するために残してある旧世代ローカル 4B 比較構成です。",
       "openai-codex": "より高品質なコーディングと複雑なツールループに向いたリモート Codex 系ターゲットです。",
       "anthropic-claude": "Aipro OpenAI-compatible ゲートウェイ経由の Claude ターゲットで、ツール呼び出しが安定しています。",
       "kimi-api": "ローカル Qwen との比較に向いた Moonshot OpenAI-compatible ターゲットです。",

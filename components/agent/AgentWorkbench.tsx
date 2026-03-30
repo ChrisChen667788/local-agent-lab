@@ -1015,6 +1015,10 @@ export function AgentWorkbench() {
   );
   const runtimePhase = useMemo(() => describeRuntimePhase(runtimeStatus, locale), [runtimeStatus, locale]);
   const runtimeStageItems = useMemo(() => buildRuntimeStageItems(runtimeStatus, locale), [runtimeStatus, locale]);
+  const loadedAliasForSelectedTarget =
+    runtimeStatus?.loadedAlias === selectedTargetId ? runtimeStatus.loadedAlias : null;
+  const gatewayLoadedOtherAlias =
+    runtimeStatus?.loadedAlias && runtimeStatus.loadedAlias !== selectedTargetId ? runtimeStatus.loadedAlias : null;
   const lastChatTurn = useMemo(
     () => [...turns].reverse().find((turn) => turn.kind !== "check" && turn.targetId === selectedTargetId),
     [selectedTargetId, turns]
@@ -2898,9 +2902,9 @@ export function AgentWorkbench() {
         throw new Error(data.error || uiText.runtimeFailed);
       }
       const details = [
-        uiText.prewarmDone,
-        typeof data.loadMs === "number" ? `load ${data.loadMs.toFixed(1)} ms` : "",
-        typeof data.warmupMs === "number" ? `warm ${data.warmupMs.toFixed(1)} ms` : ""
+        data.message || uiText.prewarmDone,
+        data.status === "ready" && typeof data.loadMs === "number" ? `load ${data.loadMs.toFixed(1)} ms` : "",
+        data.status === "ready" && typeof data.warmupMs === "number" ? `warm ${data.warmupMs.toFixed(1)} ms` : ""
       ]
         .filter(Boolean)
         .join(" · ");
@@ -2930,10 +2934,19 @@ export function AgentWorkbench() {
       }
       const details = data.results
         .map((item) => {
+          const statusLabel =
+            item.status === "loading"
+              ? "loading"
+              : item.status === "queued"
+                ? "queued"
+                : item.status === "failed"
+                  ? "failed"
+                  : "ready";
           const parts = [
             item.targetLabel,
-            typeof item.loadMs === "number" ? `load ${item.loadMs.toFixed(1)} ms` : "",
-            typeof item.warmupMs === "number" ? `warm ${item.warmupMs.toFixed(1)} ms` : ""
+            statusLabel,
+            item.status === "ready" && typeof item.loadMs === "number" ? `load ${item.loadMs.toFixed(1)} ms` : "",
+            item.status === "ready" && typeof item.warmupMs === "number" ? `warm ${item.warmupMs.toFixed(1)} ms` : ""
           ].filter(Boolean);
           return parts.join(" · ");
         })
@@ -3458,8 +3471,13 @@ export function AgentWorkbench() {
                 {uiText.enableRetrieval}: {enableRetrieval ? uiText.enabled : uiText.disabled}
               </span>
               <span className="rounded-full border border-white/8 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-300">
-                {uiText.loadedAlias}: {runtimeStatus?.loadedAlias || runtimeStatus?.resolvedModel || lastTurn?.resolvedModel || selectedTarget.modelDefault}
+                {uiText.loadedAlias}: {loadedAliasForSelectedTarget || "—"}
               </span>
+              {gatewayLoadedOtherAlias ? (
+                <span className="rounded-full border border-white/8 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-300">
+                  网关当前已加载: {gatewayLoadedOtherAlias}
+                </span>
+              ) : null}
               {selectedTarget.execution === "local" && runtimeStatus ? (
                 <>
                   <span
@@ -3870,6 +3888,21 @@ export function AgentWorkbench() {
                                                               <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">
                                                                 {workspaceFileFocusState.index + 1}/{workspaceFileFocusState.anchors.length}
                                                               </span>
+                                                              {focusedExcerpt ? (
+                                                                <button
+                                                                  type="button"
+                                                                  onClick={() =>
+                                                                    handleCopy(focusedExcerpt.content, `${reviewFileKey}:segment`)
+                                                                  }
+                                                                  className="rounded-full border border-violet-400/20 bg-violet-400/10 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-violet-100 transition hover:bg-violet-400/20"
+                                                                >
+                                                                  {copyState === `${reviewFileKey}:segment`
+                                                                    ? dictionary.common.copied
+                                                                    : locale.startsWith("en")
+                                                                      ? "Copy current hunk"
+                                                                      : "复制当前变更段"}
+                                                                </button>
+                                                              ) : null}
                                                               <button
                                                                 type="button"
                                                                 disabled={workspaceFileFocusState.index === 0}
@@ -4317,6 +4350,28 @@ export function AgentWorkbench() {
                                 </ul>
                               </div>
                             ) : null}
+                            <div className="mt-3 grid gap-2 md:grid-cols-2">
+                              <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-3">
+                                <p className="text-[11px] uppercase tracking-[0.22em] text-slate-400">
+                                  {locale.startsWith("en") ? "Original" : "原轮"}
+                                </p>
+                                <pre className="mt-2 whitespace-pre-wrap break-words text-xs leading-6 text-slate-200">
+                                  {(turn.replaySource?.response || "").trim().slice(0, 240) ||
+                                    (locale.startsWith("en") ? "No original response." : "没有原轮响应。")}
+                                  {(turn.replaySource?.response || "").trim().length > 240 ? "…" : ""}
+                                </pre>
+                              </div>
+                              <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-3">
+                                <p className="text-[11px] uppercase tracking-[0.22em] text-slate-400">
+                                  {locale.startsWith("en") ? "Replay" : "回放"}
+                                </p>
+                                <pre className="mt-2 whitespace-pre-wrap break-words text-xs leading-6 text-slate-200">
+                                  {turn.response.trim().slice(0, 240) ||
+                                    (locale.startsWith("en") ? "No replay response." : "没有回放响应。")}
+                                  {turn.response.trim().length > 240 ? "…" : ""}
+                                </pre>
+                              </div>
+                            </div>
                           </div>
                         ) : null}
 
@@ -4761,9 +4816,14 @@ export function AgentWorkbench() {
                             {uiText.activeLabel} {runtimeStatus.activeRequests}
                           </span>
                         ) : null}
-                        {runtimeStatus.loadedAlias ? (
+                        {loadedAliasForSelectedTarget ? (
                           <span className="rounded-full bg-cyan-400/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.22em] text-cyan-300">
-                            {runtimeStatus.loadedAlias}
+                            {loadedAliasForSelectedTarget}
+                          </span>
+                        ) : null}
+                        {gatewayLoadedOtherAlias ? (
+                          <span className="rounded-full bg-white/5 px-2.5 py-1 text-[10px] uppercase tracking-[0.22em] text-slate-300">
+                            网关当前已加载 {gatewayLoadedOtherAlias}
                           </span>
                         ) : null}
                       </div>
@@ -4802,7 +4862,7 @@ export function AgentWorkbench() {
                             ? ` · ${uiText.runtimeLoadingElapsed} ${Math.max(1, Math.round(runtimeStatus.loadingElapsedMs / 1000))}s`
                             : ""}
                         </p>
-                        {selectedTarget.id === "local-qwen3-4b-4bit" ? (
+                        {selectedTarget.id === "local-qwen3-4b-4bit" || selectedTarget.id === "local-qwen35-4b-4bit" ? (
                           <p className="mt-1 text-amber-50/90">{uiText.runtimeDowngradeHint}</p>
                         ) : null}
                       </div>
@@ -5065,9 +5125,14 @@ export function AgentWorkbench() {
                             {uiText.activeLabel} {runtimeStatus.activeRequests}
                           </span>
                         ) : null}
-                        {runtimeStatus.loadedAlias ? (
+                        {loadedAliasForSelectedTarget ? (
                           <span className="rounded-full bg-cyan-400/10 px-2 py-[3px] text-[10px] uppercase tracking-[0.2em] text-cyan-300">
-                            {runtimeStatus.loadedAlias}
+                            {loadedAliasForSelectedTarget}
+                          </span>
+                        ) : null}
+                        {gatewayLoadedOtherAlias ? (
+                          <span className="rounded-full bg-white/[0.04] px-2 py-[3px] text-[10px] uppercase tracking-[0.2em] text-slate-300">
+                            网关当前已加载 {gatewayLoadedOtherAlias}
                           </span>
                         ) : null}
                         {runtimeStatus.loadingAlias ? (

@@ -132,6 +132,7 @@ export function markBenchmarkProgressRunning(runId: string) {
     ...current,
     status: "running",
     updatedAt: new Date().toISOString(),
+    error: undefined,
     controlAction: undefined,
     controlRequestedAt: undefined,
     controlMessage: undefined
@@ -239,6 +240,7 @@ export function completeBenchmarkProgress(runId: string) {
     estimatedRemainingMs: 0,
     activeGroups: [],
     pendingGroups: [],
+    error: undefined,
     controlAction: undefined,
     controlRequestedAt: undefined,
     controlMessage: undefined
@@ -268,6 +270,7 @@ export function finalizeBenchmarkProgressControl(
     estimatedRemainingMs: null,
     activeGroups: [],
     pendingGroups: action === "abandon" ? [] : current.pendingGroups || [],
+    error: undefined,
     controlAction: undefined,
     controlRequestedAt: undefined,
     controlMessage: message || (action === "stop" ? "Benchmark run stopped." : "Benchmark run abandoned.")

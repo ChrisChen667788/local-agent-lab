@@ -33,6 +33,11 @@ function formatTargetModelVersion(modelDefault: string, thinkingModelDefault?: s
   return modelDefault;
 }
 
+function getDefaultBenchmarkTargetIds(targetIds: string[]) {
+  const preferred = ["local-qwen3-0.6b", "local-qwen35-4b-4bit"].filter((id) => targetIds.includes(id));
+  return preferred.length ? preferred : targetIds;
+}
+
 function splitRowsByExecution<T extends { execution?: "local" | "remote" }>(rows: T[]) {
   const local = rows.filter((row) => row.execution === "local");
   const remote = rows.filter((row) => row.execution !== "local");
@@ -900,7 +905,7 @@ export function AdminDashboard() {
   const [contextWindowFilter, setContextWindowFilter] = useState("all");
   const [compareTargetIds, setCompareTargetIds] = useState<string[]>(["anthropic-claude"]);
   const [benchmarkTargetIds, setBenchmarkTargetIds] = useState<string[]>(
-    localTargets.map((target) => target.id)
+    getDefaultBenchmarkTargetIds(localTargets.map((target) => target.id))
   );
   const [benchmarkProviderProfile, setBenchmarkProviderProfile] = useState<"speed" | "balanced" | "tool-first">("balanced");
   const [benchmarkThinkingMode, setBenchmarkThinkingMode] = useState<"standard" | "thinking">("standard");
@@ -2457,7 +2462,17 @@ export function AdminDashboard() {
         throw new Error(payload.error || "Prewarm-all failed.");
       }
       const detail = payload.results
-        .map((entry) => `${entry.targetLabel}: ${entry.ok ? "ok" : "failed"}`)
+        .map((entry) => {
+          const statusLabel =
+            entry.status === "loading"
+              ? "loading"
+              : entry.status === "queued"
+                ? "queued"
+                : entry.status === "failed"
+                  ? "failed"
+                  : "ready";
+          return `${entry.targetLabel}: ${statusLabel}`;
+        })
         .join(" · ");
       setPrewarmAllMessage(`${payload.message}${detail ? ` ${detail}` : ""}`);
       await loadAllRuntimeStatuses();
@@ -2914,6 +2929,16 @@ export function AdminDashboard() {
   useEffect(() => {
     void loadKnowledgeBase();
   }, []);
+
+  useEffect(() => {
+    if (!highlightedKnowledgeDocumentIds.length) return;
+    const firstId = highlightedKnowledgeDocumentIds[0];
+    window.requestAnimationFrame(() => {
+      document
+        .getElementById(`knowledge-document:${firstId}`)
+        ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+  }, [highlightedKnowledgeDocumentIds]);
 
   useEffect(() => {
     void loadAllRuntimeStatuses();
@@ -5422,6 +5447,7 @@ export function AdminDashboard() {
                     knowledgeDocuments.map((document) => (
                       <div
                         key={document.id}
+                        id={`knowledge-document:${document.id}`}
                         className={`rounded-2xl border px-3 py-3 transition ${
                           highlightedKnowledgeDocumentIds.includes(document.id)
                             ? "border-cyan-400/30 bg-cyan-400/10 shadow-[0_0_0_1px_rgba(34,211,238,0.15)]"
@@ -5632,6 +5658,9 @@ export function AdminDashboard() {
               const runtimePhase = describeRuntimePhase(runtime, locale);
               const runtimeLogQuery = runtimeLogQueries[target.id] || "";
               const runtimeLogLimit = runtimeLogLimits[target.id] || 120;
+              const loadedAliasForTarget = runtime?.loadedAlias === target.id ? runtime.loadedAlias : null;
+              const gatewayLoadedOtherAlias =
+                runtime?.loadedAlias && runtime.loadedAlias !== target.id ? runtime.loadedAlias : null;
               return (
                 <article key={target.id} className="rounded-3xl border border-white/10 bg-black/20 p-4">
                   <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
@@ -5643,8 +5672,11 @@ export function AdminDashboard() {
                         </span>
                       </div>
                       <p className="mt-2 text-xs text-slate-400">
-                        {uiText.loadedAlias}: {runtime?.loadedAlias || runtime?.resolvedModel || target.modelDefault}
+                        {uiText.loadedAlias}: {loadedAliasForTarget || "—"}
                       </p>
+                      {gatewayLoadedOtherAlias ? (
+                        <p className="mt-1 text-xs text-slate-500">网关当前已加载: {gatewayLoadedOtherAlias}</p>
+                      ) : null}
                       {runtime?.loadingAlias ? (
                         <p className="mt-1 text-xs text-amber-200">
                           Loading: {runtime.loadingAlias}
@@ -5726,7 +5758,10 @@ export function AdminDashboard() {
                         <div className="mt-3 space-y-2 text-sm text-slate-300">
                           <div>
                             <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.loadedAlias}</p>
-                            <p className="mt-1 text-sm text-white">{runtime?.loadedAlias || runtime?.resolvedModel || target.modelDefault}</p>
+                            <p className="mt-1 text-sm text-white">{loadedAliasForTarget || "—"}</p>
+                            {gatewayLoadedOtherAlias ? (
+                              <p className="mt-1 text-xs text-slate-500">网关当前已加载: {gatewayLoadedOtherAlias}</p>
+                            ) : null}
                           </div>
                           <div>
                             <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeLastEvent}</p>

@@ -24,6 +24,7 @@ const MAX_REMOTE_TOOL_STEPS = 6;
 const LOCAL_GATEWAY_REQUEST_TIMEOUT_MS = 150000;
 const LOCAL_GATEWAY_WARMUP_WAIT_MS = 300000;
 const LOCAL_4B_DOWNGRADE_LOADING_THRESHOLD_MS = 120000;
+const LOCAL_COMPARISON_4B_TARGET_IDS = new Set(["local-qwen3-4b-4bit", "local-qwen35-4b-4bit"]);
 const LOCAL_GATEWAY_LOADING_RESPONSE_RE = /still loading|loading\./i;
 const LOCAL_META_REASONING_RE = /^(好的|好，|首先|我需要|我先|让我|讓我|用户让我|用戶讓我|The user|First, I need|I need to|Let me|I'll need to)/i;
 const TOOL_INTENT_PATTERNS = [
@@ -313,7 +314,8 @@ async function repairLocalDirectAnswer(
   target: ResolvedTarget,
   systemPrompt: string,
   request: AgentChatRequest,
-  contextWindow: number | undefined
+  contextWindow: number | undefined,
+  thinkingMode: AgentThinkingMode = "standard"
 ) {
   return callOpenAICompatible(
     target,
@@ -331,7 +333,8 @@ async function repairLocalDirectAnswer(
     request.input,
     false,
     contextWindow,
-    "speed"
+    "speed",
+    thinkingMode
   );
 }
 
@@ -404,6 +407,23 @@ function normalizeUsage(usage: unknown): AgentUsage | undefined {
   };
 }
 
+function buildLocalChatTemplateExtraBody(
+  target: ResolvedTarget,
+  thinkingMode: AgentThinkingMode
+) {
+  if (target.execution !== "local") {
+    return undefined;
+  }
+  if (target.id !== "local-qwen35-4b-4bit") {
+    return undefined;
+  }
+  return {
+    chat_template_kwargs: {
+      enable_thinking: thinkingMode === "thinking"
+    }
+  };
+}
+
 async function fetchWithAbortTimeout(
   input: string,
   init: RequestInit,
@@ -428,7 +448,8 @@ async function callOpenAICompatible(
   input: string,
   enableTools: boolean,
   contextWindow?: number,
-  providerProfile: AgentProviderProfile = "balanced"
+  providerProfile: AgentProviderProfile = "balanced",
+  thinkingMode: AgentThinkingMode = "standard"
 ): Promise<ProviderReply> {
   let warning: string | undefined;
   if (target.execution === "local") {
@@ -499,6 +520,10 @@ async function callOpenAICompatible(
       messages: currentMessages,
       max_tokens: defaultMaxTokens
     };
+    const extraBody = buildLocalChatTemplateExtraBody(target, thinkingMode);
+    if (extraBody) {
+      body.extra_body = extraBody;
+    }
 
     if (enableTools && target.supportsTools) {
       body.tools = buildOpenAITools();
@@ -801,7 +826,7 @@ export async function runAgentRequest(request: AgentChatRequest, systemPrompt: s
       : undefined;
 
   const localFallbackTarget =
-    target.id === "local-qwen3-4b-4bit"
+    target.execution === "local" && LOCAL_COMPARISON_4B_TARGET_IDS.has(target.id)
       ? resolveTargetWithMode("local-qwen3-0.6b", "standard")
       : null;
 
@@ -823,7 +848,8 @@ export async function runAgentRequest(request: AgentChatRequest, systemPrompt: s
           request.input,
           enableTools,
           request.contextWindow,
-          candidateProfile
+          candidateProfile,
+          thinkingMode
         );
 
   const primaryRunner = () => runForTarget(target, providerProfile);
@@ -904,10 +930,10 @@ export async function runAgentRequest(request: AgentChatRequest, systemPrompt: s
             warning: mergeWarnings(
               downgradedReply.warning,
               simpleLocalRoute
-                ? "Automatic local downgrade applied: the local 4B model is still cold-loading, so this short request was served by Local Qwen3 0.6B."
+                ? `Automatic local downgrade applied: ${target.label} is still cold-loading, so this short request was served by ${localFallbackTarget.label}.`
                 : loadingTooLong
-                ? "Automatic local downgrade applied: Local Qwen3 4B 4-bit is still loading, so the request was served by Local Qwen3 0.6B."
-                : "Automatic local downgrade applied: Local Qwen3 4B 4-bit reported a local runtime warning, so the request was served by Local Qwen3 0.6B."
+                ? `Automatic local downgrade applied: ${target.label} is still loading, so the request was served by ${localFallbackTarget.label}.`
+                : `Automatic local downgrade applied: ${target.label} reported a local runtime warning, so the request was served by ${localFallbackTarget.label}.`
             )
           };
         }
@@ -934,7 +960,7 @@ export async function runAgentRequest(request: AgentChatRequest, systemPrompt: s
         ...downgradedReply,
         warning: mergeWarnings(
           downgradedReply.warning,
-          "Automatic local downgrade applied: Local Qwen3 4B 4-bit -> Local Qwen3 0.6B because the primary local model returned no visible answer."
+          `Automatic local downgrade applied: ${target.label} -> ${localFallbackTarget.label} because the primary local model returned no visible answer.`
         )
       };
       resolvedModel = localFallbackTarget.resolvedModel;
@@ -954,7 +980,7 @@ export async function runAgentRequest(request: AgentChatRequest, systemPrompt: s
       ...downgradedReply,
       warning: mergeWarnings(
         downgradedReply.warning,
-        `Automatic local downgrade applied: Local Qwen3 4B 4-bit -> Local Qwen3 0.6B after primary local failure: ${
+        `Automatic local downgrade applied: ${target.label} -> ${localFallbackTarget.label} after primary local failure: ${
           error instanceof Error ? error.message : String(error)
         }`
       )
@@ -978,7 +1004,8 @@ export async function runAgentRequest(request: AgentChatRequest, systemPrompt: s
           repairTarget,
           effectiveSystemPrompt,
           request,
-          request.contextWindow
+          request.contextWindow,
+          thinkingMode
         );
         const repairedContent = sanitizeAssistantContent(repairedReply.content);
         if (repairedContent.trim() && !looksLikeLocalMetaReasoning(repairedContent)) {

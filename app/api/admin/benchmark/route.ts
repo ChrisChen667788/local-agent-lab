@@ -767,6 +767,23 @@ async function ensureLocalBenchmarkGateway(baseUrl: string) {
   };
 }
 
+function buildLocalBenchmarkExtraBody(
+  target: ResolvedTarget,
+  thinkingMode: AgentThinkingMode = "standard"
+) {
+  if (target.execution !== "local") {
+    return undefined;
+  }
+  if (target.id !== "local-qwen35-4b-4bit") {
+    return undefined;
+  }
+  return {
+    chat_template_kwargs: {
+      enable_thinking: thinkingMode === "thinking"
+    }
+  };
+}
+
 async function runSingleBenchmarkSample(
   target: ResolvedTarget,
   contextWindow: number,
@@ -786,6 +803,7 @@ async function runSingleBenchmarkSample(
     suggestMaxTokens(target.execution, false, prompt, providerProfile)
   );
   const runSignal = options?.runId ? getBenchmarkRunSignal(options.runId) : undefined;
+  const localExtraBody = buildLocalBenchmarkExtraBody(target, options?.thinkingMode || "standard");
 
   async function requestLocalStream() {
     try {
@@ -799,7 +817,8 @@ async function runSingleBenchmarkSample(
             { role: "user", content: prompt }
           ],
           max_tokens: effectiveMaxTokens,
-          context_window: contextWindow
+          context_window: contextWindow,
+          ...(localExtraBody ? { extra_body: localExtraBody } : {})
         })
       }, LOCAL_BENCHMARK_STREAM_TIMEOUT_MS, runSignal);
     } catch {
@@ -818,7 +837,8 @@ async function runSingleBenchmarkSample(
               { role: "user", content: prompt }
             ],
             max_tokens: effectiveMaxTokens,
-            context_window: contextWindow
+            context_window: contextWindow,
+            ...(localExtraBody ? { extra_body: localExtraBody } : {})
           })
         }, LOCAL_BENCHMARK_STREAM_TIMEOUT_MS, runSignal);
       }
@@ -838,7 +858,8 @@ async function runSingleBenchmarkSample(
             { role: "user", content: prompt }
           ],
           max_tokens: effectiveMaxTokens,
-          context_window: contextWindow
+          context_window: contextWindow,
+          ...(localExtraBody ? { extra_body: localExtraBody } : {})
         })
       }, LOCAL_BENCHMARK_STREAM_TIMEOUT_MS, runSignal);
     }
@@ -980,6 +1001,7 @@ async function runSingleBenchmarkSample(
           completionTokens,
           totalTokens,
           tokenThroughputTps,
+          outputText: outputBuffer.trim().slice(0, 12000),
           outputPreview: outputBuffer.trim().slice(0, 400),
           ok: true
         };
@@ -1091,6 +1113,7 @@ async function runSingleBenchmarkSample(
       completionTokens,
       totalTokens,
       tokenThroughputTps,
+      outputText: outputBuffer.trim().slice(0, 12000),
       outputPreview: outputBuffer.trim().slice(0, 400),
       ok: true
     };
@@ -1455,7 +1478,7 @@ export async function POST(request: Request) {
                   evaluator: task.evaluator,
                   expectedAnswerPreview: task.expectedAnswerPreview
                 },
-                sample.outputPreview || ""
+                sample.outputText || sample.outputPreview || ""
               )
             : null;
 
