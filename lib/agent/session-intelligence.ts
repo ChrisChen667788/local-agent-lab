@@ -64,7 +64,8 @@ function buildWorkspaceEvidenceGuidance(input: string, options: { enableTools?: 
     "- When the user asks which file, route, store, or implementation changed something, do not answer from memory.",
     "- Use list_files first to locate the real relative paths, then use read_file to confirm the exact file before naming it.",
     "- Only cite file paths that were actually confirmed by tools in this turn.",
-    "- This workspace commonly uses app/, lib/, components/, scripts/, and docs/. Do not invent src/ paths unless a tool result shows them."
+    "- This workspace commonly uses app/, lib/, components/, scripts/, and docs/. Do not invent src/ paths unless a tool result shows them.",
+    "- When you answer a repo-location question, include 1-2 concise code-evidence bullets after each file path so the user sees why that file matters."
   ];
 
   if (options.enableRetrieval) {

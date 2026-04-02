@@ -42,7 +42,10 @@ export type AgentRetrievalSummary = {
   topScore: number;
   usedInPrompt: boolean;
   bypassGrounding?: boolean;
-  bypassReason?: "general-question-no-evidence" | "general-question-low-confidence";
+  bypassReason?:
+    | "general-question-no-evidence"
+    | "general-question-low-confidence"
+    | "repo-path-question";
   results: AgentKnowledgeHit[];
 };
 

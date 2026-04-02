@@ -306,6 +306,11 @@ const BENCHMARK_DEFINITION_QUERY_PATTERNS = [
   /(benchmark datasets|benchmark suite|dataset catalog|workloads)/i
 ];
 
+const REPO_PATH_QUERY_PATTERNS = [
+  /(仓库|repo|repository|代码|文件|目录|路由|route|store|修复点|patch|diff|实现|当前项目|当前仓库|哪个文件|哪条路由)/i,
+  /(which file|which route|which store|file path|relative path|implemented where|where is the fix|what file)/i
+];
+
 function isGeneralKnowledgeQuestion(query: string) {
   const normalized = query.trim();
   if (!normalized) return false;
@@ -319,6 +324,12 @@ function isBenchmarkDefinitionQuery(query: string) {
   const normalized = query.trim();
   if (!normalized) return false;
   return BENCHMARK_DEFINITION_QUERY_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function isRepoPathQuestion(query: string) {
+  const normalized = query.trim();
+  if (!normalized) return false;
+  return REPO_PATH_QUERY_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
 function buildKnowledgeBaseStats(snapshot: KnowledgeBaseSnapshot): KnowledgeBaseStats {
@@ -579,6 +590,13 @@ export function applyRetrievalBypassStrategy(
   retrieval: AgentRetrievalSummary | null
 ): AgentRetrievalSummary | null {
   if (!retrieval) return retrieval;
+  if (isRepoPathQuestion(query)) {
+    return {
+      ...retrieval,
+      bypassGrounding: true,
+      bypassReason: "repo-path-question"
+    };
+  }
   if (!isGeneralKnowledgeQuestion(query)) return retrieval;
 
   if (retrieval.hitCount === 0) {

@@ -10,6 +10,7 @@ const SEARCH_ROOTS = ["app", "lib", "components", "scripts", "docs"];
 const SKIP_DIRS = new Set(["node_modules", ".next", ".git", "dist"]);
 const MAX_FILE_CANDIDATES = 10;
 const MAX_CONTENT_MATCHES = 12;
+const GENERIC_CONTENT_TOKENS = new Set(["benchmark", "agent", "chat", "runtime", "failed", "error", "fix"]);
 
 type WorkspaceScoutCandidate = {
   path: string;
@@ -51,7 +52,16 @@ function deriveIntent(input: string): WorkspaceScoutIntent {
   );
   const hintedTokens = KEYWORD_HINTS.flatMap((entry) => (entry.pattern.test(input) ? entry.tokens : []));
   const queryTokens = unique([...baseTokens, ...hintedTokens]).slice(0, 8);
-  const contentTokens = unique(queryTokens.filter((token) => !["route", "store", "diff"].includes(token))).slice(0, 6);
+  const contentTokens = unique(
+    queryTokens
+      .filter((token) => !["route", "store", "diff"].includes(token))
+      .sort((left, right) => {
+        const leftGeneric = GENERIC_CONTENT_TOKENS.has(left) ? 1 : 0;
+        const rightGeneric = GENERIC_CONTENT_TOKENS.has(right) ? 1 : 0;
+        if (leftGeneric !== rightGeneric) return leftGeneric - rightGeneric;
+        return right.length - left.length;
+      })
+  ).slice(0, 6);
   return {
     queryTokens,
     contentTokens,
@@ -184,6 +194,31 @@ async function searchContentMatches(intent: WorkspaceScoutIntent) {
   return matches;
 }
 
+async function extractCandidateClues(relativePath: string, intent: WorkspaceScoutIntent) {
+  const absolutePath = path.join(WORKSPACE_ROOT, relativePath);
+  const content = await fs.readFile(absolutePath, "utf8").catch(() => "");
+  if (!content.trim()) return [] as string[];
+
+  const prioritizedTokens = unique([
+    ...intent.contentTokens,
+    ...(intent.prefersRoute ? ["export", "request", "response", "progress"] : []),
+    ...(intent.prefersStore ? ["status", "error", "record", "progress"] : [])
+  ]);
+
+  const clues: string[] = [];
+  const lines = content.split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index].trim();
+    if (!line) continue;
+    const lower = line.toLowerCase();
+    if (!prioritizedTokens.some((token) => lower.includes(token.toLowerCase()))) continue;
+    clues.push(`L${index + 1}: ${line}`.slice(0, 180));
+    if (clues.length >= 2) break;
+  }
+
+  return unique(clues);
+}
+
 export async function buildWorkspaceScoutEvidence(input: string) {
   if (!shouldRunWorkspaceScout(input)) return "";
 
@@ -223,6 +258,12 @@ export async function buildWorkspaceScoutEvidence(input: string) {
     .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path))
     .slice(0, MAX_FILE_CANDIDATES);
 
+  for (const candidate of topCandidates) {
+    if (candidate.snippets.length >= 2) continue;
+    const fileClues = await extractCandidateClues(candidate.path, intent);
+    candidate.snippets = unique([...candidate.snippets, ...fileClues]).slice(0, 2);
+  }
+
   if (!topCandidates.length) {
     return [
       "Workspace scout:",
@@ -237,10 +278,21 @@ export async function buildWorkspaceScoutEvidence(input: string) {
   topCandidates.forEach((candidate, index) => {
     const reasonText = candidate.reasons.slice(0, 3).join("、") || "路径相关";
     lines.push(`${index + 1}. ${candidate.path} — ${reasonText}`);
-    candidate.snippets.forEach((snippet) => {
-      lines.push(`   - ${snippet}`);
-    });
+    if (candidate.snippets.length) {
+      lines.push("   代码线索:");
+      candidate.snippets.forEach((snippet) => {
+        lines.push(`   - ${snippet}`);
+      });
+    }
   });
+
+  lines.push(
+    "",
+    "Answer style for repo questions:",
+    "- Do not only name a path. After each file you name, add 1-2 short code-evidence bullets taken from confirmed clues in this turn.",
+    "- Prefer evidence such as function names, status transitions, guard conditions, or route behavior over generic summaries.",
+    "- Keep evidence short and concrete."
+  );
 
   return lines.join("\n");
 }
