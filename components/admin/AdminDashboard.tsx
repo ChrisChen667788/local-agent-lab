@@ -26,6 +26,12 @@ type MetricPercentiles = AgentMetricPercentiles;
 type BenchmarkHeatmapMetricKey = "first-token" | "total-latency" | "throughput" | "success-rate";
 type BenchmarkBatchScope = "full-suite" | "comparison-subset";
 const KNOWLEDGE_IMPORT_HISTORY_KEY = "admin-knowledge-import-history-v1";
+const RUNTIME_SWITCH_HISTORY_STORAGE_KEY = "local-agent-runtime-switch-history-v1";
+
+type RuntimeSwitchHistoryEntry = {
+  loadMs: number | null;
+  switchedAt: string | null;
+};
 
 function formatTargetModelVersion(modelDefault: string, thinkingModelDefault?: string) {
   if (thinkingModelDefault && thinkingModelDefault !== modelDefault) {
@@ -855,6 +861,13 @@ function formatRuntimeDuration(ms: number | null | undefined) {
   return `${Math.round(ms)}ms`;
 }
 
+function formatRuntimeTimestamp(timestamp: string | null | undefined, locale: string) {
+  if (!timestamp) return "—";
+  const parsed = new Date(timestamp);
+  if (Number.isNaN(parsed.getTime())) return "—";
+  return parsed.toLocaleString(locale);
+}
+
 function describeRuntimeAlias(alias: string | null | undefined, targets: AgentTarget[]) {
   if (!alias) return "—";
   const matched = targets.find((target) => target.id === alias);
@@ -960,6 +973,7 @@ export function AdminDashboard() {
   const [runtimeLogLimits, setRuntimeLogLimits] = useState<Record<string, number>>({});
   const [runtimeMessages, setRuntimeMessages] = useState<Record<string, string>>({});
   const [runtimeLastSwitchMs, setRuntimeLastSwitchMs] = useState<Record<string, number | null>>({});
+  const [runtimeLastSwitchAt, setRuntimeLastSwitchAt] = useState<Record<string, string | null>>({});
   const [prewarmAllPending, setPrewarmAllPending] = useState(false);
   const [prewarmAllMessage, setPrewarmAllMessage] = useState("");
   const knowledgeImportInputRef = useRef<HTMLInputElement | null>(null);
@@ -1121,6 +1135,7 @@ export function AdminDashboard() {
           runtimeCurrentLoaded: "當前已載入",
           runtimeSwitchingNow: "正在切模",
           runtimeLastSwitchLoad: "最近切換耗時",
+          runtimeLastSwitchAt: "最近切模時間",
           queueLabel: "佇列",
           activeLabel: "活躍",
           runtimeSupervisor: "Supervisor",
@@ -1285,6 +1300,7 @@ export function AdminDashboard() {
           runtimeCurrentLoaded: "현재 로드됨",
           runtimeSwitchingNow: "전환 중",
           runtimeLastSwitchLoad: "최근 전환 시간",
+          runtimeLastSwitchAt: "최근 전환 시각",
           queueLabel: "대기열",
           activeLabel: "활성",
           runtimeSupervisor: "Supervisor",
@@ -1449,6 +1465,7 @@ export function AdminDashboard() {
           runtimeCurrentLoaded: "現在読み込み済み",
           runtimeSwitchingNow: "切り替え中",
           runtimeLastSwitchLoad: "直近切替時間",
+          runtimeLastSwitchAt: "直近切替時刻",
           queueLabel: "キュー",
           activeLabel: "アクティブ",
           runtimeSupervisor: "Supervisor",
@@ -1613,6 +1630,7 @@ export function AdminDashboard() {
           runtimeCurrentLoaded: "Currently loaded",
           runtimeSwitchingNow: "Switching now",
           runtimeLastSwitchLoad: "Last switch time",
+          runtimeLastSwitchAt: "Last switch at",
           queueLabel: "Queue",
           activeLabel: "Active",
           runtimeSupervisor: "Supervisor",
@@ -1778,6 +1796,7 @@ export function AdminDashboard() {
           runtimeCurrentLoaded: "当前已加载",
           runtimeSwitchingNow: "正在切模",
           runtimeLastSwitchLoad: "最近切换耗时",
+          runtimeLastSwitchAt: "最近切模时间",
           queueLabel: "队列",
           activeLabel: "活跃",
           runtimeSupervisor: "Supervisor",
@@ -2417,9 +2436,14 @@ export function AdminDashboard() {
         [targetId]: payload.message
       }));
       if (payload.status === "ready" && typeof payload.loadMs === "number") {
+        const switchedAt = new Date().toISOString();
         setRuntimeLastSwitchMs((current) => ({
           ...current,
           [targetId]: payload.loadMs ?? null
+        }));
+        setRuntimeLastSwitchAt((current) => ({
+          ...current,
+          [targetId]: switchedAt
         }));
       }
       await loadRuntimeStatus(targetId);
@@ -2516,6 +2540,15 @@ export function AdminDashboard() {
         payload.results.forEach((entry) => {
           if (entry.status === "ready" && typeof entry.loadMs === "number") {
             next[entry.targetId] = entry.loadMs;
+          }
+        });
+        return next;
+      });
+      setRuntimeLastSwitchAt((current) => {
+        const next = { ...current };
+        payload.results.forEach((entry) => {
+          if (entry.status === "ready" && typeof entry.loadMs === "number") {
+            next[entry.targetId] = new Date().toISOString();
           }
         });
         return next;
@@ -2972,6 +3005,27 @@ export function AdminDashboard() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(RUNTIME_SWITCH_HISTORY_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Record<string, { loadMs?: number | null; switchedAt?: string | null }>;
+      if (!parsed || typeof parsed !== "object") return;
+      const nextLoadMs: Record<string, number | null> = {};
+      const nextSwitchedAt: Record<string, string | null> = {};
+      for (const [targetId, entry] of Object.entries(parsed)) {
+        nextLoadMs[targetId] =
+          typeof entry?.loadMs === "number" && Number.isFinite(entry.loadMs) ? entry.loadMs : null;
+        nextSwitchedAt[targetId] = typeof entry?.switchedAt === "string" ? entry.switchedAt : null;
+      }
+      setRuntimeLastSwitchMs(nextLoadMs);
+      setRuntimeLastSwitchAt(nextSwitchedAt);
+    } catch {
+      // Ignore malformed local cache and keep runtime panels usable.
+    }
+  }, []);
+
+  useEffect(() => {
     void loadKnowledgeBase();
   }, []);
 
@@ -2988,6 +3042,19 @@ export function AdminDashboard() {
   useEffect(() => {
     void loadAllRuntimeStatuses();
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const targetIds = new Set([...Object.keys(runtimeLastSwitchMs), ...Object.keys(runtimeLastSwitchAt)]);
+    const payload: Record<string, RuntimeSwitchHistoryEntry> = {};
+    targetIds.forEach((targetId) => {
+      payload[targetId] = {
+        loadMs: runtimeLastSwitchMs[targetId] ?? null,
+        switchedAt: runtimeLastSwitchAt[targetId] ?? null
+      };
+    });
+    window.localStorage.setItem(RUNTIME_SWITCH_HISTORY_STORAGE_KEY, JSON.stringify(payload));
+  }, [runtimeLastSwitchAt, runtimeLastSwitchMs]);
 
   useEffect(() => {
     void loadLatestBenchmarkProgress();
@@ -5718,6 +5785,7 @@ export function AdminDashboard() {
               const gatewayLoadedOtherAlias =
                 runtime?.loadedAlias && runtime.loadedAlias !== target.id ? runtime.loadedAlias : null;
               const lastSwitchMsForTarget = runtimeLastSwitchMs[target.id] ?? null;
+              const lastSwitchAtForTarget = runtimeLastSwitchAt[target.id] ?? null;
               return (
                 <article key={target.id} className="rounded-3xl border border-white/10 bg-black/20 p-4">
                   <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
@@ -5746,6 +5814,9 @@ export function AdminDashboard() {
                       ) : null}
                       <p className="mt-1 text-xs text-slate-500">
                         {uiText.runtimeLastSwitchLoad}: {formatRuntimeDuration(lastSwitchMsForTarget)}
+                      </p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        {uiText.runtimeLastSwitchAt}: {formatRuntimeTimestamp(lastSwitchAtForTarget, locale)}
                       </p>
                       {runtime?.loadingError ? (
                         <p className="mt-1 break-all text-xs text-rose-200">Loading error: {runtime.loadingError}</p>
@@ -5832,6 +5903,12 @@ export function AdminDashboard() {
                           <div>
                             <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeLastSwitchLoad}</p>
                             <p className="mt-1 text-sm text-white">{formatRuntimeDuration(lastSwitchMsForTarget)}</p>
+                          </div>
+                          <div>
+                            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeLastSwitchAt}</p>
+                            <p className="mt-1 text-sm text-white">
+                              {formatRuntimeTimestamp(lastSwitchAtForTarget, locale)}
+                            </p>
                           </div>
                           <div>
                             <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeSwitchingNow}</p>

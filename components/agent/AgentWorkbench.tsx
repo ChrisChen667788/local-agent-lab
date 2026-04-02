@@ -122,6 +122,13 @@ type FocusedFileExcerpt = {
   content: string;
 };
 
+const RUNTIME_SWITCH_HISTORY_STORAGE_KEY = "local-agent-runtime-switch-history-v1";
+
+type RuntimeSwitchHistoryEntry = {
+  loadMs: number | null;
+  switchedAt: string | null;
+};
+
 type WorkspaceFileFocusState = {
   path: string;
   anchors: number[];
@@ -413,6 +420,13 @@ function formatRuntimeDuration(ms: number | null | undefined) {
   if (ms >= 10_000) return `${(ms / 1000).toFixed(1)}s`;
   if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
   return `${Math.round(ms)}ms`;
+}
+
+function formatRuntimeTimestamp(timestamp: string | null | undefined, locale: string) {
+  if (!timestamp) return "—";
+  const parsed = new Date(timestamp);
+  if (Number.isNaN(parsed.getTime())) return "—";
+  return parsed.toLocaleString(locale);
 }
 
 function describeRuntimeAlias(alias: string | null | undefined, targets: AgentTarget[]) {
@@ -994,6 +1008,7 @@ export function AgentWorkbench() {
   const [error, setError] = useState("");
   const [runtimeStatus, setRuntimeStatus] = useState<AgentRuntimeStatus | null>(null);
   const [runtimeLastSwitchMsByTarget, setRuntimeLastSwitchMsByTarget] = useState<Record<string, number | null>>({});
+  const [runtimeLastSwitchAtByTarget, setRuntimeLastSwitchAtByTarget] = useState<Record<string, string | null>>({});
   const [prewarmPending, setPrewarmPending] = useState(false);
   const [prewarmAllPending, setPrewarmAllPending] = useState(false);
   const [prewarmMessage, setPrewarmMessage] = useState("");
@@ -1035,6 +1050,7 @@ export function AgentWorkbench() {
   const gatewayLoadedOtherAlias =
     runtimeStatus?.loadedAlias && runtimeStatus.loadedAlias !== selectedTargetId ? runtimeStatus.loadedAlias : null;
   const selectedTargetLastSwitchMs = runtimeLastSwitchMsByTarget[selectedTargetId] ?? null;
+  const selectedTargetLastSwitchAt = runtimeLastSwitchAtByTarget[selectedTargetId] ?? null;
   const lastChatTurn = useMemo(
     () => [...turns].reverse().find((turn) => turn.kind !== "check" && turn.targetId === selectedTargetId),
     [selectedTargetId, turns]
@@ -1249,6 +1265,7 @@ export function AgentWorkbench() {
           runtimeCurrentLoaded: "当前已加载",
           runtimeSwitchingNow: "正在切模",
           runtimeLastSwitchLoad: "最近切换耗时",
+          runtimeLastSwitchAt: "最近切模时间",
           runtimeDowngradeHint: "本地 4B 仍在冷加载时，简单问答会自动降到 0.6B 以先给出结果。",
           localFallbackUsed: "本地自动降级",
           localFallbackTarget: "降级目标",
@@ -1400,6 +1417,7 @@ export function AgentWorkbench() {
           runtimeCurrentLoaded: "현재 로드됨",
           runtimeSwitchingNow: "전환 중",
           runtimeLastSwitchLoad: "최근 전환 시간",
+          runtimeLastSwitchAt: "최근 전환 시각",
           runtimeDowngradeHint: "로컬 4B가 아직 콜드 로딩 중이면 간단한 질문은 0.6B로 자동 낮춰 먼저 응답합니다.",
           localFallbackUsed: "로컬 자동 강등",
           localFallbackTarget: "강등 대상",
@@ -1551,6 +1569,7 @@ export function AgentWorkbench() {
           runtimeCurrentLoaded: "現在読み込み済み",
           runtimeSwitchingNow: "切り替え中",
           runtimeLastSwitchLoad: "直近切替時間",
+          runtimeLastSwitchAt: "直近切替時刻",
           runtimeDowngradeHint: "ローカル 4B のコールドロード中は、簡単な質問を 0.6B に自動で落として先に応答します。",
           localFallbackUsed: "ローカル自動フォールバック",
           localFallbackTarget: "フォールバック先",
@@ -1702,6 +1721,7 @@ export function AgentWorkbench() {
           runtimeCurrentLoaded: "Currently loaded",
           runtimeSwitchingNow: "Switching now",
           runtimeLastSwitchLoad: "Last switch time",
+          runtimeLastSwitchAt: "Last switch at",
           runtimeDowngradeHint: "If local 4B is still cold-loading, simple questions automatically downgrade to 0.6B so we can answer sooner.",
           localFallbackUsed: "Local auto-fallback",
           localFallbackTarget: "Fallback target",
@@ -2116,6 +2136,29 @@ export function AgentWorkbench() {
         if (mergedSessions.length && !cancelled) {
           restoreSession(mergedSessions[0]);
         }
+
+        if (typeof window !== "undefined") {
+          const rawRuntimeHistory = window.localStorage.getItem(RUNTIME_SWITCH_HISTORY_STORAGE_KEY);
+          if (rawRuntimeHistory) {
+            const parsedRuntimeHistory = JSON.parse(rawRuntimeHistory) as Record<
+              string,
+              { loadMs?: number | null; switchedAt?: string | null }
+            >;
+            if (parsedRuntimeHistory && typeof parsedRuntimeHistory === "object") {
+              const nextLoadMs: Record<string, number | null> = {};
+              const nextSwitchedAt: Record<string, string | null> = {};
+              for (const [targetId, entry] of Object.entries(parsedRuntimeHistory)) {
+                nextLoadMs[targetId] =
+                  typeof entry?.loadMs === "number" && Number.isFinite(entry.loadMs) ? entry.loadMs : null;
+                nextSwitchedAt[targetId] = typeof entry?.switchedAt === "string" ? entry.switchedAt : null;
+              }
+              if (!cancelled) {
+                setRuntimeLastSwitchMsByTarget(nextLoadMs);
+                setRuntimeLastSwitchAtByTarget(nextSwitchedAt);
+              }
+            }
+          }
+        }
       } catch {
         // Ignore invalid local state and fall back to defaults.
       } finally {
@@ -2225,6 +2268,22 @@ export function AgentWorkbench() {
       }
     };
   }, [preferencesReady, savedSessions]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const targetIds = new Set([
+      ...Object.keys(runtimeLastSwitchMsByTarget),
+      ...Object.keys(runtimeLastSwitchAtByTarget)
+    ]);
+    const payload: Record<string, RuntimeSwitchHistoryEntry> = {};
+    targetIds.forEach((targetId) => {
+      payload[targetId] = {
+        loadMs: runtimeLastSwitchMsByTarget[targetId] ?? null,
+        switchedAt: runtimeLastSwitchAtByTarget[targetId] ?? null
+      };
+    });
+    window.localStorage.setItem(RUNTIME_SWITCH_HISTORY_STORAGE_KEY, JSON.stringify(payload));
+  }, [runtimeLastSwitchAtByTarget, runtimeLastSwitchMsByTarget]);
 
   useEffect(() => {
     if (!transcriptRef.current) return;
@@ -2938,9 +2997,14 @@ export function AgentWorkbench() {
         .join(" · ");
       setPrewarmMessage(details);
       if (data.status === "ready" && typeof data.loadMs === "number") {
+        const switchedAt = new Date().toISOString();
         setRuntimeLastSwitchMsByTarget((current) => ({
           ...current,
           [selectedTargetId]: data.loadMs ?? null
+        }));
+        setRuntimeLastSwitchAtByTarget((current) => ({
+          ...current,
+          [selectedTargetId]: switchedAt
         }));
       }
       await loadRuntimeStatus(selectedTargetId);
@@ -2991,6 +3055,15 @@ export function AgentWorkbench() {
         data.results.forEach((item) => {
           if (item.status === "ready" && typeof item.loadMs === "number") {
             next[item.targetId] = item.loadMs;
+          }
+        });
+        return next;
+      });
+      setRuntimeLastSwitchAtByTarget((current) => {
+        const next = { ...current };
+        data.results.forEach((item) => {
+          if (item.status === "ready" && typeof item.loadMs === "number") {
+            next[item.targetId] = new Date().toISOString();
           }
         });
         return next;
@@ -3551,6 +3624,9 @@ export function AgentWorkbench() {
                   ) : null}
                   <span className="rounded-full border border-white/8 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-300">
                     {uiText.runtimeLastSwitchLoad}: {formatRuntimeDuration(selectedTargetLastSwitchMs)}
+                  </span>
+                  <span className="rounded-full border border-white/8 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-300">
+                    {uiText.runtimeLastSwitchAt}: {formatRuntimeTimestamp(selectedTargetLastSwitchAt, locale)}
                   </span>
                   {runtimeStatus.loadingError ? (
                     <span className="rounded-full border border-rose-400/20 bg-rose-400/10 px-2.5 py-1 text-[11px] text-rose-100">
@@ -5238,6 +5314,12 @@ export function AgentWorkbench() {
                         <div>
                           <p className="text-slate-500">{uiText.runtimeLastSwitchLoad}</p>
                           <p className="mt-1 break-all text-white">{formatRuntimeDuration(selectedTargetLastSwitchMs)}</p>
+                        </div>
+                        <div>
+                          <p className="text-slate-500">{uiText.runtimeLastSwitchAt}</p>
+                          <p className="mt-1 break-all text-white">
+                            {formatRuntimeTimestamp(selectedTargetLastSwitchAt, locale)}
+                          </p>
                         </div>
                       </div>
                       {(runtimeStatus.loadingAlias || runtimeStatus.loadingError) ? (
