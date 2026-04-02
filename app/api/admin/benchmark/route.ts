@@ -509,6 +509,16 @@ function deriveComparisonSubsetTasks(tasks: PlannedSampleTask[]) {
   return subset.length ? subset : tasks.slice(0, Math.min(tasks.length, 12));
 }
 
+function clampBenchmarkContextWindowForTarget(targetId: string, requestedContextWindow: number) {
+  if (targetId === "local-qwen35-4b-4bit") {
+    return Math.min(normalizeContextWindow(requestedContextWindow, 8192), 32768);
+  }
+  return clampContextWindowForTarget(targetId, requestedContextWindow, {
+    enableTools: false,
+    enableRetrieval: false
+  });
+}
+
 function groupBenchmarkTasksByWorkload(tasks: PlannedSampleTask[]) {
   const groups: Array<{
     workloadId: string;
@@ -1418,10 +1428,7 @@ export async function POST(request: Request) {
     ) {
       assertBenchmarkRunActive(runId);
       const resolvedTarget = resolveTargetWithMode(target.id, mode.thinkingMode);
-      const effectiveContextWindow = clampContextWindowForTarget(target.id, contextWindow, {
-        enableTools: false,
-        enableRetrieval: false
-      });
+      const effectiveContextWindow = clampBenchmarkContextWindowForTarget(target.id, contextWindow);
       const groupKey = buildGroupKey(target.id, mode.providerProfile, mode.thinkingMode);
       const tasksForGroup =
         target.execution === "remote" && profileModes.length > 1 && profileBatchScope === "comparison-subset"
