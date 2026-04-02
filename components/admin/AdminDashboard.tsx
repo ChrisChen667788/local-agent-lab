@@ -3955,6 +3955,17 @@ export function AdminDashboard() {
                 <div className="space-y-3 rounded-2xl border border-white/10 bg-black/20 p-3">
                   <div>
                     <p className="mb-2 text-[11px] uppercase tracking-[0.18em] text-slate-500">{dictionary.common.local}</p>
+                    <p className="mb-3 text-[11px] leading-5 text-slate-500">
+                      {locale === "zh-CN"
+                        ? "Qwen3.5 4B 为默认本地 4B 主力，Qwen3 4B 保留为对比项。"
+                        : locale === "zh-TW"
+                          ? "Qwen3.5 4B 為預設本地 4B 主力，Qwen3 4B 保留為對比項。"
+                          : locale === "ja"
+                            ? "Qwen3.5 4B を既定のローカル 4B 主力とし、Qwen3 4B は比較用として残します。"
+                            : locale === "ko"
+                              ? "Qwen3.5 4B를 기본 로컬 4B 주력으로 두고, Qwen3 4B는 비교용으로 유지합니다."
+                              : "Qwen3.5 4B is now the default local 4B profile; Qwen3 4B remains as the comparison target."}
+                    </p>
                     <div className="space-y-2">
                       {localBenchmarkTargets.map((target) => {
                         const checked = benchmarkTargetIds.includes(target.id);
