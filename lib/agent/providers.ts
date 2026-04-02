@@ -34,6 +34,10 @@ const TOOL_INTENT_PATTERNS = [
   /(リポジトリ|コード|ファイル|ディレクトリ|パッチ|コマンド|実行|修正|読み取り|確認|一覧|実装|検索|整形|比較)/
 ];
 const CONTINUATION_PATTERNS = [/(继续|繼續|next step|continue|proceed)/i, /(다음 단계|계속)/, /(次へ|続けて)/];
+const REPO_EVIDENCE_REQUIRED_PATTERNS = [
+  /(哪个文件|哪条路由|哪个 route|哪个 store|修复点|实现在哪|文件路径|route 文件|store 文件|相对路径)/i,
+  /(which file|which route|which store|file path|relative path|implemented where|where is the fix|what file)/i
+];
 
 function loadLocalEnv() {
   if (localEnvCache) return localEnvCache;
@@ -245,6 +249,12 @@ export function shouldUseToolLoop(
   const recentContext = messages.slice(-4).map((message) => message.content).join("\n");
   return CONTINUATION_PATTERNS.some((pattern) => pattern.test(normalizedInput)) &&
     TOOL_INTENT_PATTERNS.some((pattern) => pattern.test(recentContext));
+}
+
+function requiresWorkspaceToolEvidence(input: string) {
+  const normalizedInput = input.trim();
+  if (!normalizedInput) return false;
+  return REPO_EVIDENCE_REQUIRED_PATTERNS.some((pattern) => pattern.test(normalizedInput));
 }
 
 function shouldPreferSimpleLocalFallback(
@@ -527,7 +537,7 @@ async function callOpenAICompatible(
 
     if (enableTools && target.supportsTools) {
       body.tools = buildOpenAITools();
-      body.tool_choice = "auto";
+      body.tool_choice = step === 0 && requiresWorkspaceToolEvidence(input) ? "required" : "auto";
     }
 
     const sendRequest = () =>

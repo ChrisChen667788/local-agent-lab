@@ -1,6 +1,8 @@
 import crypto from "crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import path from "path";
+import { benchmarkDatasets, benchmarkMilestoneSuites } from "@/lib/agent/benchmark-datasets";
+import { readManagedBenchmarkPromptSets } from "@/lib/agent/benchmark-prompt-set-store";
 import type {
   AgentGroundedVerification,
   AgentKnowledgeDocument,
@@ -54,6 +56,7 @@ const KNOWLEDGE_CITATION_PREFIX = "KB";
 const CITATION_PATTERN = /\[(KB\d+)\]/gi;
 const UNCERTAINTY_PATTERN =
   /(insufficient|uncertain|not enough|can't verify|cannot verify|unable to verify|evidence is insufficient|不确定|无法确认|不能确认|证据不足|信息不足|暫時無法確認|證據不足|情報不足)/i;
+const BUILTIN_BENCHMARK_DOC_PREFIX = "builtin-benchmark";
 
 function ensureDataDir() {
   mkdirSync(getObservabilityPaths().dataDir, { recursive: true });
@@ -298,6 +301,11 @@ const KNOWLEDGE_SPECIFIC_PATTERNS = [
   /(file|files|folder|directory|repository|repo|document|docs|knowledge base|citation|codebase|this project|this repo)/i,
 ];
 
+const BENCHMARK_DEFINITION_QUERY_PATTERNS = [
+  /(正式里程碑评测集|milestone-formal|milestone full|milestone suite|workload|测试集|评测集|suite)/i,
+  /(benchmark datasets|benchmark suite|dataset catalog|workloads)/i
+];
+
 function isGeneralKnowledgeQuestion(query: string) {
   const normalized = query.trim();
   if (!normalized) return false;
@@ -305,6 +313,12 @@ function isGeneralKnowledgeQuestion(query: string) {
     return false;
   }
   return GENERAL_KNOWLEDGE_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function isBenchmarkDefinitionQuery(query: string) {
+  const normalized = query.trim();
+  if (!normalized) return false;
+  return BENCHMARK_DEFINITION_QUERY_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
 function buildKnowledgeBaseStats(snapshot: KnowledgeBaseSnapshot): KnowledgeBaseStats {
@@ -397,6 +411,7 @@ function buildSearchResult(
   confidence: number,
   query: string
 ): AgentKnowledgeHit {
+  const maxChars = chunk.source === "lib/agent/benchmark-datasets.ts" ? 1400 : 320;
   return {
     chunkId: chunk.id,
     documentId: chunk.documentId,
@@ -404,11 +419,76 @@ function buildSearchResult(
     source: chunk.source,
     sectionPath: chunk.sectionPath,
     order: chunk.order,
-    content: compressChunkForQuery(query, chunk.content),
+    content: compressChunkForQuery(query, chunk.content, maxChars),
     citationLabel: formatCitationLabel(index + 1),
     score: Number(score.toFixed(2)),
     confidence: Number(confidence.toFixed(3))
   };
+}
+
+function buildBuiltinBenchmarkKnowledgeChunks() {
+  const promptSetMap = new Map(
+    readManagedBenchmarkPromptSets().map((entry) => [entry.id, entry])
+  );
+
+  const chunks: KnowledgeChunkRecord[] = [];
+
+  for (const suite of benchmarkMilestoneSuites) {
+    const workloadLines = suite.workloads.map((workload, index) => {
+      if (workload.kind === "prompt-set") {
+        const promptSet = promptSetMap.get(workload.promptSetId);
+        return `${index + 1}. prompt-set ${workload.promptSetId} · ${promptSet?.label || "unknown"} · runs=${workload.runs}`;
+      }
+      const dataset = benchmarkDatasets.find((entry) => entry.id === workload.datasetId);
+      const sampleLimit = typeof workload.sampleLimit === "number" ? ` · sampleLimit=${workload.sampleLimit}` : "";
+      return `${index + 1}. dataset ${workload.datasetId} · ${dataset?.label || "unknown"} · runs=${workload.runs}${sampleLimit}`;
+    });
+
+    const content = [
+      `Suite ID: ${suite.id}`,
+      `Label: ${suite.label}`,
+      `Description: ${suite.description}`,
+      `Report tier: ${suite.reportTier}`,
+      "Workloads:",
+      ...workloadLines
+    ].join("\n");
+
+    chunks.push({
+      id: `${BUILTIN_BENCHMARK_DOC_PREFIX}:${suite.id}:suite`,
+      documentId: `${BUILTIN_BENCHMARK_DOC_PREFIX}:${suite.id}`,
+      title: `${suite.label} benchmark suite`,
+      source: "lib/agent/benchmark-datasets.ts",
+      tags: ["benchmark", "suite", suite.id],
+      sectionPath: ["Benchmark suites", suite.label],
+      order: 1,
+      content,
+      charCount: content.length,
+      tokenEstimate: estimateTokens(content)
+    });
+  }
+
+  const datasetSummaryContent = [
+    "Benchmark dataset catalog:",
+    ...benchmarkDatasets.map(
+      (dataset, index) =>
+        `${index + 1}. ${dataset.id} · ${dataset.label} · ${dataset.taskCategory} · ${dataset.scoringLabel} · samples=${dataset.sampleCount}`
+    )
+  ].join("\n");
+
+  chunks.push({
+    id: `${BUILTIN_BENCHMARK_DOC_PREFIX}:dataset-catalog`,
+    documentId: `${BUILTIN_BENCHMARK_DOC_PREFIX}:dataset-catalog`,
+    title: "Benchmark dataset catalog",
+    source: "lib/agent/benchmark-datasets.ts",
+    tags: ["benchmark", "dataset-catalog"],
+    sectionPath: ["Benchmark datasets"],
+    order: 1,
+    content: datasetSummaryContent,
+    charCount: datasetSummaryContent.length,
+    tokenEstimate: estimateTokens(datasetSummaryContent)
+  });
+
+  return chunks;
 }
 
 export function searchKnowledgeBase(query: string, topK = DEFAULT_TOP_K): AgentRetrievalSummary {
@@ -425,8 +505,10 @@ export function searchKnowledgeBase(query: string, topK = DEFAULT_TOP_K): AgentR
   }
 
   const snapshot = readSnapshot();
+  const allChunks = snapshot.chunks.concat(buildBuiltinBenchmarkKnowledgeChunks());
   const queryTokens = tokenize(normalizedQuery);
-  if (!queryTokens.length || !snapshot.chunks.length) {
+  const benchmarkDefinitionQuery = isBenchmarkDefinitionQuery(normalizedQuery);
+  if (!queryTokens.length || !allChunks.length) {
     return {
       query: normalizedQuery,
       hitCount: 0,
@@ -437,7 +519,7 @@ export function searchKnowledgeBase(query: string, topK = DEFAULT_TOP_K): AgentR
     };
   }
 
-  const ranked = snapshot.chunks
+  const ranked = allChunks
     .map((chunk) => {
       const bodyTokens = new Set(tokenize(chunk.content));
       const titleTokens = new Set(tokenize(chunk.title));
@@ -450,13 +532,21 @@ export function searchKnowledgeBase(query: string, topK = DEFAULT_TOP_K): AgentR
       const sourceOverlap = countOverlap(queryTokens, sourceTokens);
       const normalizedOverlap = bodyOverlap / Math.max(1, queryTokens.length);
       const exactPhraseBonus = chunk.content.includes(normalizedQuery) || chunk.title.includes(normalizedQuery) ? 0.35 : 0;
+      const benchmarkDefinitionBonus =
+        benchmarkDefinitionQuery && chunk.source === "lib/agent/benchmark-datasets.ts"
+          ? 120
+          : 0;
       const score =
         normalizedOverlap * 100 +
         titleOverlap * 18 +
         sectionOverlap * 10 +
         sourceOverlap * 6 +
-        exactPhraseBonus * 100;
-      const confidence = Math.min(1, normalizedOverlap + titleOverlap * 0.12 + sectionOverlap * 0.05 + exactPhraseBonus);
+        exactPhraseBonus * 100 +
+        benchmarkDefinitionBonus;
+      const confidence = Math.min(
+        1,
+        normalizedOverlap + titleOverlap * 0.12 + sectionOverlap * 0.05 + exactPhraseBonus + (benchmarkDefinitionBonus ? 0.35 : 0)
+      );
 
       return {
         chunk,

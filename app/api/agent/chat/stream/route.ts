@@ -307,10 +307,16 @@ export async function POST(request: Request) {
       enableTools: body.enableTools,
       enableRetrieval: body.enableRetrieval
     });
+    const requestedTools = Boolean(body.enableTools);
     const systemPrompt = composeOperationalSystemPrompt(
       buildGroundedSystemPrompt(baseSystemPrompt, retrieval),
       memorySummary,
-      plannerSteps
+      plannerSteps,
+      {
+        input: body.input,
+        enableTools: requestedTools,
+        enableRetrieval: body.enableRetrieval
+      }
     );
     const providerProfile = resolveEffectiveProviderProfile(
       normalizeProviderProfile(body.providerProfile),
@@ -319,7 +325,7 @@ export async function POST(request: Request) {
       body.messages
     );
     const enableTools =
-      Boolean(body.enableTools) &&
+      requestedTools &&
       target.supportsTools &&
       shouldUseToolLoop(body.input, body.messages, providerProfile);
     const contextWindow = clampContextWindowForTarget(

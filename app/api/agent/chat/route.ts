@@ -101,7 +101,11 @@ export async function POST(request: Request) {
         : DEFAULT_AGENT_SYSTEM_PROMPT,
       retrieval
     );
-    const systemPrompt = composeOperationalSystemPrompt(groundedPrompt, memorySummary, plannerSteps);
+    const systemPrompt = composeOperationalSystemPrompt(groundedPrompt, memorySummary, plannerSteps, {
+      input: body.input,
+      enableTools: body.enableTools,
+      enableRetrieval: body.enableRetrieval
+    });
     beginTrackedRequest(body.targetId);
 
     const cacheLookup =

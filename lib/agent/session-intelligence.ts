@@ -44,10 +44,43 @@ export function buildTaskPlan(input: string, options: { enableTools?: boolean; e
   return steps;
 }
 
+function buildWorkspaceEvidenceGuidance(input: string, options: { enableTools?: boolean; enableRetrieval?: boolean }) {
+  if (!options.enableTools) return [] as string[];
+
+  const normalized = input.trim();
+  if (!normalized) return [] as string[];
+
+  const repoSpecificPatterns = [
+    /(仓库|repo|repository|代码|文件|目录|路由|route|store|修复点|patch|diff|实现|当前项目|当前仓库|哪个文件|哪条路由)/i,
+    /(file|files|folder|directory|route|store|path|implemented|implementation|fix|where|which file|codebase|repo)/i
+  ];
+
+  if (!repoSpecificPatterns.some((pattern) => pattern.test(normalized))) {
+    return [] as string[];
+  }
+
+  const guidance = [
+    "Workspace evidence rules:",
+    "- When the user asks which file, route, store, or implementation changed something, do not answer from memory.",
+    "- Use list_files first to locate the real relative paths, then use read_file to confirm the exact file before naming it.",
+    "- Only cite file paths that were actually confirmed by tools in this turn.",
+    "- This workspace commonly uses app/, lib/, components/, scripts/, and docs/. Do not invent src/ paths unless a tool result shows them."
+  ];
+
+  if (options.enableRetrieval) {
+    guidance.push(
+      "- Retrieval may help with summaries, but repository-specific file paths still need tool confirmation."
+    );
+  }
+
+  return guidance;
+}
+
 export function composeOperationalSystemPrompt(
   basePrompt: string,
   memorySummary: string,
-  plannerSteps: string[]
+  plannerSteps: string[],
+  options?: { input?: string; enableTools?: boolean; enableRetrieval?: boolean }
 ) {
   const sections = [basePrompt];
 
@@ -57,6 +90,14 @@ export function composeOperationalSystemPrompt(
 
   if (plannerSteps.length) {
     sections.push("", "Execution plan:", ...plannerSteps.map((step, index) => `${index + 1}. ${step}`));
+  }
+
+  const workspaceEvidenceGuidance = buildWorkspaceEvidenceGuidance(options?.input || "", {
+    enableTools: options?.enableTools,
+    enableRetrieval: options?.enableRetrieval
+  });
+  if (workspaceEvidenceGuidance.length) {
+    sections.push("", ...workspaceEvidenceGuidance);
   }
 
   return sections.join("\n");
