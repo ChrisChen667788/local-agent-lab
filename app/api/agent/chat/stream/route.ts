@@ -28,6 +28,7 @@ import {
   searchKnowledgeBase
 } from "@/lib/agent/retrieval-store";
 import { buildSessionMemory, buildTaskPlan, composeOperationalSystemPrompt } from "@/lib/agent/session-intelligence";
+import { buildWorkspaceScoutEvidence } from "@/lib/agent/workspace-scout";
 import { beginTrackedRequest, finishTrackedRequest } from "@/lib/agent/runtime-state";
 import type {
   AgentChatRequest,
@@ -308,6 +309,7 @@ export async function POST(request: Request) {
       enableRetrieval: body.enableRetrieval
     });
     const requestedTools = Boolean(body.enableTools);
+    const workspaceScoutEvidence = await buildWorkspaceScoutEvidence(body.input);
     const systemPrompt = composeOperationalSystemPrompt(
       buildGroundedSystemPrompt(baseSystemPrompt, retrieval),
       memorySummary,
@@ -315,7 +317,8 @@ export async function POST(request: Request) {
       {
         input: body.input,
         enableTools: requestedTools,
-        enableRetrieval: body.enableRetrieval
+        enableRetrieval: body.enableRetrieval,
+        workspaceScoutEvidence
       }
     );
     const providerProfile = resolveEffectiveProviderProfile(

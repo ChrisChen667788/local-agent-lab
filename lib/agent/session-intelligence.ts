@@ -80,7 +80,12 @@ export function composeOperationalSystemPrompt(
   basePrompt: string,
   memorySummary: string,
   plannerSteps: string[],
-  options?: { input?: string; enableTools?: boolean; enableRetrieval?: boolean }
+  options?: {
+    input?: string;
+    enableTools?: boolean;
+    enableRetrieval?: boolean;
+    workspaceScoutEvidence?: string;
+  }
 ) {
   const sections = [basePrompt];
 
@@ -98,6 +103,10 @@ export function composeOperationalSystemPrompt(
   });
   if (workspaceEvidenceGuidance.length) {
     sections.push("", ...workspaceEvidenceGuidance);
+  }
+
+  if (options?.workspaceScoutEvidence?.trim()) {
+    sections.push("", options.workspaceScoutEvidence.trim());
   }
 
   return sections.join("\n");
