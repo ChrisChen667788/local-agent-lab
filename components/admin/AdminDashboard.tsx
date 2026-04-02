@@ -18,7 +18,8 @@ import type {
   AgentRuntimeLogSummary,
   AgentRuntimePrewarmAllResponse,
   AgentRuntimePrewarmResponse,
-  AgentRuntimeStatus
+  AgentRuntimeStatus,
+  AgentTarget
 } from "@/lib/agent/types";
 
 type MetricPercentiles = AgentMetricPercentiles;
@@ -847,6 +848,19 @@ function describeRuntimePhase(runtime: AgentRuntimeStatus | null, locale: string
   }
 }
 
+function formatRuntimeDuration(ms: number | null | undefined) {
+  if (typeof ms !== "number" || !Number.isFinite(ms)) return "—";
+  if (ms >= 10_000) return `${(ms / 1000).toFixed(1)}s`;
+  if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
+  return `${Math.round(ms)}ms`;
+}
+
+function describeRuntimeAlias(alias: string | null | undefined, targets: AgentTarget[]) {
+  if (!alias) return "—";
+  const matched = targets.find((target) => target.id === alias);
+  return matched ? matched.label : alias;
+}
+
 function formatSignedNumber(value?: number | null, digits = 1, suffix = "") {
   if (value === null || value === undefined || !Number.isFinite(value)) return "--";
   const fixed = value.toFixed(digits);
@@ -945,6 +959,7 @@ export function AdminDashboard() {
   const [runtimeLogQueries, setRuntimeLogQueries] = useState<Record<string, string>>({});
   const [runtimeLogLimits, setRuntimeLogLimits] = useState<Record<string, number>>({});
   const [runtimeMessages, setRuntimeMessages] = useState<Record<string, string>>({});
+  const [runtimeLastSwitchMs, setRuntimeLastSwitchMs] = useState<Record<string, number | null>>({});
   const [prewarmAllPending, setPrewarmAllPending] = useState(false);
   const [prewarmAllMessage, setPrewarmAllMessage] = useState("");
   const knowledgeImportInputRef = useRef<HTMLInputElement | null>(null);
@@ -1103,6 +1118,9 @@ export function AdminDashboard() {
           runtimeRestart: "重啟網關",
           runtimeReadLog: "查看日誌",
           loadedAlias: "已載入別名",
+          runtimeCurrentLoaded: "當前已載入",
+          runtimeSwitchingNow: "正在切模",
+          runtimeLastSwitchLoad: "最近切換耗時",
           queueLabel: "佇列",
           activeLabel: "活躍",
           runtimeSupervisor: "Supervisor",
@@ -1264,6 +1282,9 @@ export function AdminDashboard() {
           runtimeRestart: "게이트웨이 재시작",
           runtimeReadLog: "로그 보기",
           loadedAlias: "로드된 별칭",
+          runtimeCurrentLoaded: "현재 로드됨",
+          runtimeSwitchingNow: "전환 중",
+          runtimeLastSwitchLoad: "최근 전환 시간",
           queueLabel: "대기열",
           activeLabel: "활성",
           runtimeSupervisor: "Supervisor",
@@ -1425,6 +1446,9 @@ export function AdminDashboard() {
           runtimeRestart: "ゲートウェイ再起動",
           runtimeReadLog: "ログを表示",
           loadedAlias: "読み込み済み別名",
+          runtimeCurrentLoaded: "現在読み込み済み",
+          runtimeSwitchingNow: "切り替え中",
+          runtimeLastSwitchLoad: "直近切替時間",
           queueLabel: "キュー",
           activeLabel: "アクティブ",
           runtimeSupervisor: "Supervisor",
@@ -1586,6 +1610,9 @@ export function AdminDashboard() {
           runtimeRestart: "Restart gateway",
           runtimeReadLog: "View log",
           loadedAlias: "Loaded alias",
+          runtimeCurrentLoaded: "Currently loaded",
+          runtimeSwitchingNow: "Switching now",
+          runtimeLastSwitchLoad: "Last switch time",
           queueLabel: "Queue",
           activeLabel: "Active",
           runtimeSupervisor: "Supervisor",
@@ -1748,6 +1775,9 @@ export function AdminDashboard() {
           runtimeRestart: "重启网关",
           runtimeReadLog: "查看日志",
           loadedAlias: "已加载别名",
+          runtimeCurrentLoaded: "当前已加载",
+          runtimeSwitchingNow: "正在切模",
+          runtimeLastSwitchLoad: "最近切换耗时",
           queueLabel: "队列",
           activeLabel: "活跃",
           runtimeSupervisor: "Supervisor",
@@ -2386,6 +2416,12 @@ export function AdminDashboard() {
         ...current,
         [targetId]: payload.message
       }));
+      if (payload.status === "ready" && typeof payload.loadMs === "number") {
+        setRuntimeLastSwitchMs((current) => ({
+          ...current,
+          [targetId]: payload.loadMs ?? null
+        }));
+      }
       await loadRuntimeStatus(targetId);
     } catch (runtimeError) {
       setRuntimeMessages((current) => ({
@@ -2475,6 +2511,15 @@ export function AdminDashboard() {
         })
         .join(" · ");
       setPrewarmAllMessage(`${payload.message}${detail ? ` ${detail}` : ""}`);
+      setRuntimeLastSwitchMs((current) => {
+        const next = { ...current };
+        payload.results.forEach((entry) => {
+          if (entry.status === "ready" && typeof entry.loadMs === "number") {
+            next[entry.targetId] = entry.loadMs;
+          }
+        });
+        return next;
+      });
       await loadAllRuntimeStatuses();
     } catch (runtimeError) {
       setPrewarmAllMessage(runtimeError instanceof Error ? runtimeError.message : "Prewarm-all failed.");
@@ -5672,6 +5717,7 @@ export function AdminDashboard() {
               const loadedAliasForTarget = runtime?.loadedAlias === target.id ? runtime.loadedAlias : null;
               const gatewayLoadedOtherAlias =
                 runtime?.loadedAlias && runtime.loadedAlias !== target.id ? runtime.loadedAlias : null;
+              const lastSwitchMsForTarget = runtimeLastSwitchMs[target.id] ?? null;
               return (
                 <article key={target.id} className="rounded-3xl border border-white/10 bg-black/20 p-4">
                   <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
@@ -5683,19 +5729,24 @@ export function AdminDashboard() {
                         </span>
                       </div>
                       <p className="mt-2 text-xs text-slate-400">
-                        {uiText.loadedAlias}: {loadedAliasForTarget || "—"}
+                        {uiText.loadedAlias}: {loadedAliasForTarget ? describeRuntimeAlias(loadedAliasForTarget, localTargets) : "—"}
                       </p>
                       {gatewayLoadedOtherAlias ? (
-                        <p className="mt-1 text-xs text-slate-500">网关当前已加载: {gatewayLoadedOtherAlias}</p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          {uiText.runtimeCurrentLoaded}: {describeRuntimeAlias(gatewayLoadedOtherAlias, localTargets)}
+                        </p>
                       ) : null}
                       {runtime?.loadingAlias ? (
                         <p className="mt-1 text-xs text-amber-200">
-                          Loading: {runtime.loadingAlias}
+                          {uiText.runtimeSwitchingNow}: {describeRuntimeAlias(runtime.loadingAlias, localTargets)}
                           {typeof runtime.loadingElapsedMs === "number"
                             ? ` · ${Math.max(1, Math.round(runtime.loadingElapsedMs / 1000))}s`
                             : ""}
                         </p>
                       ) : null}
+                      <p className="mt-1 text-xs text-slate-500">
+                        {uiText.runtimeLastSwitchLoad}: {formatRuntimeDuration(lastSwitchMsForTarget)}
+                      </p>
                       {runtime?.loadingError ? (
                         <p className="mt-1 break-all text-xs text-rose-200">Loading error: {runtime.loadingError}</p>
                       ) : null}
@@ -5769,10 +5820,27 @@ export function AdminDashboard() {
                         <div className="mt-3 space-y-2 text-sm text-slate-300">
                           <div>
                             <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.loadedAlias}</p>
-                            <p className="mt-1 text-sm text-white">{loadedAliasForTarget || "—"}</p>
+                            <p className="mt-1 text-sm text-white">
+                              {loadedAliasForTarget ? describeRuntimeAlias(loadedAliasForTarget, localTargets) : "—"}
+                            </p>
                             {gatewayLoadedOtherAlias ? (
-                              <p className="mt-1 text-xs text-slate-500">网关当前已加载: {gatewayLoadedOtherAlias}</p>
+                              <p className="mt-1 text-xs text-slate-500">
+                                {uiText.runtimeCurrentLoaded}: {describeRuntimeAlias(gatewayLoadedOtherAlias, localTargets)}
+                              </p>
                             ) : null}
+                          </div>
+                          <div>
+                            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeLastSwitchLoad}</p>
+                            <p className="mt-1 text-sm text-white">{formatRuntimeDuration(lastSwitchMsForTarget)}</p>
+                          </div>
+                          <div>
+                            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeSwitchingNow}</p>
+                            <p className="mt-1 text-sm text-white">
+                              {runtime?.loadingAlias ? describeRuntimeAlias(runtime.loadingAlias, localTargets) : "—"}
+                              {runtime?.loadingAlias && typeof runtime.loadingElapsedMs === "number"
+                                ? ` · ${Math.max(1, Math.round(runtime.loadingElapsedMs / 1000))}s`
+                                : ""}
+                            </p>
                           </div>
                           <div>
                             <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeLastEvent}</p>

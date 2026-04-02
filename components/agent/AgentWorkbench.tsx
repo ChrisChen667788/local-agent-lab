@@ -24,6 +24,7 @@ import type {
   AgentRuntimePrewarmAllResponse,
   AgentRuntimePrewarmResponse,
   AgentRuntimeStatus,
+  AgentTarget,
   AgentToolDecisionResponse,
   AgentToolRun
 } from "@/lib/agent/types";
@@ -405,6 +406,19 @@ function buildRuntimeStageItems(runtime: AgentRuntimeStatus | null, locale: stri
     active: step === phase,
     completed: phase !== "error" && phaseIndex >= 0 && index < phaseIndex
   }));
+}
+
+function formatRuntimeDuration(ms: number | null | undefined) {
+  if (typeof ms !== "number" || !Number.isFinite(ms)) return "—";
+  if (ms >= 10_000) return `${(ms / 1000).toFixed(1)}s`;
+  if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
+  return `${Math.round(ms)}ms`;
+}
+
+function describeRuntimeAlias(alias: string | null | undefined, targets: AgentTarget[]) {
+  if (!alias) return "—";
+  const matched = targets.find((target) => target.id === alias);
+  return matched ? `${matched.label}` : alias;
 }
 
 function readNumberField(source: ParsedToolOutput | null, key: string) {
@@ -979,6 +993,7 @@ export function AgentWorkbench() {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const [runtimeStatus, setRuntimeStatus] = useState<AgentRuntimeStatus | null>(null);
+  const [runtimeLastSwitchMsByTarget, setRuntimeLastSwitchMsByTarget] = useState<Record<string, number | null>>({});
   const [prewarmPending, setPrewarmPending] = useState(false);
   const [prewarmAllPending, setPrewarmAllPending] = useState(false);
   const [prewarmMessage, setPrewarmMessage] = useState("");
@@ -1019,6 +1034,7 @@ export function AgentWorkbench() {
     runtimeStatus?.loadedAlias === selectedTargetId ? runtimeStatus.loadedAlias : null;
   const gatewayLoadedOtherAlias =
     runtimeStatus?.loadedAlias && runtimeStatus.loadedAlias !== selectedTargetId ? runtimeStatus.loadedAlias : null;
+  const selectedTargetLastSwitchMs = runtimeLastSwitchMsByTarget[selectedTargetId] ?? null;
   const lastChatTurn = useMemo(
     () => [...turns].reverse().find((turn) => turn.kind !== "check" && turn.targetId === selectedTargetId),
     [selectedTargetId, turns]
@@ -1230,6 +1246,9 @@ export function AgentWorkbench() {
           runtimeLoading: "运行中加载",
           runtimeLoadingElapsed: "已等待",
           runtimeLoadingError: "加载错误",
+          runtimeCurrentLoaded: "当前已加载",
+          runtimeSwitchingNow: "正在切模",
+          runtimeLastSwitchLoad: "最近切换耗时",
           runtimeDowngradeHint: "本地 4B 仍在冷加载时，简单问答会自动降到 0.6B 以先给出结果。",
           localFallbackUsed: "本地自动降级",
           localFallbackTarget: "降级目标",
@@ -1378,6 +1397,9 @@ export function AgentWorkbench() {
           runtimeLoading: "로딩 중",
           runtimeLoadingElapsed: "대기 시간",
           runtimeLoadingError: "로딩 오류",
+          runtimeCurrentLoaded: "현재 로드됨",
+          runtimeSwitchingNow: "전환 중",
+          runtimeLastSwitchLoad: "최근 전환 시간",
           runtimeDowngradeHint: "로컬 4B가 아직 콜드 로딩 중이면 간단한 질문은 0.6B로 자동 낮춰 먼저 응답합니다.",
           localFallbackUsed: "로컬 자동 강등",
           localFallbackTarget: "강등 대상",
@@ -1526,6 +1548,9 @@ export function AgentWorkbench() {
           runtimeLoading: "読み込み中",
           runtimeLoadingElapsed: "経過",
           runtimeLoadingError: "読み込みエラー",
+          runtimeCurrentLoaded: "現在読み込み済み",
+          runtimeSwitchingNow: "切り替え中",
+          runtimeLastSwitchLoad: "直近切替時間",
           runtimeDowngradeHint: "ローカル 4B のコールドロード中は、簡単な質問を 0.6B に自動で落として先に応答します。",
           localFallbackUsed: "ローカル自動フォールバック",
           localFallbackTarget: "フォールバック先",
@@ -1674,6 +1699,9 @@ export function AgentWorkbench() {
           runtimeLoading: "Loading",
           runtimeLoadingElapsed: "Elapsed",
           runtimeLoadingError: "Loading error",
+          runtimeCurrentLoaded: "Currently loaded",
+          runtimeSwitchingNow: "Switching now",
+          runtimeLastSwitchLoad: "Last switch time",
           runtimeDowngradeHint: "If local 4B is still cold-loading, simple questions automatically downgrade to 0.6B so we can answer sooner.",
           localFallbackUsed: "Local auto-fallback",
           localFallbackTarget: "Fallback target",
@@ -2909,6 +2937,12 @@ export function AgentWorkbench() {
         .filter(Boolean)
         .join(" · ");
       setPrewarmMessage(details);
+      if (data.status === "ready" && typeof data.loadMs === "number") {
+        setRuntimeLastSwitchMsByTarget((current) => ({
+          ...current,
+          [selectedTargetId]: data.loadMs ?? null
+        }));
+      }
       await loadRuntimeStatus(selectedTargetId);
     } catch (prewarmError) {
       setError(prewarmError instanceof Error ? prewarmError.message : uiText.runtimeFailed);
@@ -2952,6 +2986,15 @@ export function AgentWorkbench() {
         })
         .join(" | ");
       setPrewarmMessage(`${uiText.prewarmAllDone}${details ? ` ${details}` : ""}`);
+      setRuntimeLastSwitchMsByTarget((current) => {
+        const next = { ...current };
+        data.results.forEach((item) => {
+          if (item.status === "ready" && typeof item.loadMs === "number") {
+            next[item.targetId] = item.loadMs;
+          }
+        });
+        return next;
+      });
       await loadRuntimeStatus(selectedTargetId);
     } catch (prewarmError) {
       setError(prewarmError instanceof Error ? prewarmError.message : uiText.runtimeFailed);
@@ -3475,7 +3518,7 @@ export function AgentWorkbench() {
               </span>
               {gatewayLoadedOtherAlias ? (
                 <span className="rounded-full border border-white/8 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-300">
-                  网关当前已加载: {gatewayLoadedOtherAlias}
+                  {uiText.runtimeCurrentLoaded}: {describeRuntimeAlias(gatewayLoadedOtherAlias, agentTargets)}
                 </span>
               ) : null}
               {selectedTarget.execution === "local" && runtimeStatus ? (
@@ -3500,12 +3543,15 @@ export function AgentWorkbench() {
                   </span>
                   {runtimeStatus.loadingAlias ? (
                     <span className="rounded-full border border-amber-400/20 bg-amber-400/10 px-2.5 py-1 text-[11px] text-amber-100">
-                      {uiText.runtimeLoading}: {runtimeStatus.loadingAlias}
+                      {uiText.runtimeSwitchingNow}: {describeRuntimeAlias(runtimeStatus.loadingAlias, agentTargets)}
                       {typeof runtimeStatus.loadingElapsedMs === "number"
                         ? ` · ${uiText.runtimeLoadingElapsed} ${Math.max(1, Math.round(runtimeStatus.loadingElapsedMs / 1000))}s`
                         : ""}
                     </span>
                   ) : null}
+                  <span className="rounded-full border border-white/8 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-300">
+                    {uiText.runtimeLastSwitchLoad}: {formatRuntimeDuration(selectedTargetLastSwitchMs)}
+                  </span>
                   {runtimeStatus.loadingError ? (
                     <span className="rounded-full border border-rose-400/20 bg-rose-400/10 px-2.5 py-1 text-[11px] text-rose-100">
                       {uiText.runtimeLoadingError}
@@ -4818,12 +4864,12 @@ export function AgentWorkbench() {
                         ) : null}
                         {loadedAliasForSelectedTarget ? (
                           <span className="rounded-full bg-cyan-400/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.22em] text-cyan-300">
-                            {loadedAliasForSelectedTarget}
+                            {describeRuntimeAlias(loadedAliasForSelectedTarget, agentTargets)}
                           </span>
                         ) : null}
                         {gatewayLoadedOtherAlias ? (
                           <span className="rounded-full bg-white/5 px-2.5 py-1 text-[10px] uppercase tracking-[0.22em] text-slate-300">
-                            网关当前已加载 {gatewayLoadedOtherAlias}
+                            {uiText.runtimeCurrentLoaded} {describeRuntimeAlias(gatewayLoadedOtherAlias, agentTargets)}
                           </span>
                         ) : null}
                       </div>
@@ -4854,10 +4900,10 @@ export function AgentWorkbench() {
                             : uiText.runtimeReady
                           : runtimeStatus.message || uiText.runtimeUnavailable)}
                     </p>
-                    {runtimeStatus.loadingAlias ? (
-                      <div className="mt-2 rounded-2xl border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-xs leading-6 text-amber-100">
-                        <p>
-                          {uiText.runtimeLoading}: {runtimeStatus.loadingAlias}
+                      {runtimeStatus.loadingAlias ? (
+                        <div className="mt-2 rounded-2xl border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-xs leading-6 text-amber-100">
+                          <p>
+                          {uiText.runtimeSwitchingNow}: {describeRuntimeAlias(runtimeStatus.loadingAlias, agentTargets)}
                           {typeof runtimeStatus.loadingElapsedMs === "number"
                             ? ` · ${uiText.runtimeLoadingElapsed} ${Math.max(1, Math.round(runtimeStatus.loadingElapsedMs / 1000))}s`
                             : ""}
@@ -5127,17 +5173,17 @@ export function AgentWorkbench() {
                         ) : null}
                         {loadedAliasForSelectedTarget ? (
                           <span className="rounded-full bg-cyan-400/10 px-2 py-[3px] text-[10px] uppercase tracking-[0.2em] text-cyan-300">
-                            {loadedAliasForSelectedTarget}
+                            {describeRuntimeAlias(loadedAliasForSelectedTarget, agentTargets)}
                           </span>
                         ) : null}
                         {gatewayLoadedOtherAlias ? (
                           <span className="rounded-full bg-white/[0.04] px-2 py-[3px] text-[10px] uppercase tracking-[0.2em] text-slate-300">
-                            网关当前已加载 {gatewayLoadedOtherAlias}
+                            {uiText.runtimeCurrentLoaded} {describeRuntimeAlias(gatewayLoadedOtherAlias, agentTargets)}
                           </span>
                         ) : null}
                         {runtimeStatus.loadingAlias ? (
                           <span className="rounded-full bg-amber-400/10 px-2 py-[3px] text-[10px] uppercase tracking-[0.2em] text-amber-200">
-                            {uiText.runtimeLoading}: {runtimeStatus.loadingAlias}
+                            {uiText.runtimeSwitchingNow}: {describeRuntimeAlias(runtimeStatus.loadingAlias, agentTargets)}
                           </span>
                         ) : null}
                       </div>
@@ -5182,13 +5228,25 @@ export function AgentWorkbench() {
                           </p>
                         </div>
                       </div>
-                      {runtimeStatus.loadingAlias || runtimeStatus.loadingError ? (
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div>
+                          <p className="text-slate-500">{uiText.runtimeCurrentLoaded}</p>
+                          <p className="mt-1 break-all text-white">
+                            {describeRuntimeAlias(runtimeStatus.loadedAlias, agentTargets)}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-slate-500">{uiText.runtimeLastSwitchLoad}</p>
+                          <p className="mt-1 break-all text-white">{formatRuntimeDuration(selectedTargetLastSwitchMs)}</p>
+                        </div>
+                      </div>
+                      {(runtimeStatus.loadingAlias || runtimeStatus.loadingError) ? (
                         <div className="grid gap-3 sm:grid-cols-2">
                           {runtimeStatus.loadingAlias ? (
                             <div>
-                              <p className="text-slate-500">{uiText.runtimeLoading}</p>
+                              <p className="text-slate-500">{uiText.runtimeSwitchingNow}</p>
                               <p className="mt-1 break-all text-white">
-                                {runtimeStatus.loadingAlias}
+                                {describeRuntimeAlias(runtimeStatus.loadingAlias, agentTargets)}
                                 {typeof runtimeStatus.loadingElapsedMs === "number"
                                   ? ` · ${uiText.runtimeLoadingElapsed} ${Math.max(1, Math.round(runtimeStatus.loadingElapsedMs / 1000))}s`
                                   : ""}
