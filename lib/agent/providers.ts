@@ -900,8 +900,7 @@ export async function runAgentRequest(request: AgentChatRequest, systemPrompt: s
         const unhealthyRuntime = Boolean(health.loading_error || health.runtime_import_error);
         const simpleLocalRoute =
           preferSimpleLocalFallback &&
-          (health.loading_alias === target.id ||
-            (!health.loading_alias && health.loaded_alias !== target.id));
+          health.loading_alias === target.id;
         if (simpleLocalRoute || loadingTooLong || unhealthyRuntime) {
           let downgradedReply: ProviderReply | null = null;
           if (!simpleLocalRoute) {
