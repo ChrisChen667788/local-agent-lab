@@ -1349,6 +1349,10 @@ export async function POST(request: Request) {
 
     const localTargets = selectedTargets.filter((target) => target.execution === "local");
     const remoteTargets = selectedTargets.filter((target) => target.execution === "remote");
+    const comparisonLocalContextWindow =
+      localTargets.length && remoteTargets.length
+        ? Math.min(...localTargets.map((target) => clampBenchmarkContextWindowForTarget(target.id, contextWindow)))
+        : null;
     const totalGroups = localTargets.length + remoteTargets.length * profileModes.length;
     const totalSamples =
       localTargets.length * plannedTasks.length +
@@ -1428,7 +1432,10 @@ export async function POST(request: Request) {
     ) {
       assertBenchmarkRunActive(runId);
       const resolvedTarget = resolveTargetWithMode(target.id, mode.thinkingMode);
-      const effectiveContextWindow = clampBenchmarkContextWindowForTarget(target.id, contextWindow);
+      const effectiveContextWindow =
+        target.execution === "remote" && comparisonLocalContextWindow
+          ? Math.min(normalizeContextWindow(contextWindow, 8192), comparisonLocalContextWindow)
+          : clampBenchmarkContextWindowForTarget(target.id, contextWindow);
       const groupKey = buildGroupKey(target.id, mode.providerProfile, mode.thinkingMode);
       const tasksForGroup =
         target.execution === "remote" && profileModes.length > 1 && profileBatchScope === "comparison-subset"
