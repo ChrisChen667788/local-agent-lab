@@ -17,7 +17,7 @@ export function AgentRescueConsole() {
   const [targetId, setTargetId] = useState(localTargets[1]?.id || localTargets[0]?.id || agentTargets[0]?.id || "");
   const [input, setInput] = useState("请用一句中文解释什么是本地编码 Agent。");
   const [enableRetrieval, setEnableRetrieval] = useState(false);
-  const [contextWindow, setContextWindow] = useState(8192);
+  const [contextWindow, setContextWindow] = useState(32768);
   const [pending, setPending] = useState(false);
   const [runtime, setRuntime] = useState<AgentRuntimeStatus | null>(null);
   const [response, setResponse] = useState<AgentChatResponse | null>(null);

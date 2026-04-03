@@ -225,7 +225,7 @@ function normalizeStoredSessions(input: unknown): StoredAgentSession[] {
           typeof candidate.selectedTargetId === "string" ? candidate.selectedTargetId : "anthropic-claude",
         enableTools: Boolean(candidate.enableTools),
         enableRetrieval: Boolean(candidate.enableRetrieval),
-        contextWindow: typeof candidate.contextWindow === "number" ? candidate.contextWindow : 8192,
+        contextWindow: typeof candidate.contextWindow === "number" ? candidate.contextWindow : 32768,
         providerProfile: PROVIDER_PROFILE_OPTIONS.includes(candidate.providerProfile as AgentProviderProfile)
           ? (candidate.providerProfile as AgentProviderProfile)
           : "balanced",
@@ -1001,7 +1001,7 @@ export function AgentWorkbench() {
   const [systemPrompt, setSystemPrompt] = useState(() => getDefaultSystemPromptForLocale("zh-CN"));
   const [enableTools, setEnableTools] = useState(true);
   const [enableRetrieval, setEnableRetrieval] = useState(false);
-  const [contextWindow, setContextWindow] = useState(8192);
+  const [contextWindow, setContextWindow] = useState(32768);
   const [providerProfile, setProviderProfile] = useState<AgentProviderProfile>("balanced");
   const [thinkingMode, setThinkingMode] = useState<AgentThinkingMode>("standard");
   const [pending, setPending] = useState(false);
@@ -1901,7 +1901,7 @@ export function AgentWorkbench() {
     setEnableTools(Boolean(session.enableTools));
     setEnableRetrieval(Boolean(session.enableRetrieval));
     setContextWindow(
-      CONTEXT_WINDOW_OPTIONS.includes(session.contextWindow) ? session.contextWindow : 8192
+      CONTEXT_WINDOW_OPTIONS.includes(session.contextWindow) ? session.contextWindow : 32768
     );
     setProviderProfile(PROVIDER_PROFILE_OPTIONS.includes(session.providerProfile) ? session.providerProfile : "balanced");
     setThinkingMode(THINKING_MODE_OPTIONS.includes(session.thinkingMode) ? session.thinkingMode : "standard");

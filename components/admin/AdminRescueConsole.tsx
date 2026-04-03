@@ -14,7 +14,7 @@ const SUITE_OPTIONS = [
 export function AdminRescueConsole() {
   const [targetId, setTargetId] = useState("local-qwen3-0.6b");
   const [suiteId, setSuiteId] = useState("milestone-formal");
-  const [contextWindow, setContextWindow] = useState(8192);
+  const [contextWindow, setContextWindow] = useState(32768);
   const [runs, setRuns] = useState(1);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");

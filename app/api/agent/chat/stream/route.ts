@@ -333,7 +333,7 @@ export async function POST(request: Request) {
       shouldUseToolLoop(body.input, body.messages, providerProfile);
     const contextWindow = clampContextWindowForTarget(
       body.targetId,
-      normalizeContextWindow(body.contextWindow, 8192),
+      normalizeContextWindow(body.contextWindow, 32768),
       {
         enableTools,
         enableRetrieval: body.enableRetrieval

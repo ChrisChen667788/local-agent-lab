@@ -1306,7 +1306,7 @@ export async function POST(request: Request) {
     const body = (await request.json()) as BenchmarkRequestBody;
     requestRunId = typeof body.runId === "string" && body.runId.trim() ? body.runId.trim() : "";
     const runs = Math.max(1, Math.min(Math.trunc(body.runs || 3), 10));
-    const contextWindow = normalizeContextWindow(body.contextWindow, 8192);
+    const contextWindow = normalizeContextWindow(body.contextWindow, 32768);
     const maxTokens = Math.max(32, Math.min(Math.trunc(body.maxTokens || 192), 512));
     const thinkingMode = normalizeThinkingMode(body.thinkingMode);
     const requestedProviderProfile = normalizeProviderProfile(body.providerProfile);

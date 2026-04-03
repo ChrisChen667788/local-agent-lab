@@ -948,7 +948,7 @@ export function AdminDashboard() {
   const [benchmarkHeatmapPromptScope, setBenchmarkHeatmapPromptScope] = useState<"all" | "fixed-only">("all");
   const [benchmarkHeatmapSampleStatus, setBenchmarkHeatmapSampleStatus] = useState<"all" | "success" | "failed">("all");
   const [benchmarkRuns, setBenchmarkRuns] = useState(3);
-  const [benchmarkContextWindow, setBenchmarkContextWindow] = useState(8192);
+  const [benchmarkContextWindow, setBenchmarkContextWindow] = useState(32768);
   const [benchmarkExportWindowMinutes, setBenchmarkExportWindowMinutes] = useState(720);
   const [benchmarkExportSampleStatus, setBenchmarkExportSampleStatus] = useState("all");
   const [benchmarkExportHistoryStatus, setBenchmarkExportHistoryStatus] = useState("all");
@@ -3356,6 +3356,15 @@ export function AdminDashboard() {
         : "这个热力图比较的是所选 benchmark 目标在不同策略组合下的表现，不是单一模型能力榜单。",
     [locale]
   );
+  const benchmarkContextRecommendation = useMemo(() => {
+    if (locale.startsWith("en")) {
+      return "Default request is 32K. Effective execution still follows safe per-model caps: Local Qwen3 0.6B -> 8K, Local Qwen3 4B -> 16K, Local Qwen3.5 4B -> 32K. In compare mode with both local and remote targets selected, remote APIs automatically follow the most conservative effective local context.";
+    }
+    if (locale === "zh-TW") {
+      return "預設請求為 32K。實際執行仍會按模型安全上限裁切：Local Qwen3 0.6B -> 8K、Local Qwen3 4B -> 16K、Local Qwen3.5 4B -> 32K。若對比模式同時選擇本地與遠端目標，遠端 API 會自動跟隨所選本地目標中最保守的有效上下文。";
+    }
+    return "默认请求为 32K。实际执行仍会按模型安全上限裁剪：Local Qwen3 0.6B -> 8K、Local Qwen3 4B -> 16K、Local Qwen3.5 4B -> 32K。若对比模式同时选择本地与远端目标，远端 API 会自动跟随所选本地目标里最保守的有效上下文。";
+  }, [locale]);
   const currentBenchmarkFailureSummary = useMemo(
     () =>
       benchmarkData?.results?.length
@@ -3978,6 +3987,7 @@ export function AdminDashboard() {
                     </option>
                   ))}
                 </select>
+                <p className="mt-2 text-xs leading-6 text-slate-500">{benchmarkContextRecommendation}</p>
               </div>
               <div>
                 <p className="mb-2 text-xs uppercase tracking-[0.22em] text-slate-500">{uiText.exportWindow}</p>

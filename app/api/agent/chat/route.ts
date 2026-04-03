@@ -46,7 +46,7 @@ function isValidMessageArray(value: unknown): value is AgentMessage[] {
 export async function POST(request: Request) {
   let targetId = "";
   let requestStartedAt = Date.now();
-  let contextWindow = 8192;
+  let contextWindow = 32768;
   let providerProfile = normalizeProviderProfile(undefined);
   let thinkingMode = normalizeThinkingMode(undefined);
   try {
@@ -73,7 +73,7 @@ export async function POST(request: Request) {
     requestStartedAt = Date.now();
     contextWindow = clampContextWindowForTarget(
       body.targetId,
-      normalizeContextWindow(body.contextWindow, 8192),
+      normalizeContextWindow(body.contextWindow, 32768),
       {
         enableTools: body.enableTools,
         enableRetrieval: body.enableRetrieval
