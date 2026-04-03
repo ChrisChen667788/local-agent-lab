@@ -27,6 +27,12 @@ const LOCAL_4B_DOWNGRADE_LOADING_THRESHOLD_MS = 120000;
 const LOCAL_COMPARISON_4B_TARGET_IDS = new Set(["local-qwen3-4b-4bit", "local-qwen35-4b-4bit"]);
 const LOCAL_GATEWAY_LOADING_RESPONSE_RE = /still loading|loading\./i;
 const LOCAL_META_REASONING_RE = /^(好的|好，|首先|我需要|我先|让我|讓我|用户让我|用戶讓我|The user|First, I need|I need to|Let me|I'll need to)/i;
+const STRICT_JSON_PATTERNS = [
+  /(只输出|只返回|必须返回|返回格式必须是|不要输出其他内容|不要解释).{0,24}json/i,
+  /(only output|return only|must return|response format must be|do not output anything else|no explanation).{0,24}json/i,
+  /```json/i,
+  /\bjson\b/i
+];
 const TOOL_INTENT_PATTERNS = [
   /(^|\b)(repo|repository|file|files|folder|directory|directories|code|patch|diff|command|shell|terminal|run|execute|edit|write|read|inspect|list|fix|implement|search|grep|rg|mkdir|npm|pnpm|yarn|git|tool|apply_patch|write_file|execute_command|list_files|read_file|prettier|format)(\b|$)/i,
   /(仓库|代[码碼]|文件|目录|目錄|补丁|補丁|命令|终端|終端|执行|執行|运行|運行|修改|读取|讀取|检查|檢查|列出|修复|修復|实现|實作|搜索|搜尋|脚本|腳本|格式化|比较|比較|对比|對比)/,
@@ -178,8 +184,15 @@ export function suggestMaxTokens(
   providerProfile: AgentProviderProfile = "balanced"
 ) {
   const inputLength = input.trim().length;
+  const strictJsonRequested = expectsStrictJsonOutput(input);
   if (execution === "local") {
-    return enableTools ? 256 : 192;
+    if (enableTools) {
+      return strictJsonRequested ? 384 : 256;
+    }
+    if (strictJsonRequested) {
+      return inputLength > 4000 ? 512 : 384;
+    }
+    return inputLength > 4000 ? 256 : 192;
   }
   if (providerProfile === "speed") {
     if (enableTools) {
@@ -220,6 +233,53 @@ export function sanitizeAssistantContent(content: string) {
     .replace(/<thinking>[\s\S]*?<\/thinking>/gi, "")
     .trim();
   return sanitized || content.trim();
+}
+
+export function expectsStrictJsonOutput(input: string) {
+  const trimmed = input.trim();
+  if (!trimmed) return false;
+  return STRICT_JSON_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
+function stripCodeFences(value: string) {
+  return value
+    .replace(/^```[a-zA-Z0-9_-]*\s*/u, "")
+    .replace(/```$/u, "")
+    .trim();
+}
+
+function extractJsonCandidate(value: string) {
+  const normalized = stripCodeFences(value);
+  const braceStart = normalized.indexOf("{");
+  const braceEnd = normalized.lastIndexOf("}");
+  if (braceStart !== -1 && braceEnd !== -1 && braceEnd > braceStart) {
+    return normalized.slice(braceStart, braceEnd + 1);
+  }
+  const bracketStart = normalized.indexOf("[");
+  const bracketEnd = normalized.lastIndexOf("]");
+  if (bracketStart !== -1 && bracketEnd !== -1 && bracketEnd > bracketStart) {
+    return normalized.slice(bracketStart, bracketEnd + 1);
+  }
+  return null;
+}
+
+export function normalizeStructuredAnswerOutput(content: string, input: string) {
+  const sanitized = sanitizeAssistantContent(content);
+  if (!expectsStrictJsonOutput(input)) {
+    return sanitized;
+  }
+
+  const normalized = stripCodeFences(sanitized);
+  for (const candidate of [normalized, extractJsonCandidate(normalized)]) {
+    if (!candidate) continue;
+    try {
+      return JSON.stringify(JSON.parse(candidate), null, 2);
+    } catch {
+      // Keep trying fallbacks.
+    }
+  }
+
+  return normalized;
 }
 
 export function shouldUseToolLoop(
@@ -298,10 +358,22 @@ function mergeWarnings(...values: Array<string | undefined>) {
   return values.filter(Boolean).join(" ").trim() || undefined;
 }
 
-function applyLocalAnswerDiscipline(systemPrompt: string, execution: "local" | "remote") {
+function applyLocalAnswerDiscipline(
+  systemPrompt: string,
+  execution: "local" | "remote",
+  input: string
+) {
   if (execution !== "local") {
     return systemPrompt;
   }
+
+  const jsonOnlyInstructions = expectsStrictJsonOutput(input)
+    ? [
+        "- If the user requires JSON, return valid JSON only.",
+        "- Do not wrap JSON in markdown fences.",
+        "- Finish all required keys before ending the response."
+      ]
+    : [];
 
   return [
     systemPrompt,
@@ -310,7 +382,8 @@ function applyLocalAnswerDiscipline(systemPrompt: string, execution: "local" | "
     "- Respond directly to the user with the final answer.",
     "- Do not narrate your internal reasoning process.",
     "- Do not say phrases like '用户问的是' or '我需要先'.",
-    "- Keep simple answers short and concrete."
+    "- Keep simple answers short and concrete.",
+    ...jsonOnlyInstructions
   ].join("\n");
 }
 
@@ -818,7 +891,7 @@ async function callAnthropic(
 export async function runAgentRequest(request: AgentChatRequest, systemPrompt: string) {
   const thinkingMode = normalizeThinkingMode(request.thinkingMode);
   const target = resolveTargetWithMode(request.targetId, thinkingMode);
-  const effectiveSystemPrompt = applyLocalAnswerDiscipline(systemPrompt, target.execution);
+  const effectiveSystemPrompt = applyLocalAnswerDiscipline(systemPrompt, target.execution, request.input);
   const thinkingFallbackToStandard = thinkingMode === "thinking" && !isThinkingModelConfigured(request.targetId);
   const providerProfile = resolveEffectiveProviderProfile(
     normalizeProviderProfile(request.providerProfile),
@@ -1001,7 +1074,7 @@ export async function runAgentRequest(request: AgentChatRequest, systemPrompt: s
     localFallbackReason = "primary-local-failure";
   }
 
-  let finalContent = sanitizeAssistantContent(reply.content);
+  let finalContent = normalizeStructuredAnswerOutput(reply.content, request.input);
   if (target.execution === "local" && looksLikeLocalMetaReasoning(finalContent)) {
     const repairTarget =
       localFallbackUsed && localFallbackTargetId === localFallbackTarget?.id
@@ -1016,7 +1089,7 @@ export async function runAgentRequest(request: AgentChatRequest, systemPrompt: s
           request.contextWindow,
           thinkingMode
         );
-        const repairedContent = sanitizeAssistantContent(repairedReply.content);
+        const repairedContent = normalizeStructuredAnswerOutput(repairedReply.content, request.input);
         if (repairedContent.trim() && !looksLikeLocalMetaReasoning(repairedContent)) {
           reply = {
             ...reply,

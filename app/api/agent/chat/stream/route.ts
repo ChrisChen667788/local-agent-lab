@@ -16,6 +16,7 @@ import {
   resolveEffectiveProviderProfile,
   runAgentRequest,
   resolveTargetWithMode,
+  normalizeStructuredAnswerOutput,
   sanitizeAssistantContent,
   suggestMaxTokens,
   shouldUseToolLoop
@@ -577,7 +578,7 @@ export async function POST(request: Request) {
                     { role: "system", content: systemPrompt },
                     ...buildProviderMessages(body.messages!, body.input!, contextWindow)
                   ],
-                  max_tokens: 192,
+                  max_tokens: suggestMaxTokens(target.execution, false, body.input!, providerProfile),
                   extra_body: buildLocalChatTemplateExtraBody(body.targetId!, thinkingMode)
                 })
               }, LOCAL_STREAM_CONNECT_TIMEOUT_MS);
@@ -605,7 +606,7 @@ export async function POST(request: Request) {
                     }
                     write({ type: "delta", delta: final.delta });
                   }
-                  finalContent = final.visible || "";
+                  finalContent = normalizeStructuredAnswerOutput(final.visible || "", body.input!);
                   const upstreamUsage = payload.usage as Record<string, unknown> | undefined;
                   usage = {
                     promptTokens: typeof upstreamUsage?.prompt_tokens === "number" ? upstreamUsage.prompt_tokens : 0,
@@ -648,7 +649,7 @@ export async function POST(request: Request) {
                   localStreamError instanceof Error ? localStreamError.message : String(localStreamError)
                 }`
               );
-              finalContent = recovered.content;
+              finalContent = normalizeStructuredAnswerOutput(recovered.content, body.input!);
               usage = recovered.usage || usage;
               if (recovered.localFallbackUsed) {
                 localFallbackUsed = true;
@@ -737,7 +738,7 @@ export async function POST(request: Request) {
               }
               write({ type: "delta", delta: final.delta });
             }
-            finalContent = final.visible || "";
+            finalContent = normalizeStructuredAnswerOutput(final.visible || "", body.input!);
           }
 
           const cleaned = sanitizeAssistantContent(finalContent);
