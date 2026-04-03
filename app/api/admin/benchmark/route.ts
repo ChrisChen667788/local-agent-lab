@@ -510,7 +510,11 @@ function deriveComparisonSubsetTasks(tasks: PlannedSampleTask[]) {
 }
 
 function clampBenchmarkContextWindowForTarget(targetId: string, requestedContextWindow: number) {
-  if (targetId === "local-qwen35-4b-4bit") {
+  if (
+    targetId === "local-qwen3-0.6b" ||
+    targetId === "local-qwen3-4b-4bit" ||
+    targetId === "local-qwen35-4b-4bit"
+  ) {
     return Math.min(normalizeContextWindow(requestedContextWindow, 8192), 32768);
   }
   return clampContextWindowForTarget(targetId, requestedContextWindow, {
