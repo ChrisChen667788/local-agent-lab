@@ -220,7 +220,7 @@ function buildSuitePlan(
 
 const REMOTE_BENCHMARK_SAMPLE_CONCURRENCY = 1;
 const REMOTE_BENCHMARK_GROUP_CONCURRENCY = 1;
-const REMOTE_BENCHMARK_MAX_ATTEMPTS = 4;
+const REMOTE_BENCHMARK_MAX_ATTEMPTS = 6;
 const REMOTE_BENCHMARK_TIMEOUT_MS = 120000;
 const REMOTE_PROFILE_COMPARISON_WORKLOAD_IDS = new Set([
   "latency-smoke",
@@ -297,6 +297,27 @@ function isRetryableRemoteBenchmarkFailure(message: string) {
     normalized.includes("bad gateway") ||
     normalized.includes("service unavailable")
   );
+}
+
+function getRemoteBenchmarkRetryDelayMs(message: string, attempt: number) {
+  const normalized = message.toLowerCase();
+  if (
+    normalized.includes("502") ||
+    normalized.includes("503") ||
+    normalized.includes("504") ||
+    normalized.includes("bad gateway") ||
+    normalized.includes("service unavailable")
+  ) {
+    return Math.min(15000, 2500 * attempt);
+  }
+  if (
+    normalized.includes("rate limit") ||
+    normalized.includes("429") ||
+    normalized.includes("max concurrent")
+  ) {
+    return Math.min(12000, 2000 * attempt);
+  }
+  return Math.min(10000, 1000 * attempt);
 }
 
 function getRemoteBenchmarkTimeoutMs(
@@ -1318,7 +1339,7 @@ async function runSingleBenchmarkSample(
           const warning = await response.text();
           lastWarning = warning || `Remote benchmark request failed with HTTP ${response.status}.`;
           if (attempt < REMOTE_BENCHMARK_MAX_ATTEMPTS && isRetryableRemoteBenchmarkFailure(lastWarning)) {
-            await sleep(1000 * attempt);
+            await sleep(getRemoteBenchmarkRetryDelayMs(lastWarning, attempt));
             attempt += 1;
             continue;
           }
@@ -1428,7 +1449,7 @@ async function runSingleBenchmarkSample(
         }
         lastWarning = error instanceof Error ? error.message : "Unknown remote benchmark error.";
         if (attempt < REMOTE_BENCHMARK_MAX_ATTEMPTS && isRetryableRemoteBenchmarkFailure(lastWarning)) {
-          await sleep(1000 * attempt);
+          await sleep(getRemoteBenchmarkRetryDelayMs(lastWarning, attempt));
           attempt += 1;
           continue;
         }
