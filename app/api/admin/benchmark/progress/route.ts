@@ -14,10 +14,35 @@ export const runtime = "nodejs";
 const STALE_WORKER_ERROR =
   "Benchmark worker is no longer active. The run was likely interrupted by a server restart or crash.";
 const STALE_PROGRESS_GRACE_MS = 60_000;
+const STALE_WORKER_HEARTBEAT_GRACE_MS = 180_000;
+
+function isPidAlive(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function getProgressFreshnessMs(progress: NonNullable<ReturnType<typeof readBenchmarkProgress>>) {
-  const reference = progress.updatedAt || progress.controlRequestedAt || progress.startedAt;
-  const parsed = Date.parse(reference);
+  const references = [
+    progress.workerHeartbeatAt,
+    progress.localPrewarm?.updatedAt,
+    progress.updatedAt,
+    progress.controlRequestedAt,
+    progress.startedAt
+  ].filter((value): value is string => Boolean(value));
+  const reference = references
+    .map((value) => Date.parse(value))
+    .filter((value) => Number.isFinite(value))
+    .sort((left, right) => right - left)[0];
+  if (!Number.isFinite(reference)) return Number.POSITIVE_INFINITY;
+  return Date.now() - reference;
+}
+
+function getWorkerHeartbeatFreshnessMs(progress: NonNullable<ReturnType<typeof readBenchmarkProgress>>) {
+  const parsed = Date.parse(progress.workerHeartbeatAt || "");
   if (Number.isNaN(parsed)) return Number.POSITIVE_INFINITY;
   return Date.now() - parsed;
 }
@@ -42,6 +67,13 @@ function resolveStaleProgress(progress: ReturnType<typeof readBenchmarkProgress>
       action,
       action === "stop" ? "Benchmark run stopped." : "Benchmark run abandoned."
     );
+  }
+  if (
+    getWorkerHeartbeatFreshnessMs(progress) < STALE_WORKER_HEARTBEAT_GRACE_MS &&
+    typeof progress.workerPid === "number" &&
+    isPidAlive(progress.workerPid)
+  ) {
+    return progress;
   }
   if (getProgressFreshnessMs(progress) < STALE_PROGRESS_GRACE_MS) {
     return progress;

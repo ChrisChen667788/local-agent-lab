@@ -139,6 +139,31 @@ export function markBenchmarkProgressRunning(runId: string) {
   }));
 }
 
+export function touchBenchmarkProgressWorker(
+  runId: string,
+  worker?: {
+    heartbeatAt?: string;
+    pid?: number | null;
+    phase?: string | null;
+  }
+) {
+  return updateBenchmarkProgress(runId, (current) => ({
+    ...current,
+    updatedAt: worker?.heartbeatAt || new Date().toISOString(),
+    workerHeartbeatAt: worker?.heartbeatAt || new Date().toISOString(),
+    workerPid:
+      typeof worker?.pid === "number"
+        ? worker.pid
+        : current.workerPid,
+    workerPhase:
+      typeof worker?.phase === "string"
+        ? worker.phase
+        : worker?.phase === null
+          ? undefined
+          : current.workerPhase
+  }));
+}
+
 export function startBenchmarkProgressGroup(
   runId: string,
   group: {
@@ -241,6 +266,9 @@ export function completeBenchmarkProgress(runId: string) {
     activeGroups: [],
     pendingGroups: [],
     localPrewarm: undefined,
+    workerHeartbeatAt: undefined,
+    workerPid: undefined,
+    workerPhase: undefined,
     error: undefined,
     controlAction: undefined,
     controlRequestedAt: undefined,
@@ -272,6 +300,9 @@ export function finalizeBenchmarkProgressControl(
     activeGroups: [],
     pendingGroups: action === "abandon" ? [] : current.pendingGroups || [],
     localPrewarm: undefined,
+    workerHeartbeatAt: undefined,
+    workerPid: undefined,
+    workerPhase: undefined,
     error: undefined,
     controlAction: undefined,
     controlRequestedAt: undefined,
@@ -288,6 +319,9 @@ export function failBenchmarkProgress(runId: string, error: string) {
     estimatedRemainingMs: null,
     activeGroups: [],
     localPrewarm: undefined,
+    workerHeartbeatAt: undefined,
+    workerPid: undefined,
+    workerPhase: undefined,
     controlAction: undefined,
     controlRequestedAt: undefined,
     controlMessage: undefined,
@@ -301,14 +335,29 @@ export function setBenchmarkProgressLocalPrewarm(
     | AgentBenchmarkProgress["localPrewarm"]
     | null
 ) {
-  return updateBenchmarkProgress(runId, (current) => ({
-    ...current,
-    updatedAt: new Date().toISOString(),
-    localPrewarm: prewarm
-      ? {
-          ...prewarm,
-          updatedAt: new Date().toISOString()
-        }
-      : undefined
-  }));
+  return updateBenchmarkProgress(runId, (current) => {
+    const now = new Date().toISOString();
+    const previous = current.localPrewarm;
+    const preserveRecovery =
+      prewarm &&
+      previous &&
+      previous.targetId === prewarm.targetId
+        ? {
+            lastRecoveryAction: previous.lastRecoveryAction,
+            lastRecoveryAt: previous.lastRecoveryAt
+          }
+        : {};
+
+    return {
+      ...current,
+      updatedAt: now,
+      localPrewarm: prewarm
+        ? {
+            ...preserveRecovery,
+            ...prewarm,
+            updatedAt: now
+          }
+        : undefined
+    };
+  });
 }

@@ -511,10 +511,15 @@ export type AgentBenchmarkProgress = {
       | "restarting-gateway";
     message?: string;
     loadingAlias?: string | null;
+    lastRecoveryAction?: string;
+    lastRecoveryAt?: string;
     startedAt?: string;
     updatedAt?: string;
     elapsedMs?: number | null;
   };
+  workerHeartbeatAt?: string;
+  workerPid?: number;
+  workerPhase?: string;
   controlAction?: "stop-requested" | "abandon-requested";
   controlRequestedAt?: string;
   controlMessage?: string;

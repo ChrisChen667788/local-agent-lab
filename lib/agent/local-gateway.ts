@@ -15,6 +15,8 @@ const GATEWAY_START_HELPER = path.join(process.cwd(), "scripts", "start-local-ga
 const GATEWAY_HEALTH_PROBE_TIMEOUT_MS = 4000;
 const GATEWAY_STARTUP_GRACE_MS = 300000;
 const GATEWAY_DIRECT_STARTUP_GRACE_MS = 180000;
+const GATEWAY_EARLY_BOOT_STALL_MS = 60000;
+const GATEWAY_EARLY_BOOT_RESTART_LIMIT = 2;
 
 type SupervisorState = {
   restart_count?: number;
@@ -96,6 +98,59 @@ function findMatchingPids(pattern: string) {
   } catch {
     return [];
   }
+}
+
+function readPidElapsedMs(pid: number | null) {
+  if (!pid) return null;
+  try {
+    const output = execFileSync("ps", ["-o", "etime=", "-p", String(pid)], {
+      encoding: "utf8"
+    }).trim();
+    const match = output.match(/^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/) || output.match(/^(\d+)$/);
+    if (!match) return null;
+    let seconds = 0;
+    if (match.length === 2) {
+      seconds = Number(match[1]);
+    } else {
+      const days = Number(match[1] || 0);
+      const hours = Number(match[2] || 0);
+      const minutes = Number(match[3] || 0);
+      const secs = Number(match[4] || 0);
+      seconds = (days * 24 * 60 * 60) + (hours * 60 * 60) + (minutes * 60) + secs;
+    }
+    return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
+function detectGatewayBootStage() {
+  const log = readLocalGatewayRecentLog(120);
+  const lines = log
+    .split("\n")
+    .map((line) => line.trim().toLowerCase())
+    .filter(Boolean);
+
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    if (line.includes("waiting for background tasks to complete")) {
+      return "waiting-background-tasks";
+    }
+    if (line.includes("shutting down")) {
+      return "shutting-down";
+    }
+    if (line.includes("application startup complete") || line.includes("uvicorn running on")) {
+      return "startup-complete";
+    }
+    if (line.includes("[boot] framework dependencies imported")) {
+      return "framework-imported";
+    }
+    if (line.includes("[boot] local_model_gateway importing framework dependencies")) {
+      return "importing-framework";
+    }
+  }
+
+  return "unknown";
 }
 
 export async function probeLocalGateway(baseUrl: string, timeoutMs = 1200) {
@@ -280,6 +335,7 @@ export async function ensureLocalGatewayAvailableDetailed(
       let spawnAttempts = 0;
       let lastSpawnAt = 0;
       let directFallbackUsed = false;
+      let earlyBootRestartCount = 0;
 
       const maybeSpawn = () => {
         if (hasGatewayLifecycleEvidence()) {
@@ -309,6 +365,9 @@ export async function ensureLocalGatewayAvailableDetailed(
         const evidence = hasGatewayLifecycleEvidence();
         const elapsedMs = Date.now() - startedAt;
         const info = getLocalGatewaySupervisorInfo();
+        const listenPid = findGatewayListenPid();
+        const gatewayAgeMs = readPidElapsedMs(info.gatewayPid);
+        const bootStage = detectGatewayBootStage();
         // On some Macs, Python dependency imports can take multiple minutes before the
         // gateway binds port 4000. If the process is still alive, avoid restarting it
         // prematurely because that resets the warmup clock and causes infinite flapping.
@@ -319,6 +378,31 @@ export async function ensureLocalGatewayAvailableDetailed(
           !findGatewayListenPid()
         ) {
           directFallbackUsed = true;
+        }
+        const shutdownStuck =
+          info.gatewayAlive &&
+          !listenPid &&
+          typeof gatewayAgeMs === "number" &&
+          gatewayAgeMs > 10000 &&
+          (bootStage === "shutting-down" || bootStage === "waiting-background-tasks");
+        if (
+          (shutdownStuck ||
+            (info.gatewayAlive &&
+              !listenPid &&
+              earlyBootRestartCount < GATEWAY_EARLY_BOOT_RESTART_LIMIT &&
+              typeof gatewayAgeMs === "number" &&
+              gatewayAgeMs > GATEWAY_EARLY_BOOT_STALL_MS &&
+              bootStage !== "startup-complete")) &&
+          earlyBootRestartCount < GATEWAY_EARLY_BOOT_RESTART_LIMIT
+        ) {
+          earlyBootRestartCount += 1;
+          await restartLocalGatewayDirect(baseUrl, {
+            waitMs: Math.max(20000, Math.min(120000, waitMs - elapsedMs)),
+            autoPrewarmModel: options?.autoPrewarmModel
+          });
+          lastSpawnAt = Date.now();
+          await sleep(500);
+          continue;
         }
         if (!evidence && Date.now() - lastSpawnAt > 2500 && spawnAttempts < 2) {
           maybeSpawn();

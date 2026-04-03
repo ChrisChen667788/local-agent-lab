@@ -3474,7 +3474,15 @@ export function AdminDashboard() {
     return {
       title: locale.startsWith("en") ? `Local prewarm · ${phaseLabel}` : `本地预热 · ${phaseLabel}`,
       details,
-      message: prewarm.message || null
+      message: prewarm.message || null,
+      waited:
+        typeof prewarm.elapsedMs === "number"
+          ? locale.startsWith("en")
+            ? `Waited ${formatDurationShort(prewarm.elapsedMs)}`
+            : `已等待 ${formatDurationShort(prewarm.elapsedMs)}`
+          : null,
+      recoveryAction: prewarm.lastRecoveryAction || null,
+      recoveryAt: prewarm.lastRecoveryAt || null
     };
   }, [benchmarkProgress, locale]);
 
@@ -4412,6 +4420,27 @@ export function AdminDashboard() {
                   <div className="mt-3 rounded-2xl border border-cyan-300/15 bg-cyan-400/5 px-3 py-2.5 text-xs text-cyan-50/85">
                     <div className="font-medium text-cyan-100">{benchmarkLocalPrewarmNotice.title}</div>
                     <div className="mt-1">{benchmarkLocalPrewarmNotice.details}</div>
+                    {(benchmarkLocalPrewarmNotice.waited || benchmarkLocalPrewarmNotice.recoveryAction) ? (
+                      <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-cyan-50/70">
+                        {benchmarkLocalPrewarmNotice.waited ? (
+                          <span className="rounded-full border border-white/10 bg-black/20 px-2 py-1">
+                            {benchmarkLocalPrewarmNotice.waited}
+                          </span>
+                        ) : null}
+                        {benchmarkLocalPrewarmNotice.recoveryAction ? (
+                          <span
+                            className="rounded-full border border-white/10 bg-black/20 px-2 py-1"
+                            title={
+                              benchmarkLocalPrewarmNotice.recoveryAt
+                                ? new Date(benchmarkLocalPrewarmNotice.recoveryAt).toLocaleString()
+                                : undefined
+                            }
+                          >
+                            {locale.startsWith("en") ? "Last recovery" : "最近恢复"} · {benchmarkLocalPrewarmNotice.recoveryAction}
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : null}
                     {benchmarkLocalPrewarmNotice.message ? (
                       <div className="mt-1 text-[11px] text-cyan-50/70">{benchmarkLocalPrewarmNotice.message}</div>
                     ) : null}
