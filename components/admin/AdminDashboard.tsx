@@ -3420,6 +3420,63 @@ export function AdminDashboard() {
         : [],
     [benchmarkProgress, locale]
   );
+  const benchmarkLocalPrewarmNotice = useMemo(() => {
+    if (!benchmarkProgress?.localPrewarm) return null;
+    const prewarm = benchmarkProgress.localPrewarm;
+    const phaseLabel = (() => {
+      if (locale.startsWith("en")) {
+        switch (prewarm.phase) {
+          case "releasing-runtime":
+            return "Releasing runtime";
+          case "ensuring-gateway":
+            return "Ensuring gateway";
+          case "prewarming":
+            return "Starting prewarm";
+          case "waiting-load":
+            return "Waiting for model load";
+          case "waiting-gateway":
+            return "Waiting for gateway recovery";
+          case "restarting-gateway":
+            return "Restarting gateway";
+          default:
+            return "Local prewarm";
+        }
+      }
+      switch (prewarm.phase) {
+        case "releasing-runtime":
+          return "释放运行时";
+        case "ensuring-gateway":
+          return "检查网关";
+        case "prewarming":
+          return "发起预热";
+        case "waiting-load":
+          return "等待模型加载";
+        case "waiting-gateway":
+          return "等待网关恢复";
+        case "restarting-gateway":
+          return "重启网关";
+        default:
+          return "本地预热";
+      }
+    })();
+    const details = [
+      prewarm.targetLabel,
+      phaseLabel,
+      prewarm.loadingAlias && prewarm.loadingAlias !== prewarm.targetId
+        ? locale.startsWith("en")
+          ? `Current loading: ${prewarm.loadingAlias}`
+          : `当前加载: ${prewarm.loadingAlias}`
+        : null,
+      typeof prewarm.elapsedMs === "number" ? formatDurationShort(prewarm.elapsedMs) : null
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    return {
+      title: locale.startsWith("en") ? `Local prewarm · ${phaseLabel}` : `本地预热 · ${phaseLabel}`,
+      details,
+      message: prewarm.message || null
+    };
+  }, [benchmarkProgress, locale]);
 
   return (
     <section className="min-h-[calc(100vh-4rem)] bg-[radial-gradient(circle_at_top,_rgba(14,165,233,0.14),_transparent_26%),linear-gradient(180deg,_#020617_0%,_#0f172a_100%)] px-4 py-6 text-slate-100 sm:px-6">
@@ -4349,6 +4406,15 @@ export function AdminDashboard() {
                         </div>
                       </div>
                     ))}
+                  </div>
+                ) : null}
+                {benchmarkLocalPrewarmNotice ? (
+                  <div className="mt-3 rounded-2xl border border-cyan-300/15 bg-cyan-400/5 px-3 py-2.5 text-xs text-cyan-50/85">
+                    <div className="font-medium text-cyan-100">{benchmarkLocalPrewarmNotice.title}</div>
+                    <div className="mt-1">{benchmarkLocalPrewarmNotice.details}</div>
+                    {benchmarkLocalPrewarmNotice.message ? (
+                      <div className="mt-1 text-[11px] text-cyan-50/70">{benchmarkLocalPrewarmNotice.message}</div>
+                    ) : null}
                   </div>
                 ) : null}
                 {benchmarkProgress.status === "failed" && benchmarkProgress.error ? (

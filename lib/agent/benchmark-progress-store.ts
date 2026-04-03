@@ -240,6 +240,7 @@ export function completeBenchmarkProgress(runId: string) {
     estimatedRemainingMs: 0,
     activeGroups: [],
     pendingGroups: [],
+    localPrewarm: undefined,
     error: undefined,
     controlAction: undefined,
     controlRequestedAt: undefined,
@@ -270,6 +271,7 @@ export function finalizeBenchmarkProgressControl(
     estimatedRemainingMs: null,
     activeGroups: [],
     pendingGroups: action === "abandon" ? [] : current.pendingGroups || [],
+    localPrewarm: undefined,
     error: undefined,
     controlAction: undefined,
     controlRequestedAt: undefined,
@@ -285,9 +287,28 @@ export function failBenchmarkProgress(runId: string, error: string) {
     elapsedMs: Date.now() - new Date(current.startedAt).getTime(),
     estimatedRemainingMs: null,
     activeGroups: [],
+    localPrewarm: undefined,
     controlAction: undefined,
     controlRequestedAt: undefined,
     controlMessage: undefined,
     error
+  }));
+}
+
+export function setBenchmarkProgressLocalPrewarm(
+  runId: string,
+  prewarm:
+    | AgentBenchmarkProgress["localPrewarm"]
+    | null
+) {
+  return updateBenchmarkProgress(runId, (current) => ({
+    ...current,
+    updatedAt: new Date().toISOString(),
+    localPrewarm: prewarm
+      ? {
+          ...prewarm,
+          updatedAt: new Date().toISOString()
+        }
+      : undefined
   }));
 }

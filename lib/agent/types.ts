@@ -499,6 +499,22 @@ export type AgentBenchmarkProgress = {
     startedAt?: string;
     completedAt?: string;
   }>;
+  localPrewarm?: {
+    targetId: string;
+    targetLabel: string;
+    phase:
+      | "releasing-runtime"
+      | "ensuring-gateway"
+      | "prewarming"
+      | "waiting-load"
+      | "waiting-gateway"
+      | "restarting-gateway";
+    message?: string;
+    loadingAlias?: string | null;
+    startedAt?: string;
+    updatedAt?: string;
+    elapsedMs?: number | null;
+  };
   controlAction?: "stop-requested" | "abandon-requested";
   controlRequestedAt?: string;
   controlMessage?: string;

@@ -166,7 +166,23 @@ function spawnSupervisorProcess() {
   return child.pid ?? null;
 }
 
-function spawnGatewayProcessDirect() {
+function buildGatewayHelperEnv(options?: { autoPrewarmModel?: string | null }) {
+  const helperEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: process.env.HOME || "",
+    PATH: process.env.PATH || "",
+    SHELL: process.env.SHELL || "/bin/zsh",
+    TMPDIR: process.env.TMPDIR || "/tmp",
+    LOCAL_AGENT_DATA_DIR: DATA_DIR,
+    LOCAL_AGENT_PYTHON_BIN: choosePythonExecutable()
+  };
+  if (options && "autoPrewarmModel" in options) {
+    helperEnv.LOCAL_AGENT_AUTO_PREWARM_MODEL = options.autoPrewarmModel ?? "false";
+  }
+  return helperEnv;
+}
+
+function spawnGatewayProcessDirect(options?: { autoPrewarmModel?: string | null }) {
   ensureDataDir();
   cleanupStaleChildPid();
 
@@ -181,15 +197,7 @@ function spawnGatewayProcessDirect() {
     return existingPid;
   }
 
-  const helperEnv: NodeJS.ProcessEnv = {
-    ...process.env,
-    HOME: process.env.HOME || "",
-    PATH: process.env.PATH || "",
-    SHELL: process.env.SHELL || "/bin/zsh",
-    TMPDIR: process.env.TMPDIR || "/tmp",
-    LOCAL_AGENT_DATA_DIR: DATA_DIR,
-    LOCAL_AGENT_PYTHON_BIN: choosePythonExecutable()
-  };
+  const helperEnv = buildGatewayHelperEnv(options);
 
   try {
     const output = execFileSync("/bin/bash", [GATEWAY_START_HELPER], {
@@ -246,12 +254,18 @@ function forceStopPid(pid: number) {
   }
 }
 
-export async function ensureLocalGatewayAvailable(baseUrl: string, options?: { waitMs?: number }) {
+export async function ensureLocalGatewayAvailable(
+  baseUrl: string,
+  options?: { waitMs?: number; autoPrewarmModel?: string | null }
+) {
   const result = await ensureLocalGatewayAvailableDetailed(baseUrl, options);
   return result.ok;
 }
 
-export async function ensureLocalGatewayAvailableDetailed(baseUrl: string, options?: { waitMs?: number }): Promise<GatewayEnsureResult> {
+export async function ensureLocalGatewayAvailableDetailed(
+  baseUrl: string,
+  options?: { waitMs?: number; autoPrewarmModel?: string | null }
+): Promise<GatewayEnsureResult> {
   if (await probeLocalGateway(baseUrl, GATEWAY_HEALTH_PROBE_TIMEOUT_MS)) {
     return {
       ok: true,
@@ -271,7 +285,7 @@ export async function ensureLocalGatewayAvailableDetailed(baseUrl: string, optio
         if (hasGatewayLifecycleEvidence()) {
           return false;
         }
-        spawnGatewayProcessDirect();
+        spawnGatewayProcessDirect({ autoPrewarmModel: options?.autoPrewarmModel });
         spawnAttempts += 1;
         lastSpawnAt = Date.now();
         return true;
@@ -371,11 +385,20 @@ export function stopLocalGatewayChild() {
   return stopPid(pid);
 }
 
-export async function restartLocalGateway(baseUrl: string, options?: { waitMs?: number }) {
-  return restartLocalGatewayDirect(baseUrl, { waitMs: options?.waitMs ?? GATEWAY_STARTUP_GRACE_MS });
+export async function restartLocalGateway(
+  baseUrl: string,
+  options?: { waitMs?: number; autoPrewarmModel?: string | null }
+) {
+  return restartLocalGatewayDirect(baseUrl, {
+    waitMs: options?.waitMs ?? GATEWAY_STARTUP_GRACE_MS,
+    autoPrewarmModel: options?.autoPrewarmModel
+  });
 }
 
-export async function restartLocalGatewayDirect(baseUrl: string, options?: { waitMs?: number }) {
+export async function restartLocalGatewayDirect(
+  baseUrl: string,
+  options?: { waitMs?: number; autoPrewarmModel?: string | null }
+) {
   const waitMs = options?.waitMs ?? GATEWAY_STARTUP_GRACE_MS;
   stopLocalGatewaySupervisor();
   stopLocalGatewayChild();
@@ -389,7 +412,7 @@ export async function restartLocalGatewayDirect(baseUrl: string, options?: { wai
     forceStopPid(pid);
   }
   await waitForCondition(() => !findGatewayListenPid(), 5000);
-  spawnGatewayProcessDirect();
+  spawnGatewayProcessDirect({ autoPrewarmModel: options?.autoPrewarmModel });
   const startedAt = Date.now();
   while (Date.now() - startedAt < waitMs) {
     if (await probeLocalGateway(baseUrl, GATEWAY_HEALTH_PROBE_TIMEOUT_MS)) {

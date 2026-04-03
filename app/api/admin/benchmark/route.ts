@@ -27,6 +27,7 @@ import {
   finalizeBenchmarkProgressControl,
   markBenchmarkProgressRunning,
   readBenchmarkProgress,
+  setBenchmarkProgressLocalPrewarm,
   startBenchmarkProgressGroup
 } from "@/lib/agent/benchmark-progress-store";
 import {
@@ -48,6 +49,7 @@ import type {
   AgentBenchmarkDatasetItem,
   AgentBenchmarkMode,
   AgentBenchmarkProfileBatchScope,
+  AgentBenchmarkProgress,
   AgentExecution,
   AgentProviderProfile,
   AgentThinkingMode,
@@ -59,8 +61,11 @@ export const runtime = "nodejs";
 const LOCAL_BENCHMARK_STREAM_TIMEOUT_MS = 300000;
 const LOCAL_BENCHMARK_WARMUP_WAIT_MS = 300000;
 const LOCAL_BENCHMARK_PREWARM_TIMEOUT_MS = 360000;
+const LOCAL_BENCHMARK_PREWARM_POLL_MS = 1500;
+const LOCAL_BENCHMARK_GATEWAY_RECOVERY_WAIT_MS = 30000;
 const LOCAL_BENCHMARK_MAX_CONSECUTIVE_FATAL_FAILURES = 3;
 const LOCAL_BENCHMARK_MAX_CONSECUTIVE_FATAL_FAILURES_PER_WORKLOAD = 2;
+const LOCAL_BENCHMARK_AUTO_PREWARM_MODEL = "false";
 
 type BenchmarkRequestBody = {
   runId?: string;
@@ -121,6 +126,17 @@ type PlannedSampleTask = {
   contextWindow: number;
   maxTokens: number;
 };
+
+type LocalGatewayHealthPayload = {
+  status?: string;
+  loaded_alias?: string | null;
+  loading_alias?: string | null;
+  loading_elapsed_ms?: number | null;
+  loading_error?: string | null;
+  busy?: boolean;
+};
+
+type LocalBenchmarkPrewarmState = NonNullable<AgentBenchmarkProgress["localPrewarm"]>;
 
 type BenchmarkPlan = BenchmarkWorkload & {
   items: PlannedBenchmarkItem[];
@@ -245,6 +261,18 @@ function assertBenchmarkRunActive(runId: string) {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function formatElapsedForStatus(value?: number | null) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  if (value < 1000) return `${Math.round(value)} ms`;
+  const totalSeconds = Math.round(value / 1000);
+  const seconds = totalSeconds % 60;
+  const minutes = Math.floor(totalSeconds / 60) % 60;
+  const hours = Math.floor(totalSeconds / 3600);
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
 }
 
 function isRetryableRemoteBenchmarkFailure(message: string) {
@@ -751,33 +779,249 @@ async function readNdjsonStream(
   }
 }
 
-async function ensureLocalBenchmarkGateway(baseUrl: string) {
-  const firstAttempt = await ensureLocalGatewayAvailableDetailed(baseUrl, {
-    waitMs: LOCAL_BENCHMARK_WARMUP_WAIT_MS
-  });
-  if (firstAttempt.ok) {
-    return {
-      ok: true,
-      reason: firstAttempt.reason
-    };
+async function ensureLocalBenchmarkGateway(
+  baseUrl: string,
+  options?: {
+    runId?: string;
+    targetId?: string;
+    targetLabel?: string;
+    startedAt?: number;
+  }
+) {
+  const startedAt = options?.startedAt || Date.now();
+  let lastReason = "Local gateway is unavailable.";
+
+  while (Date.now() - startedAt < LOCAL_BENCHMARK_WARMUP_WAIT_MS) {
+    if (options?.runId) {
+      assertBenchmarkRunActive(options.runId);
+    }
+
+    if (options?.runId && options.targetId && options.targetLabel) {
+      setLocalBenchmarkPrewarmState(options.runId, {
+        targetId: options.targetId,
+        targetLabel: options.targetLabel,
+        phase: "ensuring-gateway",
+        message: "Ensuring local gateway availability before prewarm.",
+        loadingAlias: null,
+        startedAt: new Date(startedAt).toISOString(),
+        elapsedMs: Date.now() - startedAt
+      });
+    }
+
+    const ensured = await ensureLocalGatewayAvailableDetailed(baseUrl, {
+      waitMs: LOCAL_BENCHMARK_GATEWAY_RECOVERY_WAIT_MS,
+      autoPrewarmModel: LOCAL_BENCHMARK_AUTO_PREWARM_MODEL
+    });
+    if (ensured.ok) {
+      return {
+        ok: true,
+        reason: ensured.reason
+      };
+    }
+
+    lastReason = ensured.reason;
+
+    if (options?.runId && options.targetId && options.targetLabel) {
+      setLocalBenchmarkPrewarmState(options.runId, {
+        targetId: options.targetId,
+        targetLabel: options.targetLabel,
+        phase: "waiting-gateway",
+        message: `Gateway still unavailable. ${ensured.reason}`,
+        loadingAlias: null,
+        startedAt: new Date(startedAt).toISOString(),
+        elapsedMs: Date.now() - startedAt
+      });
+      setLocalBenchmarkPrewarmState(options.runId, {
+        targetId: options.targetId,
+        targetLabel: options.targetLabel,
+        phase: "restarting-gateway",
+        message: "Restarting local gateway during benchmark prewarm recovery.",
+        loadingAlias: null,
+        startedAt: new Date(startedAt).toISOString(),
+        elapsedMs: Date.now() - startedAt
+      });
+    }
+
+    const restarted = await restartLocalGateway(baseUrl, {
+      waitMs: LOCAL_BENCHMARK_GATEWAY_RECOVERY_WAIT_MS,
+      autoPrewarmModel: LOCAL_BENCHMARK_AUTO_PREWARM_MODEL
+    });
+    if (!restarted) {
+      await sleep(400);
+    }
   }
 
-  const restarted = await restartLocalGateway(baseUrl, { waitMs: LOCAL_BENCHMARK_WARMUP_WAIT_MS });
-  if (!restarted) {
-    return {
-      ok: false,
-      reason: `Gateway unavailable after restart attempt. ${firstAttempt.reason}`
-    };
-  }
-
-  const secondAttempt = await ensureLocalGatewayAvailableDetailed(baseUrl, {
-    waitMs: LOCAL_BENCHMARK_WARMUP_WAIT_MS
-  });
   return {
-    ok: secondAttempt.ok,
-    reason: secondAttempt.ok
-      ? "Gateway recovered after restart."
-      : `Gateway unavailable after restart attempt. ${secondAttempt.reason}`
+    ok: false,
+    reason: `Gateway unavailable after repeated recovery attempts. ${lastReason}`
+  };
+}
+
+async function restartLocalBenchmarkGateway(baseUrl: string) {
+  return restartLocalGateway(baseUrl, {
+    waitMs: LOCAL_BENCHMARK_WARMUP_WAIT_MS,
+    autoPrewarmModel: LOCAL_BENCHMARK_AUTO_PREWARM_MODEL
+  });
+}
+
+async function releaseLocalBenchmarkRuntime(baseUrl: string) {
+  try {
+    await fetchWithTimeout(
+      `${baseUrl.replace(/\/v1$/, "")}/v1/models/release`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" }
+      },
+      15000
+    );
+  } catch {
+    // Best effort cleanup only.
+  }
+}
+
+async function fetchLocalGatewayHealth(baseUrl: string) {
+  try {
+    const response = await fetchWithTimeout(
+      `${baseUrl.replace(/\/v1$/, "")}/health`,
+      {
+        cache: "no-store"
+      },
+      10000
+    );
+    if (!response.ok) return null;
+    return (await response.json()) as LocalGatewayHealthPayload;
+  } catch {
+    return null;
+  }
+}
+
+function setLocalBenchmarkPrewarmState(
+  runId: string | undefined,
+  prewarm: LocalBenchmarkPrewarmState | null
+) {
+  if (!runId) return;
+  setBenchmarkProgressLocalPrewarm(runId, prewarm);
+}
+
+async function waitForLocalBenchmarkPrewarm(options: {
+  baseUrl: string;
+  targetId: string;
+  targetLabel: string;
+  runId?: string;
+  startedAt: number;
+}) {
+  let lastRecoveryAt = 0;
+  let lastReason = "Local gateway did not report a completed prewarm state yet.";
+
+  while (Date.now() - options.startedAt < LOCAL_BENCHMARK_PREWARM_TIMEOUT_MS) {
+    if (options.runId) {
+      assertBenchmarkRunActive(options.runId);
+    }
+
+    const health = await fetchLocalGatewayHealth(options.baseUrl);
+    const elapsedMs = Date.now() - options.startedAt;
+
+    if (health?.loaded_alias === options.targetId && !health.loading_alias) {
+      setLocalBenchmarkPrewarmState(options.runId, null);
+      return { ok: true, reason: `Loaded ${options.targetId}.` };
+    }
+
+    if (health) {
+      const loadingAlias = health.loading_alias || null;
+      const healthElapsed =
+        typeof health.loading_elapsed_ms === "number" && Number.isFinite(health.loading_elapsed_ms)
+          ? health.loading_elapsed_ms
+          : elapsedMs;
+      const loadingLabel = loadingAlias
+        ? `Loading ${loadingAlias}`
+        : "Gateway is idle after prewarm request; waiting for model load to begin.";
+      const elapsedLabel = formatElapsedForStatus(healthElapsed);
+      const message = [loadingLabel, elapsedLabel].filter(Boolean).join(" · ");
+      setLocalBenchmarkPrewarmState(options.runId, {
+        targetId: options.targetId,
+        targetLabel: options.targetLabel,
+        phase: loadingAlias ? "waiting-load" : "prewarming",
+        loadingAlias,
+        message,
+        startedAt: new Date(options.startedAt).toISOString(),
+        elapsedMs
+      });
+      lastReason = health.loading_error || message || lastReason;
+
+      const loadingTooLong =
+        loadingAlias === options.targetId &&
+        typeof health.loading_elapsed_ms === "number" &&
+        health.loading_elapsed_ms > LOCAL_BENCHMARK_WARMUP_WAIT_MS;
+      const idleTooLong =
+        !loadingAlias &&
+        health.loaded_alias !== options.targetId &&
+        elapsedMs > 15000;
+      const shouldRecover = Boolean(health.loading_error) || loadingTooLong || idleTooLong;
+
+      if (shouldRecover && Date.now() - lastRecoveryAt > 10000) {
+        lastRecoveryAt = Date.now();
+        setLocalBenchmarkPrewarmState(options.runId, {
+          targetId: options.targetId,
+          targetLabel: options.targetLabel,
+          phase: "restarting-gateway",
+          loadingAlias,
+          message:
+            health.loading_error ||
+            (loadingTooLong
+              ? `Restarting local gateway after extended load wait (${formatElapsedForStatus(health.loading_elapsed_ms)}).`
+              : idleTooLong
+                ? "Restarting local gateway because prewarm is idle and no model load began."
+              : "Restarting local gateway after prewarm health degradation."),
+          startedAt: new Date(options.startedAt).toISOString(),
+          elapsedMs
+        });
+        const ensured = await ensureLocalGatewayAvailableDetailed(options.baseUrl, {
+          waitMs: LOCAL_BENCHMARK_GATEWAY_RECOVERY_WAIT_MS,
+          autoPrewarmModel: LOCAL_BENCHMARK_AUTO_PREWARM_MODEL
+        });
+        if (!ensured.ok) {
+          await restartLocalBenchmarkGateway(options.baseUrl);
+        }
+      }
+    } else {
+      setLocalBenchmarkPrewarmState(options.runId, {
+        targetId: options.targetId,
+        targetLabel: options.targetLabel,
+        phase: "waiting-gateway",
+        loadingAlias: null,
+        message: "Waiting for local gateway to come back online.",
+        startedAt: new Date(options.startedAt).toISOString(),
+        elapsedMs
+      });
+      lastReason = "Local gateway health probe failed during prewarm.";
+
+      if (Date.now() - lastRecoveryAt > 10000) {
+        lastRecoveryAt = Date.now();
+        setLocalBenchmarkPrewarmState(options.runId, {
+          targetId: options.targetId,
+          targetLabel: options.targetLabel,
+          phase: "restarting-gateway",
+          loadingAlias: null,
+          message: "Restarting local gateway after health probe failure.",
+          startedAt: new Date(options.startedAt).toISOString(),
+          elapsedMs
+        });
+        const ensured = await ensureLocalGatewayAvailableDetailed(options.baseUrl, {
+          waitMs: LOCAL_BENCHMARK_GATEWAY_RECOVERY_WAIT_MS,
+          autoPrewarmModel: LOCAL_BENCHMARK_AUTO_PREWARM_MODEL
+        });
+        if (!ensured.ok) {
+          await restartLocalBenchmarkGateway(options.baseUrl);
+        }
+      }
+    }
+
+    await sleep(LOCAL_BENCHMARK_PREWARM_POLL_MS);
+  }
+
+  return {
+    ok: false,
+    reason: `Timed out while waiting for ${options.targetId} to finish loading. ${lastReason}`
   };
 }
 
@@ -856,9 +1100,7 @@ async function runSingleBenchmarkSample(
           })
         }, LOCAL_BENCHMARK_STREAM_TIMEOUT_MS, runSignal);
       }
-      const restarted = await restartLocalGateway(target.resolvedBaseUrl, {
-        waitMs: LOCAL_BENCHMARK_WARMUP_WAIT_MS
-      });
+      const restarted = await restartLocalBenchmarkGateway(target.resolvedBaseUrl);
       if (!restarted) {
         throw new Error("Local gateway restart timed out before retrying benchmark.");
       }
@@ -1220,16 +1462,41 @@ async function prewarmTarget(targetId: string, runId?: string) {
   const prewarmUrl = `${target.resolvedBaseUrl.replace(/\/v1$/, "")}/v1/models/prewarm`;
   const errors: string[] = [];
   const runSignal = runId ? getBenchmarkRunSignal(runId) : undefined;
+  const startedAt = Date.now();
+  const startedAtIso = new Date(startedAt).toISOString();
 
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     if (runId) {
       assertBenchmarkRunActive(runId);
     }
-    const ensureResult = await ensureLocalBenchmarkGateway(target.resolvedBaseUrl);
+    setLocalBenchmarkPrewarmState(runId, {
+      targetId,
+      targetLabel: target.label,
+      phase: "ensuring-gateway",
+      message: `Ensuring local gateway before prewarming ${target.label}. Attempt ${attempt}/3.`,
+      loadingAlias: null,
+      startedAt: startedAtIso,
+      elapsedMs: Date.now() - startedAt
+    });
+    const ensureResult = await ensureLocalBenchmarkGateway(target.resolvedBaseUrl, {
+      runId,
+      targetId,
+      targetLabel: target.label,
+      startedAt
+    });
     if (!ensureResult.ok) {
       errors.push(`attempt ${attempt}: ${ensureResult.reason}`);
     } else {
       try {
+        setLocalBenchmarkPrewarmState(runId, {
+          targetId,
+          targetLabel: target.label,
+          phase: "prewarming",
+          message: `Requesting prewarm for ${target.label}. Attempt ${attempt}/3.`,
+          loadingAlias: null,
+          startedAt: startedAtIso,
+          elapsedMs: Date.now() - startedAt
+        });
         const response = await fetchWithTimeout(
           prewarmUrl,
           {
@@ -1245,23 +1512,58 @@ async function prewarmTarget(targetId: string, runId?: string) {
 
         if (response.ok) {
           await response.json();
+          setLocalBenchmarkPrewarmState(runId, null);
           return;
         }
-
-        errors.push(`attempt ${attempt}: ${await response.text()}`);
+        const responseText = await response.text();
+        errors.push(`attempt ${attempt}: ${responseText}`);
+        const waited = await waitForLocalBenchmarkPrewarm({
+          baseUrl: target.resolvedBaseUrl,
+          targetId,
+          targetLabel: target.label,
+          runId,
+          startedAt
+        });
+        if (waited.ok) {
+          setLocalBenchmarkPrewarmState(runId, null);
+          return;
+        }
+        errors.push(`attempt ${attempt} wait: ${waited.reason}`);
       } catch (error) {
         errors.push(
           `attempt ${attempt}: ${error instanceof Error ? error.message : "Unknown prewarm error."}`
         );
+        const waited = await waitForLocalBenchmarkPrewarm({
+          baseUrl: target.resolvedBaseUrl,
+          targetId,
+          targetLabel: target.label,
+          runId,
+          startedAt
+        });
+        if (waited.ok) {
+          setLocalBenchmarkPrewarmState(runId, null);
+          return;
+        }
+        errors.push(`attempt ${attempt} wait: ${waited.reason}`);
       }
     }
 
     if (attempt < 3) {
-      await restartLocalGateway(target.resolvedBaseUrl, { waitMs: LOCAL_BENCHMARK_WARMUP_WAIT_MS });
+      setLocalBenchmarkPrewarmState(runId, {
+        targetId,
+        targetLabel: target.label,
+        phase: "restarting-gateway",
+        message: `Restarting local gateway before retrying ${target.label}.`,
+        loadingAlias: null,
+        startedAt: startedAtIso,
+        elapsedMs: Date.now() - startedAt
+      });
+      await restartLocalBenchmarkGateway(target.resolvedBaseUrl);
       await sleep(400);
     }
   }
 
+  setLocalBenchmarkPrewarmState(runId, null);
   throw new Error(`Prewarm failed for ${targetId}. ${errors.join(" | ")}`);
 }
 
@@ -1454,6 +1756,7 @@ export async function POST(request: Request) {
         execution: target.execution,
         sampleCount: tasksForGroup.length
       });
+      setLocalBenchmarkPrewarmState(runId, null);
 
       const runner = async (task: PlannedSampleTask) => {
         assertBenchmarkRunActive(runId);
@@ -1467,9 +1770,7 @@ export async function POST(request: Request) {
         );
 
         if (target.execution === "local" && isRetryableLocalSampleFailure(sample)) {
-          const restarted = await restartLocalGateway(resolvedTarget.resolvedBaseUrl, {
-            waitMs: LOCAL_BENCHMARK_WARMUP_WAIT_MS
-          });
+          const restarted = await restartLocalBenchmarkGateway(resolvedTarget.resolvedBaseUrl);
           if (restarted) {
             try {
               await prewarmTarget(target.id, runId);
@@ -1683,9 +1984,21 @@ export async function POST(request: Request) {
 
     for (const target of localTargets) {
       assertBenchmarkRunActive(runId);
+      const benchmarkBaseUrl = resolveTargetWithMode(target.id, "standard").resolvedBaseUrl;
       try {
+        setLocalBenchmarkPrewarmState(runId, {
+          targetId: target.id,
+          targetLabel: target.label,
+          phase: "releasing-runtime",
+          message: `Releasing local runtime before prewarming ${target.label}.`,
+          loadingAlias: null,
+          startedAt: new Date().toISOString(),
+          elapsedMs: 0
+        });
+        await releaseLocalBenchmarkRuntime(benchmarkBaseUrl);
         await prewarmTarget(target.id, runId);
       } catch (error) {
+        setLocalBenchmarkPrewarmState(runId, null);
         const groupKey = buildGroupKey(target.id, requestedProviderProfile, "standard");
         for (const task of plannedTasks) {
           advanceBenchmarkProgress(runId, {
@@ -1732,12 +2045,17 @@ export async function POST(request: Request) {
         continue;
       }
 
-      results.push(
-        await runResultGroup(target, {
-          providerProfile: requestedProviderProfile,
-          thinkingMode: "standard"
-        })
-      );
+      try {
+        results.push(
+          await runResultGroup(target, {
+            providerProfile: requestedProviderProfile,
+            thinkingMode: "standard"
+          })
+        );
+      } finally {
+        setLocalBenchmarkPrewarmState(runId, null);
+        await releaseLocalBenchmarkRuntime(benchmarkBaseUrl);
+      }
     }
 
     const remoteResultGroups = await runWithConcurrency(
