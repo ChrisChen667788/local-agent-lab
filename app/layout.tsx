@@ -17,14 +17,14 @@ export const metadata: Metadata = {
     title: "Local Agent Lab",
     description:
       "A local-first coding agent workbench for Apple Silicon with local MLX runtimes, remote APIs, benchmark ops, trace review, and replay tooling.",
-    images: ["/oss-cover.svg"]
+    images: ["/oss-cover.png"]
   },
   twitter: {
     card: "summary_large_image",
     title: "Local Agent Lab",
     description:
       "A local-first coding agent workbench for Apple Silicon with local MLX runtimes, remote APIs, benchmark ops, trace review, and replay tooling.",
-    images: ["/oss-cover.svg"]
+    images: ["/oss-cover.png"]
   }
 };
 

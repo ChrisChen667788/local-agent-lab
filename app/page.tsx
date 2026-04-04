@@ -7,15 +7,16 @@ export default function Page() {
         <div className="grid gap-10 lg:grid-cols-[1.2fr_0.8fr] lg:items-center">
           <div className="space-y-6">
             <span className="inline-flex rounded-full border border-slate-300/80 bg-white/80 px-4 py-2 text-xs font-semibold uppercase tracking-[0.22em] text-slate-600 shadow-sm">
-              Local-first agent workbench
+              Open-source local-first agent workbench
             </span>
             <div className="space-y-4">
               <h1 className="max-w-4xl text-4xl font-semibold tracking-tight text-slate-950 sm:text-5xl lg:text-6xl">
-                Build, benchmark, and operate coding agents from one Apple Silicon workbench.
+                Ship local and remote coding agents from one Apple Silicon control room.
               </h1>
               <p className="max-w-3xl text-base leading-8 text-slate-600 sm:text-lg">
-                Local Agent Lab brings local MLX runtimes, remote model targets, benchmark history,
-                runtime diagnostics, replay, trace review, and knowledge import into one interface.
+                Local Agent Lab brings MLX local runtimes, remote model targets, benchmark ops,
+                replay, trace review, gateway recovery, and knowledge import into one place so we
+                can compare behavior instead of guessing at it.
               </p>
             </div>
             <div className="flex flex-wrap gap-3">
@@ -45,7 +46,7 @@ export default function Page() {
           <div className="rounded-[32px] border border-white/80 bg-slate-950 p-6 text-white shadow-[0_30px_80px_rgba(15,23,42,0.2)]">
             <div className="space-y-5">
               <div className="flex items-center justify-between text-xs uppercase tracking-[0.26em] text-slate-400">
-                <span>Validated runtime profile</span>
+                <span>Release receipts</span>
                 <span>v0.2.3</span>
               </div>
               <div className="grid gap-4 sm:grid-cols-2">
@@ -61,8 +62,8 @@ export default function Page() {
                 </div>
               </div>
               <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-4 text-sm leading-7 text-emerald-50">
-                Local Qwen3.5 4B is the current default 4B profile. Replay, trace review, patch
-                inspection, and benchmark prewarm recovery are part of the shipping workflow.
+                Default local 4B is now Qwen3.5 4B. The shipped workflow includes replay, patch
+                review, benchmark progress recovery, and local prewarm diagnostics.
               </div>
             </div>
           </div>
@@ -75,12 +76,12 @@ export default function Page() {
               body: "Compare MLX Qwen profiles against OpenAI-compatible and Claude-compatible APIs without switching tools."
             },
             {
-              title: "Understand agent behavior, not just answers",
-              body: "Inspect replay traces, patch review steps, tool calls, retrieval hits, and benchmark failures in one place."
+              title: "Inspect why the agent behaved that way",
+              body: "Trace replay, patch review, tool calls, retrieval hits, and file-level evidence in one interface."
             },
             {
-              title: "Benchmark with runtime ops built in",
-              body: "Track context windows, prewarm stages, gateway recovery, history, and deltas while the benchmark is still running."
+              title: "Benchmark with runtime operations built in",
+              body: "Track context budgets, prewarm phases, recovery actions, history, and deltas while the run is still live."
             }
           ].map((item) => (
             <article
@@ -91,6 +92,34 @@ export default function Page() {
               <p className="mt-3 text-sm leading-7 text-slate-600">{item.body}</p>
             </article>
           ))}
+        </section>
+
+        <section className="grid gap-5 lg:grid-cols-[0.95fr_1.05fr]">
+          <article className="rounded-[28px] border border-slate-200/80 bg-white/80 p-6 shadow-[0_20px_50px_rgba(15,23,42,0.08)] backdrop-blur">
+            <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">What it replaces</div>
+            <ul className="mt-5 space-y-3 text-sm leading-7 text-slate-600">
+              <li>Separate local model playgrounds, benchmark spreadsheets, and runtime shell scripts</li>
+              <li>Ad hoc debugging when a run hangs between model prewarm, gateway recovery, and tool execution</li>
+              <li>Side-by-side local versus remote evaluation done with mismatched context settings</li>
+            </ul>
+          </article>
+          <article className="rounded-[28px] border border-slate-900 bg-slate-900 p-6 text-white shadow-[0_24px_60px_rgba(15,23,42,0.18)]">
+            <div className="text-xs font-semibold uppercase tracking-[0.24em] text-cyan-300">Who it helps</div>
+            <div className="mt-5 grid gap-4 sm:grid-cols-2">
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <div className="text-lg font-semibold">Agent builders</div>
+                <p className="mt-2 text-sm leading-7 text-slate-300">
+                  Validate patch flows, repo grounding, and tool behavior before shipping new defaults.
+                </p>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <div className="text-lg font-semibold">Local AI teams</div>
+                <p className="mt-2 text-sm leading-7 text-slate-300">
+                  Compare MLX models against hosted APIs under aligned context and benchmark settings.
+                </p>
+              </div>
+            </div>
+          </article>
         </section>
       </section>
     </main>
