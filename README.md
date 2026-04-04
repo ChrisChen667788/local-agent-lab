@@ -1,5 +1,7 @@
 # Local Agent Lab
 
+[English](./README.md) | [简体中文](./README.zh-CN.md)
+
 ![Release](https://img.shields.io/github/v/release/ChrisChen667788/local-agent-lab?label=release)
 ![License](https://img.shields.io/github/license/ChrisChen667788/local-agent-lab)
 ![Apple Silicon](https://img.shields.io/badge/platform-Apple%20Silicon-0f172a)
@@ -199,6 +201,7 @@ Issues and PRs are welcome.
 
 - [CONTRIBUTING.md](./CONTRIBUTING.md)
 - [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)
+- [docs/open-source-backlog.md](./docs/open-source-backlog.md)
 
 ## Release notes
 
