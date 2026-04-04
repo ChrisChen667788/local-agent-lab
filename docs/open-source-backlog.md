@@ -106,3 +106,21 @@ When opening public issues, keep them:
 - grounded in a concrete file or route when possible
 - explicit about verification steps
 - honest about whether the change is docs-only, runtime, benchmark, or CI
+
+## Live GitHub issues
+
+Current public issue queue:
+
+- [#1 Add context recommendation helper text beside benchmark target badges](https://github.com/ChrisChen667788/local-agent-lab/issues/1)
+- [#2 Expose last recovery action more consistently across runtime cards](https://github.com/ChrisChen667788/local-agent-lab/issues/2)
+- [#3 Add line-level file evidence snippets for repo-grounded answers](https://github.com/ChrisChen667788/local-agent-lab/issues/3)
+- [#4 Add screenshot smoke checks to GitHub Actions CI](https://github.com/ChrisChen667788/local-agent-lab/issues/4)
+- [#6 Add copy-friendly launch kit sections for social and release snippets](https://github.com/ChrisChen667788/local-agent-lab/issues/6)
+- [#7 Add benchmark issue-summary export preset for triage workflows](https://github.com/ChrisChen667788/local-agent-lab/issues/7)
+- [#8 Add a public docs route for launch notes and release notes](https://github.com/ChrisChen667788/local-agent-lab/issues/8)
+- [#9 Create a repeatable demo capture pipeline for release assets](https://github.com/ChrisChen667788/local-agent-lab/issues/9)
+- [#10 Add a Chinese contributor quickstart for local setup and release checks](https://github.com/ChrisChen667788/local-agent-lab/issues/10)
+- [#11 Publish a demo GIF workflow for README and release pages](https://github.com/ChrisChen667788/local-agent-lab/issues/11)
+- [#12 Add GitHub repo setup checklist for social preview and pinned repo copy](https://github.com/ChrisChen667788/local-agent-lab/issues/12)
+- [#13 Add a comparison matrix for local and remote benchmark lanes](https://github.com/ChrisChen667788/local-agent-lab/issues/13)
+- [#14 Add a public roadmap section for benchmark and runtime milestones](https://github.com/ChrisChen667788/local-agent-lab/issues/14)

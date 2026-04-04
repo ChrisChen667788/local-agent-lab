@@ -176,6 +176,8 @@ public/                   对外资源和社媒封面图
 仓库里已经附带一套可以直接拿去发帖和补 GitHub 首页的素材：
 
 - [docs/open-source-launch-kit.md](./docs/open-source-launch-kit.md)
+- [docs/open-source-growth-copy.md](./docs/open-source-growth-copy.md)
+- [docs/open-source-backlog.md](./docs/open-source-backlog.md)
 - [public/oss-cover.svg](./public/oss-cover.svg)
 - [public/oss-cover.png](./public/oss-cover.png)
 - [public/oss-social-square.svg](./public/oss-social-square.svg)
@@ -185,10 +187,13 @@ public/                   对外资源和社媒封面图
 里面包括：
 
 - GitHub About 文案
+- 仓库置顶和个人主页简介文案
 - release 宣发摘要
 - X / LinkedIn / Hacker News 发帖草稿
+- 中英文社媒发布帖合集
 - 建议使用的截图顺序
 - social preview 素材说明
+- 面向贡献者的 backlog 入口
 
 ## 安全和隐私
 

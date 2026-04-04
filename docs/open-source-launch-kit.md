@@ -1,5 +1,9 @@
 # Open Source Launch Kit
 
+For pinned repo copy, profile wording, homepage descriptions, and bilingual launch-post variants, also see:
+
+- `docs/open-source-growth-copy.md`
+
 ## One-line pitch
 
 Local Agent Lab is a local-first coding agent workbench for Apple Silicon that combines MLX local runtimes, remote model comparisons, benchmark ops, replay, trace review, and runtime recovery in one interface.

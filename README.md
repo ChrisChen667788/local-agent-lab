@@ -173,6 +173,8 @@ public/                   Public assets and social cover art
 We also keep a ready-to-use launch pack in the repo:
 
 - [docs/open-source-launch-kit.md](./docs/open-source-launch-kit.md)
+- [docs/open-source-growth-copy.md](./docs/open-source-growth-copy.md)
+- [docs/open-source-backlog.md](./docs/open-source-backlog.md)
 - [public/oss-cover.svg](./public/oss-cover.svg)
 - [public/oss-cover.png](./public/oss-cover.png)
 - [public/oss-social-square.svg](./public/oss-social-square.svg)
@@ -182,10 +184,13 @@ We also keep a ready-to-use launch pack in the repo:
 This includes:
 
 - GitHub About copy
+- pinned repo and profile copy
 - release summary copy
 - X / LinkedIn / Hacker News launch drafts
+- bilingual social launch post variants
 - suggested screenshot order
 - social-preview asset references
+- contributor-facing growth backlog
 
 ## Security and privacy
 
