@@ -1,71 +1,60 @@
 <svg width="1600" height="900" viewBox="0 0 1600 900" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="bg" x1="110" y1="80" x2="1490" y2="860" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#E0F2FE"/>
-      <stop offset="0.45" stop-color="#EEF2FF"/>
-      <stop offset="1" stop-color="#FEF3C7"/>
+    <linearGradient id="bg" x1="96" y1="68" x2="1496" y2="830" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFF5E4"/>
+      <stop offset="0.48" stop-color="#EEF4FF"/>
+      <stop offset="1" stop-color="#ECFDF5"/>
     </linearGradient>
-    <linearGradient id="panel" x1="900" y1="170" x2="1470" y2="760" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#020617"/>
-      <stop offset="1" stop-color="#1E293B"/>
+    <linearGradient id="hero" x1="140" y1="180" x2="760" y2="760" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0F172A"/>
+      <stop offset="1" stop-color="#1E3A8A"/>
     </linearGradient>
-    <linearGradient id="accent" x1="0" y1="0" x2="520" y2="220" gradientUnits="userSpaceOnUse">
+    <linearGradient id="accent" x1="0" y1="0" x2="560" y2="220" gradientUnits="userSpaceOnUse">
       <stop stop-color="#22D3EE"/>
-      <stop offset="1" stop-color="#A78BFA"/>
+      <stop offset="1" stop-color="#6366F1"/>
     </linearGradient>
-    <filter id="shadow" x="810" y="120" width="720" height="700" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
-      <feDropShadow dx="0" dy="30" stdDeviation="34" flood-color="#0F172A" flood-opacity="0.18"/>
+    <filter id="shadow" x="786" y="158" width="676" height="628" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="28" stdDeviation="32" flood-color="#0F172A" flood-opacity="0.14"/>
     </filter>
   </defs>
   <rect width="1600" height="900" rx="44" fill="url(#bg)"/>
-  <circle cx="185" cy="175" r="170" fill="#BFDBFE" fill-opacity="0.55"/>
-  <circle cx="1475" cy="740" r="248" fill="#FDE68A" fill-opacity="0.35"/>
-  <rect x="120" y="122" width="568" height="54" rx="27" fill="white" fill-opacity="0.82"/>
-  <text x="148" y="157" fill="#475569" font-family="SF Pro Text, PingFang SC, Arial, sans-serif" font-size="22" font-weight="700" letter-spacing="4">OPEN SOURCE · LOCAL-FIRST CODING AGENT WORKBENCH</text>
-  <text x="120" y="296" fill="#020617" font-family="SF Pro Display, PingFang SC, Arial, sans-serif" font-size="88" font-weight="700">
-    <tspan x="120" dy="0">Local Agent Lab</tspan>
-  </text>
-  <text x="120" y="382" fill="#334155" font-family="SF Pro Text, PingFang SC, Arial, sans-serif" font-size="33" font-weight="500">
-    <tspan x="120" dy="0">Run MLX local models, benchmark remote APIs,</tspan>
-    <tspan x="120" dy="50">and inspect replay, trace, runtime recovery,</tspan>
-    <tspan x="120" dy="50">and benchmark progress from one interface.</tspan>
-  </text>
-  <g transform="translate(120 560)">
-    <rect width="248" height="126" rx="30" fill="white" fill-opacity="0.86"/>
-    <text x="28" y="42" fill="#0891B2" font-family="SF Pro Text, PingFang SC, Arial, sans-serif" font-size="17" font-weight="700" letter-spacing="3">LOCAL 32K RECEIPT</text>
-    <text x="28" y="90" fill="#020617" font-family="SF Pro Display, PingFang SC, Arial, sans-serif" font-size="46" font-weight="700">426 / 426</text>
-  </g>
-  <g transform="translate(392 560)">
-    <rect width="248" height="126" rx="30" fill="white" fill-opacity="0.86"/>
-    <text x="28" y="42" fill="#D97706" font-family="SF Pro Text, PingFang SC, Arial, sans-serif" font-size="17" font-weight="700" letter-spacing="3">MIXED 32K COMPARE</text>
-    <text x="28" y="90" fill="#020617" font-family="SF Pro Display, PingFang SC, Arial, sans-serif" font-size="46" font-weight="700">0 failed</text>
-  </g>
-  <g transform="translate(120 722)">
-    <rect width="520" height="66" rx="33" fill="url(#accent)"/>
-    <text x="34" y="42" fill="white" font-family="SF Pro Text, PingFang SC, Arial, sans-serif" font-size="24" font-weight="700">Replay · Patch Review · Runtime Ops · Benchmark History</text>
+  <circle cx="146" cy="158" r="126" fill="#DBEAFE" fill-opacity="0.72"/>
+  <circle cx="1452" cy="746" r="206" fill="#D1FAE5" fill-opacity="0.68"/>
+  <circle cx="1380" cy="164" r="92" fill="#FDE68A" fill-opacity="0.5"/>
+  <rect x="120" y="126" width="710" height="56" rx="28" fill="white" fill-opacity="0.82"/>
+  <text x="150" y="162" fill="#475569" font-family="SF Pro Text, Inter, Arial, sans-serif" font-size="22" font-weight="700" letter-spacing="4">LOCAL-FIRST AGENT OPS · BENCHMARK, TRACE, AND RUNTIME CONTROL</text>
+  <rect x="120" y="222" width="624" height="514" rx="38" fill="url(#hero)"/>
+  <text x="160" y="292" fill="#93C5FD" font-family="SF Pro Text, Inter, Arial, sans-serif" font-size="24" font-weight="700" letter-spacing="4">LOCAL AGENT LAB</text>
+  <text x="160" y="390" fill="white" font-family="SF Pro Display, Inter, Arial, sans-serif" font-size="80" font-weight="760">Operate model</text>
+  <text x="160" y="482" fill="white" font-family="SF Pro Display, Inter, Arial, sans-serif" font-size="80" font-weight="760">behavior, not</text>
+  <text x="160" y="574" fill="white" font-family="SF Pro Display, Inter, Arial, sans-serif" font-size="80" font-weight="760">just answers.</text>
+  <text x="160" y="610" fill="#DCE9FF" font-family="SF Pro Text, Inter, Arial, sans-serif" font-size="27" font-weight="600">Run MLX local runtimes, compare remote APIs, and inspect</text>
+  <text x="160" y="646" fill="#DCE9FF" font-family="SF Pro Text, Inter, Arial, sans-serif" font-size="27" font-weight="600">replay, trace, runtime state, and recovery from one bench.</text>
+  <g transform="translate(160 674)">
+    <rect width="434" height="58" rx="29" fill="url(#accent)"/>
+    <text x="34" y="38" fill="white" font-family="SF Pro Text, Inter, Arial, sans-serif" font-size="21" font-weight="700">MLX runtimes · Compare · Replay · Trace · Recovery</text>
   </g>
   <g filter="url(#shadow)">
-    <rect x="850" y="150" width="600" height="620" rx="36" fill="url(#panel)"/>
+    <rect x="830" y="184" width="592" height="566" rx="38" fill="white" fill-opacity="0.86"/>
   </g>
-  <g transform="translate(900 208)">
-    <text x="0" y="0" fill="#67E8F9" font-family="SF Pro Text, PingFang SC, Arial, sans-serif" font-size="18" font-weight="700" letter-spacing="3">WHY IT MATTERS</text>
-    <text x="0" y="64" fill="white" font-family="SF Pro Display, PingFang SC, Arial, sans-serif" font-size="46" font-weight="700">Compare behavior,</text>
-    <text x="0" y="110" fill="white" font-family="SF Pro Display, PingFang SC, Arial, sans-serif" font-size="46" font-weight="700">not just answers</text>
-  </g>
-  <g transform="translate(900 368)">
-    <rect width="500" height="126" rx="28" fill="white" fill-opacity="0.08" stroke="white" stroke-opacity="0.12"/>
-    <text x="28" y="38" fill="#94A3B8" font-family="SF Pro Text, PingFang SC, Arial, sans-serif" font-size="15" font-weight="700" letter-spacing="3">TARGETS</text>
-    <text x="28" y="76" fill="white" font-family="SF Pro Text, PingFang SC, Arial, sans-serif" font-size="29" font-weight="600">Qwen3 0.6B · Qwen3.5 4B · GPT-5.4 · Claude</text>
-    <text x="28" y="104" fill="#CBD5E1" font-family="SF Pro Text, PingFang SC, Arial, sans-serif" font-size="20">Aligned context budgets for local versus remote benchmark compare</text>
-  </g>
-  <g transform="translate(900 536)">
-    <rect width="236" height="122" rx="28" fill="#22C55E" fill-opacity="0.12" stroke="#22C55E" stroke-opacity="0.35"/>
-    <text x="28" y="38" fill="#BBF7D0" font-family="SF Pro Text, PingFang SC, Arial, sans-serif" font-size="16" font-weight="700" letter-spacing="3">RUNTIME OPS</text>
-    <text x="28" y="84" fill="white" font-family="SF Pro Display, PingFang SC, Arial, sans-serif" font-size="39" font-weight="700">Prewarm aware</text>
-  </g>
-  <g transform="translate(1164 536)">
-    <rect width="236" height="122" rx="28" fill="#A855F7" fill-opacity="0.12" stroke="#A855F7" stroke-opacity="0.35"/>
-    <text x="28" y="38" fill="#E9D5FF" font-family="SF Pro Text, PingFang SC, Arial, sans-serif" font-size="16" font-weight="700" letter-spacing="3">TRACE REVIEW</text>
-    <text x="28" y="84" fill="white" font-family="SF Pro Display, PingFang SC, Arial, sans-serif" font-size="39" font-weight="700">Patch replay</text>
+  <g transform="translate(884 238)">
+    <text x="0" y="0" fill="#0F172A" font-family="SF Pro Text, Inter, Arial, sans-serif" font-size="19" font-weight="700" letter-spacing="3">OPERATING LANES</text>
+    <g transform="translate(0 54)">
+      <rect width="484" height="150" rx="28" fill="#0F172A"/>
+      <text x="30" y="44" fill="#67E8F9" font-family="SF Pro Text, Inter, Arial, sans-serif" font-size="18" font-weight="700" letter-spacing="3">BENCHMARK</text>
+      <text x="30" y="90" fill="white" font-family="SF Pro Display, Inter, Arial, sans-serif" font-size="29" font-weight="700">Aligned local and remote lanes</text>
+      <text x="30" y="126" fill="#CBD5E1" font-family="SF Pro Text, Inter, Arial, sans-serif" font-size="19">Keep context, runs, and scoring fair across runtimes.</text>
+    </g>
+    <g transform="translate(0 228)">
+      <rect width="484" height="150" rx="28" fill="#F8FAFC" stroke="#D6E1F0" stroke-width="2"/>
+      <text x="30" y="44" fill="#1E40AF" font-family="SF Pro Text, Inter, Arial, sans-serif" font-size="18" font-weight="700" letter-spacing="3">RUNTIME</text>
+      <text x="30" y="90" fill="#0F172A" font-family="SF Pro Display, Inter, Arial, sans-serif" font-size="29" font-weight="700">Prewarm and long-run stability</text>
+      <text x="30" y="126" fill="#475569" font-family="SF Pro Text, Inter, Arial, sans-serif" font-size="19">Make local 32K runs observable, recoverable, and repeatable.</text>
+    </g>
+    <g transform="translate(0 402)">
+      <rect width="484" height="118" rx="24" fill="#ECFDF5" stroke="#A7F3D0" stroke-width="2"/>
+      <text x="28" y="38" fill="#047857" font-family="SF Pro Text, Inter, Arial, sans-serif" font-size="17" font-weight="700" letter-spacing="3">REVIEW</text>
+      <text x="28" y="76" fill="#065F46" font-family="SF Pro Text, Inter, Arial, sans-serif" font-size="23" font-weight="600">Replay, trace review, runtime cards, and patch history</text>
+    </g>
   </g>
 </svg>
