@@ -1,7 +1,28 @@
 {
   "name": "local-agent-lab",
-  "version": "0.1.0",
+  "version": "0.2.3",
   "private": true,
+  "description": "Local-first coding agent workbench for Apple Silicon with MLX runtimes, benchmark ops, and remote model comparisons.",
+  "license": "MIT",
+  "homepage": "https://github.com/ChrisChen667788/local-agent-lab",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ChrisChen667788/local-agent-lab.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ChrisChen667788/local-agent-lab/issues"
+  },
+  "keywords": [
+    "agent",
+    "benchmark",
+    "mlx",
+    "apple-silicon",
+    "nextjs",
+    "llm",
+    "qwen",
+    "coding-agent",
+    "observability"
+  ],
   "engines": {
     "node": ">=22 <23"
   },

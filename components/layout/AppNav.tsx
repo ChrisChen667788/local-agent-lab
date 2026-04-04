@@ -16,6 +16,7 @@ function isActive(pathname: string, href: string) {
 
 export function AppNav({ version }: { version?: string }) {
   const pathname = usePathname();
+  const currentPath = pathname ?? "/";
   const { locale, setLocale, dictionary } = useLocale();
 
   return (
@@ -24,7 +25,7 @@ export function AppNav({ version }: { version?: string }) {
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-2 rounded-full bg-slate-100/90 p-1">
             {links.map((link) => {
-              const active = isActive(pathname, link.href);
+              const active = isActive(currentPath, link.href);
               return (
                 <Link
                   key={link.href}

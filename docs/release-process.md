@@ -6,14 +6,13 @@ Keep each stable node easy to compare, roll back, and explain.
 
 ## Steps
 
-1. Update [`/Users/chenhaorui/Documents/New project/VERSION`](/Users/chenhaorui/Documents/New%20project/VERSION)
+1. Update [`VERSION`](../VERSION)
    - Use `SemVer`, for example `0.1.1`.
 
 2. Generate the release note skeleton
    - Run:
 
 ```bash
-cd "/Users/chenhaorui/Documents/New project"
 ./scripts/prepare-release.sh
 ```
 
@@ -51,5 +50,5 @@ cd "/Users/chenhaorui/Documents/New project"
 
 - Keep release notes short and factual.
 - If a release is UI-only, benchmark can be a smoke summary rather than a full formal suite.
-- `v0.2.x` cadence guidance: [v0.2.x-cadence.md](/Users/chenhaorui/Documents/New%20project/docs/v0.2.x-cadence.md)
-- `v0.3.0` preread: [v0.3.0-preread.md](/Users/chenhaorui/Documents/New%20project/docs/v0.3.0-preread.md)
+- `v0.2.x` cadence guidance: [v0.2.x-cadence.md](./v0.2.x-cadence.md)
+- `v0.3.0` preread: [v0.3.0-preread.md](./v0.3.0-preread.md)

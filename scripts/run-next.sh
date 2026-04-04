@@ -3,8 +3,14 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PRIMARY_NODE="/opt/homebrew/opt/node@22/bin/node"
-FALLBACK_NODE="/Users/chenhaorui/.npm/_npx/52027bd8fc0022aa/node_modules/node/bin/node"
 NODE_BIN="${NODE22_BIN:-}"
+CURRENT_NODE="$(command -v node || true)"
+
+node_major_version() {
+  local binary="$1"
+  [[ -x "$binary" ]] || return 1
+  "$binary" -p 'process.versions.node.split(".")[0]' 2>/dev/null
+}
 
 load_env_file() {
   local file="$1"
@@ -26,8 +32,8 @@ load_env_file() {
 if [[ -z "$NODE_BIN" ]]; then
   if [[ -x "$PRIMARY_NODE" ]]; then
     NODE_BIN="$PRIMARY_NODE"
-  elif [[ -x "$FALLBACK_NODE" ]]; then
-    NODE_BIN="$FALLBACK_NODE"
+  elif [[ -n "$CURRENT_NODE" ]] && [[ "$(node_major_version "$CURRENT_NODE")" == "22" ]]; then
+    NODE_BIN="$CURRENT_NODE"
   else
     echo "Node 22 binary not found. Install node@22 or set NODE22_BIN." >&2
     exit 1

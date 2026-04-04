@@ -1,0 +1,64 @@
+<svg width="1600" height="900" viewBox="0 0 1600 900" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="120" y1="80" x2="1420" y2="820" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#E0F2FE"/>
+      <stop offset="0.45" stop-color="#EEF2FF"/>
+      <stop offset="1" stop-color="#FEF3C7"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="920" y1="180" x2="1450" y2="700" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0F172A"/>
+      <stop offset="1" stop-color="#1E293B"/>
+    </linearGradient>
+    <filter id="shadow" x="780" y="110" width="760" height="680" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="30" stdDeviation="35" flood-color="#0F172A" flood-opacity="0.18"/>
+    </filter>
+  </defs>
+  <rect width="1600" height="900" rx="48" fill="url(#bg)"/>
+  <circle cx="178" cy="162" r="164" fill="#BFDBFE" fill-opacity="0.55"/>
+  <circle cx="1460" cy="750" r="240" fill="#FDE68A" fill-opacity="0.35"/>
+  <g opacity="0.9">
+    <rect x="120" y="140" width="590" height="52" rx="26" fill="white" fill-opacity="0.82"/>
+    <text x="148" y="173" fill="#475569" font-family="SF Pro Text, PingFang SC, Arial, sans-serif" font-size="22" font-weight="700" letter-spacing="5">LOCAL-FIRST CODING AGENT WORKBENCH</text>
+  </g>
+  <text x="120" y="310" fill="#020617" font-family="SF Pro Display, PingFang SC, Arial, sans-serif" font-size="86" font-weight="700">
+    <tspan x="120" dy="0">Local Agent Lab</tspan>
+  </text>
+  <text x="120" y="392" fill="#334155" font-family="SF Pro Text, PingFang SC, Arial, sans-serif" font-size="34" font-weight="500">
+    <tspan x="120" dy="0">Run local MLX models, benchmark remote APIs,</tspan>
+    <tspan x="120" dy="52">and inspect agent behavior from one dashboard.</tspan>
+  </text>
+  <g transform="translate(120 520)">
+    <rect width="240" height="120" rx="28" fill="white" fill-opacity="0.84"/>
+    <text x="28" y="42" fill="#0891B2" font-family="SF Pro Text, PingFang SC, Arial, sans-serif" font-size="18" font-weight="700" letter-spacing="3">LOCAL 32K</text>
+    <text x="28" y="86" fill="#020617" font-family="SF Pro Display, PingFang SC, Arial, sans-serif" font-size="42" font-weight="700">426 / 426</text>
+  </g>
+  <g transform="translate(386 520)">
+    <rect width="240" height="120" rx="28" fill="white" fill-opacity="0.84"/>
+    <text x="28" y="42" fill="#D97706" font-family="SF Pro Text, PingFang SC, Arial, sans-serif" font-size="18" font-weight="700" letter-spacing="3">MIXED COMPARE</text>
+    <text x="28" y="86" fill="#020617" font-family="SF Pro Display, PingFang SC, Arial, sans-serif" font-size="42" font-weight="700">0 failed</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="840" y="150" width="620" height="600" rx="34" fill="url(#panel)"/>
+  </g>
+  <g transform="translate(890 210)">
+    <text x="0" y="0" fill="#67E8F9" font-family="SF Pro Text, PingFang SC, Arial, sans-serif" font-size="18" font-weight="700" letter-spacing="3">BENCHMARK OPS</text>
+    <text x="0" y="64" fill="white" font-family="SF Pro Display, PingFang SC, Arial, sans-serif" font-size="48" font-weight="700">Trace, replay, runtime</text>
+    <text x="0" y="110" fill="white" font-family="SF Pro Display, PingFang SC, Arial, sans-serif" font-size="48" font-weight="700">and model comparisons</text>
+  </g>
+  <g transform="translate(890 380)">
+    <rect width="520" height="120" rx="28" fill="white" fill-opacity="0.08" stroke="white" stroke-opacity="0.12"/>
+    <text x="28" y="38" fill="#94A3B8" font-family="SF Pro Text, PingFang SC, Arial, sans-serif" font-size="16" font-weight="700" letter-spacing="3">LOCAL TARGETS</text>
+    <text x="28" y="74" fill="white" font-family="SF Pro Text, PingFang SC, Arial, sans-serif" font-size="28" font-weight="600">Qwen3 0.6B · Qwen3.5 4B · Qwen3 4B</text>
+    <text x="28" y="104" fill="#CBD5E1" font-family="SF Pro Text, PingFang SC, Arial, sans-serif" font-size="20">One workbench for interactive agent runs and benchmark validation</text>
+  </g>
+  <g transform="translate(890 530)">
+    <rect width="250" height="120" rx="28" fill="#22C55E" fill-opacity="0.12" stroke="#22C55E" stroke-opacity="0.35"/>
+    <text x="28" y="38" fill="#BBF7D0" font-family="SF Pro Text, PingFang SC, Arial, sans-serif" font-size="16" font-weight="700" letter-spacing="3">RUNTIME</text>
+    <text x="28" y="82" fill="white" font-family="SF Pro Display, PingFang SC, Arial, sans-serif" font-size="40" font-weight="700">Prewarm aware</text>
+  </g>
+  <g transform="translate(1160 530)">
+    <rect width="250" height="120" rx="28" fill="#A855F7" fill-opacity="0.12" stroke="#A855F7" stroke-opacity="0.35"/>
+    <text x="28" y="38" fill="#E9D5FF" font-family="SF Pro Text, PingFang SC, Arial, sans-serif" font-size="16" font-weight="700" letter-spacing="3">REPLAY</text>
+    <text x="28" y="82" fill="white" font-family="SF Pro Display, PingFang SC, Arial, sans-serif" font-size="40" font-weight="700">Patch review</text>
+  </g>
+</svg>

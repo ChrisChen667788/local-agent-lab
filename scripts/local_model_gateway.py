@@ -143,8 +143,8 @@ PRIVILEGED_COMMAND_PATTERNS = [
     re.compile(r"^(?:pip|pip3)\s+install\b", re.IGNORECASE),
     re.compile(r"^python3?\s+-m\s+pip\s+install\b", re.IGNORECASE),
     re.compile(r"^uv\s+pip\s+install\b", re.IGNORECASE),
-    re.compile(r"\bmv\s+.+\s+/(?!Users/chenhaorui/Documents/New project)", re.IGNORECASE),
-    re.compile(r"\bcp\s+.+\s+/(?!Users/chenhaorui/Documents/New project)", re.IGNORECASE),
+    re.compile(r"\bmv\s+.+\s+/[^\s]+", re.IGNORECASE),
+    re.compile(r"\bcp\s+.+\s+/[^\s]+", re.IGNORECASE),
 ]
 READ_ONLY_COMMAND_PATTERNS = [
     re.compile(r"^pwd$", re.IGNORECASE),

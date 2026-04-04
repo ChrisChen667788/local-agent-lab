@@ -49,7 +49,7 @@ function extractTextContent(content: unknown) {
 
 function buildDocsUrl(targetId: string) {
   if (targetId === "anthropic-claude") {
-    return "https://docs.aipro.love";
+    return "https://docs.anthropic.com";
   }
   return undefined;
 }

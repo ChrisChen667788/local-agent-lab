@@ -80,7 +80,7 @@ export const agentTargets: AgentTarget[] = [
   {
     id: "openai-codex",
     label: "OpenAI Codex",
-    providerLabel: "OpenAI via Aipro",
+    providerLabel: "OpenAI",
     transport: "openai-compatible",
     execution: "remote",
     description:
@@ -103,11 +103,11 @@ export const agentTargets: AgentTarget[] = [
   {
     id: "openai-gpt54",
     label: "OpenAI GPT-5.4",
-    providerLabel: "OpenAI via Aipro",
+    providerLabel: "OpenAI",
     transport: "openai-compatible",
     execution: "remote",
     description:
-      "Remote flagship OpenAI target for strongest general reasoning and agent responses through your current Aipro gateway.",
+      "Remote flagship OpenAI target for strongest general reasoning and agent responses through your configured OpenAI-compatible endpoint.",
     modelEnv: "OPENAI_GPT54_MODEL",
     modelDefault: "gpt-5.4",
     thinkingModelEnv: "OPENAI_GPT54_THINKING_MODEL",
@@ -119,32 +119,32 @@ export const agentTargets: AgentTarget[] = [
     recommendedContext: "Server-side",
     memoryProfile: "Offloaded to API provider.",
     notes: [
-      "Use this when you want the strongest OpenAI general-purpose model currently exposed by your Aipro gateway.",
+      "Use this when you want the strongest OpenAI general-purpose model currently configured for this target.",
       "Model id stays configurable in .env.local so you can move to a newer flagship later."
     ]
   },
   {
     id: "anthropic-claude",
     label: "Claude API",
-    providerLabel: "Aipro Claude via OpenAI-compatible",
+    providerLabel: "Claude-compatible endpoint",
     transport: "openai-compatible",
     execution: "remote",
     description:
-      "Claude target backed by Aipro's OpenAI-compatible endpoint. This path is more reliable for tool calls than Anthropic Messages on Aipro.",
+      "Claude target backed by an OpenAI-compatible endpoint. This path is often easier to keep aligned with the shared tool loop than a separate vendor-specific SDK.",
     modelEnv: "ANTHROPIC_MODEL",
     modelDefault: "claude-opus-4-6",
     thinkingModelEnv: "ANTHROPIC_THINKING_MODEL",
     thinkingModelDefault: "claude-opus-4-6-thinking",
     baseUrlEnv: "ANTHROPIC_BASE_URL",
-    baseUrlDefault: "https://vip.aipro.love/v1",
+    baseUrlDefault: "https://your-compatible-claude-endpoint.example/v1",
     apiKeyEnv: "ANTHROPIC_API_KEY",
     supportsTools: true,
     recommendedContext: "Server-side",
     memoryProfile: "Offloaded to API provider.",
     notes: [
-      "The provided sk-prefixed key works against Aipro's gateway, not Anthropic's official console.",
-      "This target is pinned to the strongest Claude variant currently advertised by your Aipro gateway.",
-      "For Claude on Aipro, OpenAI-compatible chat completions is more reliable than Anthropic Messages when tools are enabled."
+      "Configure this target with your own Claude-compatible endpoint before use.",
+      "This target is pinned to the strongest Claude variant currently configured in your environment.",
+      "For some compatible gateways, OpenAI-style chat completions is more reliable than a separate Messages API when tools are enabled."
     ]
   },
   {

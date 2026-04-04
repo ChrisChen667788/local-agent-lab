@@ -40,8 +40,8 @@ const PRIVILEGED_COMMAND_PATTERNS = [
   /^(?:pip|pip3)\s+install\b/i,
   /^python3?\s+-m\s+pip\s+install\b/i,
   /^uv\s+pip\s+install\b/i,
-  /\bmv\s+.+\s+\/(?!Users\/chenhaorui\/Documents\/New project)/i,
-  /\bcp\s+.+\s+\/(?!Users\/chenhaorui\/Documents\/New project)/i
+  /\bmv\s+.+\s+\/[^\s]+/i,
+  /\bcp\s+.+\s+\/[^\s]+/i
 ];
 const READ_ONLY_COMMAND_PATTERNS = [
   /^pwd$/i,

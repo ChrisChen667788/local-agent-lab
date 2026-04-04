@@ -6,8 +6,26 @@ import { AppNav } from "@/components/layout/AppNav";
 import { LocaleProvider } from "@/components/layout/LocaleProvider";
 
 export const metadata: Metadata = {
-  title: "Local Agent Lab",
-  description: "A local-first coding agent shell with switchable Qwen profiles and pluggable APIs."
+  metadataBase: new URL("https://github.com/ChrisChen667788/local-agent-lab"),
+  title: {
+    default: "Local Agent Lab",
+    template: "%s · Local Agent Lab"
+  },
+  description:
+    "A local-first coding agent workbench for Apple Silicon with local MLX runtimes, remote APIs, benchmark ops, trace review, and replay tooling.",
+  openGraph: {
+    title: "Local Agent Lab",
+    description:
+      "A local-first coding agent workbench for Apple Silicon with local MLX runtimes, remote APIs, benchmark ops, trace review, and replay tooling.",
+    images: ["/oss-cover.svg"]
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Local Agent Lab",
+    description:
+      "A local-first coding agent workbench for Apple Silicon with local MLX runtimes, remote APIs, benchmark ops, trace review, and replay tooling.",
+    images: ["/oss-cover.svg"]
+  }
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

@@ -2237,7 +2237,7 @@ export function AdminDashboard() {
   }
 
   function fillKnowledgeImportWorkspacePath() {
-    const docsPath = knowledgeRecommendedPaths[0] || `${knowledgeWorkspaceRoot || "/Users/chenhaorui/Documents/New project"}/docs`;
+    const docsPath = knowledgeRecommendedPaths[0] || (knowledgeWorkspaceRoot ? `${knowledgeWorkspaceRoot}/docs` : "docs");
     setKnowledgeImportPath(docsPath);
     setKnowledgeImportPreview(null);
     setKnowledgeMessage(
@@ -2250,7 +2250,7 @@ export function AdminDashboard() {
   }
 
   function fillKnowledgeImportWorkspaceRootPath() {
-    const rootPath = knowledgeRecommendedPaths[1] || knowledgeWorkspaceRoot || "/Users/chenhaorui/Documents/New project";
+    const rootPath = knowledgeRecommendedPaths[1] || knowledgeWorkspaceRoot || ".";
     setKnowledgeImportPath(rootPath);
     setKnowledgeImportPreview(null);
     setKnowledgeMessage(
