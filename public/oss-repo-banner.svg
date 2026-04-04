@@ -1,0 +1,26 @@
+<svg width="1600" height="560" viewBox="0 0 1600 560" fill="none" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <linearGradient id="bg" x1="80" y1="60" x2="1520" y2="500" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#F2F7FF"/>
+    <stop offset="0.52" stop-color="#EEF2FF"/>
+    <stop offset="1" stop-color="#FFF3CF"/>
+  </linearGradient>
+  <radialGradient id="orb1" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(250 160) rotate(90) scale(160)">
+    <stop stop-color="#A7D4FF" stop-opacity="0.4"/>
+    <stop offset="1" stop-color="#A7D4FF" stop-opacity="0"/>
+  </radialGradient>
+  <filter id="shadow" x="970" y="98" width="416" height="248" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+    <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#0F172A" flood-opacity="0.16"/>
+  </filter>
+</defs>
+<rect width="1600" height="560" rx="42" fill="url(#bg)"/>
+<circle cx="250" cy="160" r="160" fill="url(#orb1)"/>
+<rect x="110" y="88" width="430" height="52" rx="26" fill="rgba(255,255,255,0.74)"/>
+<text x="144" y="123" fill="#53627B" font-size="20" font-weight="700" letter-spacing="0.13em" font-family="SF Pro Display, Inter, Segoe UI, sans-serif">OPEN SOURCE · AGENT OPS</text>
+<text x="110" y="246" fill="#0F172A" font-size="74" font-weight="720" letter-spacing="-0.05em" font-family="SF Pro Display, Inter, Segoe UI, sans-serif">Local Agent Lab</text>
+<text x="110" y="314" fill="#475970" font-size="28" font-weight="560" letter-spacing="-0.03em" font-family="SF Pro Display, Inter, Segoe UI, sans-serif">MLX local runtimes, replay, trace, and fair 32K compare.</text>
+<g filter="url(#shadow)"><rect x="1010" y="124" width="356" height="196" rx="34" fill="#111A2B"/></g>
+<text x="1050" y="176" fill="#6FE6FF" font-size="20" font-weight="700" letter-spacing="0.13em" font-family="SF Pro Display, Inter, Segoe UI, sans-serif">WHY IT MATTERS</text>
+<text x="1050" y="236" fill="#F8FAFC" font-size="38" font-weight="720" letter-spacing="-0.04em" font-family="SF Pro Display, Inter, Segoe UI, sans-serif">Aligned local and</text>
+<text x="1050" y="280" fill="#F8FAFC" font-size="38" font-weight="720" letter-spacing="-0.04em" font-family="SF Pro Display, Inter, Segoe UI, sans-serif">remote lanes.</text>
+</svg>

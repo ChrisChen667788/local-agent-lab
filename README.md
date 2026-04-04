@@ -7,7 +7,7 @@
 ![Apple Silicon](https://img.shields.io/badge/platform-Apple%20Silicon-0f172a)
 ![MLX](https://img.shields.io/badge/local%20runtime-MLX-06b6d4)
 
-![Local Agent Lab cover](./public/oss-cover.svg)
+![Local Agent Lab hero](./docs/assets/github-hero.svg)
 
 Local Agent Lab is a local-first coding agent workbench for Apple Silicon. It gives us one place to:
 
@@ -175,8 +175,12 @@ We also keep a ready-to-use launch pack in the repo:
 - [docs/open-source-launch-kit.md](./docs/open-source-launch-kit.md)
 - [docs/open-source-growth-copy.md](./docs/open-source-growth-copy.md)
 - [docs/open-source-backlog.md](./docs/open-source-backlog.md)
+- [docs/assets/github-hero.svg](./docs/assets/github-hero.svg)
+- [docs/assets/github-hero.png](./docs/assets/github-hero.png)
 - [public/oss-cover.svg](./public/oss-cover.svg)
 - [public/oss-cover.png](./public/oss-cover.png)
+- [public/oss-repo-banner.svg](./public/oss-repo-banner.svg)
+- [public/oss-repo-banner.png](./public/oss-repo-banner.png)
 - [public/oss-social-square.svg](./public/oss-social-square.svg)
 - [public/oss-social-square.png](./public/oss-social-square.png)
 - [public/oss-feature-strip.svg](./public/oss-feature-strip.svg)

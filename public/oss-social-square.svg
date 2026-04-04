@@ -1,41 +1,35 @@
 <svg width="1200" height="1200" viewBox="0 0 1200 1200" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <linearGradient id="bg" x1="130" y1="80" x2="1080" y2="1120" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#0F172A"/>
-      <stop offset="0.55" stop-color="#1E293B"/>
-      <stop offset="1" stop-color="#0F766E"/>
-    </linearGradient>
-    <linearGradient id="line" x1="128" y1="746" x2="1072" y2="746" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#22D3EE"/>
-      <stop offset="1" stop-color="#A78BFA"/>
-    </linearGradient>
-  </defs>
-  <rect width="1200" height="1200" rx="42" fill="url(#bg)"/>
-  <rect x="128" y="116" width="422" height="52" rx="26" fill="white" fill-opacity="0.1"/>
-  <text x="156" y="149" fill="#A5F3FC" font-family="SF Pro Text, PingFang SC, Arial, sans-serif" font-size="22" font-weight="700" letter-spacing="4">LOCAL-FIRST AGENT OPS</text>
-  <text x="128" y="322" fill="white" font-family="SF Pro Display, PingFang SC, Arial, sans-serif" font-size="88" font-weight="700">Local Agent Lab</text>
-  <text x="128" y="414" fill="#CBD5E1" font-family="SF Pro Text, PingFang SC, Arial, sans-serif" font-size="34" font-weight="500">
-    <tspan x="128" dy="0">MLX local models, remote APIs,</tspan>
-    <tspan x="128" dy="48">benchmark ops, replay, trace review,</tspan>
-    <tspan x="128" dy="48">and runtime diagnostics in one place.</tspan>
-  </text>
-  <rect x="128" y="708" width="944" height="4" rx="2" fill="url(#line)"/>
-  <g transform="translate(128 772)">
-    <rect width="286" height="164" rx="28" fill="white" fill-opacity="0.08" stroke="white" stroke-opacity="0.12"/>
-    <text x="28" y="42" fill="#67E8F9" font-family="SF Pro Text, PingFang SC, Arial, sans-serif" font-size="18" font-weight="700" letter-spacing="3">LOCAL 32K</text>
-    <text x="28" y="96" fill="white" font-family="SF Pro Display, PingFang SC, Arial, sans-serif" font-size="54" font-weight="700">426 / 426</text>
-    <text x="28" y="130" fill="#CBD5E1" font-family="SF Pro Text, PingFang SC, Arial, sans-serif" font-size="20">milestone-full passed</text>
-  </g>
-  <g transform="translate(457 772)">
-    <rect width="286" height="164" rx="28" fill="white" fill-opacity="0.08" stroke="white" stroke-opacity="0.12"/>
-    <text x="28" y="42" fill="#FBBF24" font-family="SF Pro Text, PingFang SC, Arial, sans-serif" font-size="18" font-weight="700" letter-spacing="3">MIXED COMPARE</text>
-    <text x="28" y="96" fill="white" font-family="SF Pro Display, PingFang SC, Arial, sans-serif" font-size="54" font-weight="700">0 failed</text>
-    <text x="28" y="130" fill="#CBD5E1" font-family="SF Pro Text, PingFang SC, Arial, sans-serif" font-size="20">aligned local + remote 32K</text>
-  </g>
-  <g transform="translate(786 772)">
-    <rect width="286" height="164" rx="28" fill="white" fill-opacity="0.08" stroke="white" stroke-opacity="0.12"/>
-    <text x="28" y="42" fill="#C4B5FD" font-family="SF Pro Text, PingFang SC, Arial, sans-serif" font-size="18" font-weight="700" letter-spacing="3">DEFAULT 4B</text>
-    <text x="28" y="96" fill="white" font-family="SF Pro Display, PingFang SC, Arial, sans-serif" font-size="42" font-weight="700">Qwen3.5 4B</text>
-    <text x="28" y="130" fill="#CBD5E1" font-family="SF Pro Text, PingFang SC, Arial, sans-serif" font-size="20">MLX local-first profile</text>
-  </g>
+<defs>
+  <linearGradient id="bg" x1="90" y1="70" x2="1100" y2="1100" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#F2F8FF"/>
+    <stop offset="0.52" stop-color="#EEF2FF"/>
+    <stop offset="1" stop-color="#FFF2CC"/>
+  </linearGradient>
+  <radialGradient id="orb1" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(258 220) rotate(90) scale(190)">
+    <stop stop-color="#A7D4FF" stop-opacity="0.42"/>
+    <stop offset="1" stop-color="#A7D4FF" stop-opacity="0"/>
+  </radialGradient>
+  <linearGradient id="strip" x1="120" y1="1008" x2="560" y2="1008" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#33C7F3"/>
+    <stop offset="1" stop-color="#7877F7"/>
+  </linearGradient>
+  <filter id="shadow" x="500" y="470" width="560" height="390" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+    <feDropShadow dx="0" dy="24" stdDeviation="28" flood-color="#0F172A" flood-opacity="0.18"/>
+  </filter>
+</defs>
+<rect width="1200" height="1200" rx="56" fill="url(#bg)"/>
+<circle cx="258" cy="220" r="190" fill="url(#orb1)"/>
+<rect x="120" y="94" width="438" height="58" rx="29" fill="rgba(255,255,255,0.74)"/>
+<text x="156" y="132" fill="#53627B" font-size="20" font-weight="700" letter-spacing="0.13em" font-family="SF Pro Display, Inter, Segoe UI, sans-serif">OPEN SOURCE · AGENT OPS</text>
+<text x="120" y="292" fill="#0F172A" font-size="70" font-weight="720" letter-spacing="-0.055em" font-family="SF Pro Display, Inter, Segoe UI, sans-serif">Operate models</text>
+<text x="120" y="370" fill="#0F172A" font-size="70" font-weight="720" letter-spacing="-0.055em" font-family="SF Pro Display, Inter, Segoe UI, sans-serif">with clarity.</text>
+<text x="120" y="724" fill="#4A5B74" font-size="28" font-weight="560" letter-spacing="-0.03em" font-family="SF Pro Display, Inter, Segoe UI, sans-serif">MLX runtimes, 32K compare,</text>
+<text x="120" y="764" fill="#4A5B74" font-size="28" font-weight="560" letter-spacing="-0.03em" font-family="SF Pro Display, Inter, Segoe UI, sans-serif">replay, trace, and recovery.</text>
+<rect x="120" y="968" width="438" height="62" rx="31" fill="url(#strip)"/>
+<text x="158" y="1009" fill="#F8FAFC" font-size="26" font-weight="700" font-family="SF Pro Display, Inter, Segoe UI, sans-serif">Replay · Trace · Recovery</text>
+<g filter="url(#shadow)"><rect x="540" y="500" width="480" height="300" rx="38" fill="#111A2B"/></g>
+<text x="590" y="566" fill="#6FE6FF" font-size="22" font-weight="700" letter-spacing="0.13em" font-family="SF Pro Display, Inter, Segoe UI, sans-serif">WHY IT MATTERS</text>
+<text x="590" y="628" fill="#F8FAFC" font-size="42" font-weight="720" letter-spacing="-0.045em" font-family="SF Pro Display, Inter, Segoe UI, sans-serif">Aligned local and</text>
+<text x="590" y="676" fill="#F8FAFC" font-size="42" font-weight="720" letter-spacing="-0.045em" font-family="SF Pro Display, Inter, Segoe UI, sans-serif">remote lanes.</text>
+<text x="590" y="734" fill="#C8D2E3" font-size="22" font-weight="600" letter-spacing="-0.03em" font-family="SF Pro Display, Inter, Segoe UI, sans-serif">Qwen3 · Qwen3.5 · GPT-5.4 · Claude</text>
 </svg>
