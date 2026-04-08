@@ -1049,6 +1049,17 @@ function serializeCompareResultAsMarkdown(params: {
     lines.push("");
   }
 
+  if (exportedResults.length === 1 && baseLane && exportedResults[0] && exportedResults[0].targetId !== baseLane.targetId) {
+    const candidateLane = exportedResults[0];
+    lines.push("## Base Lane Comparison Summary", "");
+    lines.push(`- Base lane: ${baseLane.targetLabel} · ${baseLane.resolvedModel}`);
+    lines.push(`- Candidate lane: ${candidateLane.targetLabel} · ${candidateLane.resolvedModel}`);
+    lines.push(`- Overlap vs base: ${Math.round(computeCompareOverlap(baseLane.content, candidateLane.content) * 100)}%`);
+    lines.push(`- Length delta vs base: ${candidateLane.content.length - baseLane.content.length}`);
+    lines.push(`- Schema vs base: ${deriveCompareSchemaStatus(baseLane.content, candidateLane.content)}`);
+    lines.push("");
+  }
+
   lines.push("## Prompt", "", "```text", prompt, "```", "", "## System Prompt", "", "```text", systemPrompt, "```", "");
 
   for (const lane of exportedResults) {
@@ -1256,6 +1267,7 @@ export function AgentWorkbench() {
   const [compareRecoveryPendingTargetId, setCompareRecoveryPendingTargetId] = useState("");
   const [compareRecoveryConfirmTargetId, setCompareRecoveryConfirmTargetId] = useState("");
   const [compareRecoveryCooldownByTargetId, setCompareRecoveryCooldownByTargetId] = useState<Record<string, number>>({});
+  const [compareRecoveryNotice, setCompareRecoveryNotice] = useState<{ tone: "info" | "success" | "warning"; message: string } | null>(null);
   const [benchmarkPending, setBenchmarkPending] = useState(false);
   const [benchmarkError, setBenchmarkError] = useState("");
   const [benchmarkResult, setBenchmarkResult] = useState<AgentBenchmarkResponse | null>(null);
@@ -1302,6 +1314,7 @@ export function AgentWorkbench() {
   const runtimeRequestInFlightRef = useRef(false);
   const sessionSyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const compareRecoveryConfirmTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const compareRecoveryNoticeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const selectedTarget = useMemo(
     () => agentTargets.find((target) => target.id === selectedTargetId) || agentTargets[0],
@@ -3388,9 +3401,32 @@ export function AgentWorkbench() {
     setCompareRecoveryConfirmTargetId("");
   }
 
+  function showCompareRecoveryNotice(
+    tone: "info" | "success" | "warning",
+    message: string,
+    durationMs = 5000
+  ) {
+    if (compareRecoveryNoticeTimeoutRef.current) {
+      clearTimeout(compareRecoveryNoticeTimeoutRef.current);
+      compareRecoveryNoticeTimeoutRef.current = null;
+    }
+    setCompareRecoveryNotice({ tone, message });
+    compareRecoveryNoticeTimeoutRef.current = setTimeout(() => {
+      setCompareRecoveryNotice((current) => (current?.message === message ? null : current));
+      compareRecoveryNoticeTimeoutRef.current = null;
+    }, durationMs);
+  }
+
   function armCompareRecoveryConfirm(targetId: string) {
     clearCompareRecoveryConfirm();
     setCompareRecoveryConfirmTargetId(targetId);
+    const target = agentTargets.find((entry) => entry.id === targetId);
+    showCompareRecoveryNotice(
+      "info",
+      locale.startsWith("en")
+        ? `Click again within 5 seconds to restart ${target?.label || targetId} from Compare.`
+        : `请在 5 秒内再次点击，Compare 才会重启 ${target?.label || targetId}。`
+    );
     compareRecoveryConfirmTimeoutRef.current = setTimeout(() => {
       setCompareRecoveryConfirmTargetId((current) => (current === targetId ? "" : current));
       compareRecoveryConfirmTimeoutRef.current = null;
@@ -3403,6 +3439,14 @@ export function AgentWorkbench() {
       ...current,
       [targetId]: expiresAt
     }));
+    const target = agentTargets.find((entry) => entry.id === targetId);
+    showCompareRecoveryNotice(
+      "warning",
+      locale.startsWith("en")
+        ? `${target?.label || targetId} is in a short recovery cooldown so Compare does not spam restarts.`
+        : `${target?.label || targetId} 已进入短暂恢复冷却，避免 Compare 连续重启。`,
+      durationMs
+    );
     setTimeout(() => {
       setCompareRecoveryCooldownByTargetId((current) => {
         if ((current[targetId] || 0) !== expiresAt) return current;
@@ -3479,6 +3523,12 @@ export function AgentWorkbench() {
         : locale.startsWith("en")
           ? `Local gateway restarted for ${target.label}. Compare will keep polling this lane.`
           : `${target.label} 的本地网关已重启，Compare 会继续轮询这条 lane。`;
+      showCompareRecoveryNotice(
+        "success",
+        locale.startsWith("en")
+          ? `${target.label} restarted from Compare. The lane will keep polling until it is ready.`
+          : `${target.label} 已在 Compare 中重启，系统会继续轮询直到这条 lane 就绪。`
+      );
       await syncCompareProgressPatch({
         requestId: compareRequestId,
         targetId,
@@ -3490,6 +3540,7 @@ export function AgentWorkbench() {
     } catch (recoveryError) {
       const message = recoveryError instanceof Error ? recoveryError.message : "Manual local recovery failed.";
       setCompareError(message);
+      showCompareRecoveryNotice("warning", message, 7000);
       try {
         await syncCompareProgressPatch({
           requestId: compareRequestId,
@@ -3529,20 +3580,13 @@ export function AgentWorkbench() {
     [compareBenchmarkUseOutputContract, compareOutputShape, input, systemPrompt]
   );
 
-  useEffect(() => {
-    return () => {
-      if (compareRecoveryConfirmTimeoutRef.current) {
-        clearTimeout(compareRecoveryConfirmTimeoutRef.current);
-      }
-    };
-  }, []);
-
-  function handleExportCompareMarkdown() {
-    if (!compareResult) return;
-    const content = serializeCompareResultAsMarkdown({
+  function buildCompareMarkdownContent(laneTargetIds?: string[]) {
+    if (!compareResult) return "";
+    return serializeCompareResultAsMarkdown({
       compareResult,
       compareProgressByTargetId,
       compareBaseTargetId,
+      laneTargetIds,
       prompt: input,
       systemPrompt,
       contextWindow,
@@ -3551,6 +3595,22 @@ export function AgentWorkbench() {
       enableTools,
       enableRetrieval
     });
+  }
+
+  useEffect(() => {
+    return () => {
+      if (compareRecoveryConfirmTimeoutRef.current) {
+        clearTimeout(compareRecoveryConfirmTimeoutRef.current);
+      }
+      if (compareRecoveryNoticeTimeoutRef.current) {
+        clearTimeout(compareRecoveryNoticeTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  function handleExportCompareMarkdown() {
+    if (!compareResult) return;
+    const content = buildCompareMarkdownContent();
 
     const blob = new Blob([content], {
       type: "text/markdown;charset=utf-8"
@@ -3567,20 +3627,7 @@ export function AgentWorkbench() {
     if (!compareResult) return;
     const lane = compareResult.results.find((entry) => entry.targetId === targetId);
     if (!lane) return;
-
-    const content = serializeCompareResultAsMarkdown({
-      compareResult,
-      compareProgressByTargetId,
-      compareBaseTargetId,
-      laneTargetIds: [targetId],
-      prompt: input,
-      systemPrompt,
-      contextWindow,
-      providerProfile,
-      thinkingMode,
-      enableTools,
-      enableRetrieval
-    });
+    const content = buildCompareMarkdownContent([targetId]);
 
     const blob = new Blob([content], {
       type: "text/markdown;charset=utf-8"
@@ -3591,6 +3638,16 @@ export function AgentWorkbench() {
     anchor.download = `compare-${compareResult.runId}-${targetId}.md`;
     anchor.click();
     URL.revokeObjectURL(url);
+  }
+
+  async function handleCopyCompareMarkdown() {
+    if (!compareResult) return;
+    await handleCopy(buildCompareMarkdownContent(), "compare:markdown");
+  }
+
+  async function handleCopyCompareLaneMarkdown(targetId: string) {
+    if (!compareResult) return;
+    await handleCopy(buildCompareMarkdownContent([targetId]), `compare:lane-markdown:${targetId}`);
   }
 
   function handleStepWorkspaceFileAnchor(direction: -1 | 1) {
@@ -5975,6 +6032,7 @@ export function AgentWorkbench() {
                   compareRecoveryPendingTargetId={compareRecoveryPendingTargetId}
                   compareRecoveryConfirmTargetId={compareRecoveryConfirmTargetId}
                   compareRecoveryCooldownByTargetId={compareRecoveryCooldownByTargetId}
+                  compareRecoveryNotice={compareRecoveryNotice}
                   benchmarkPending={benchmarkPending}
                   benchmarkError={benchmarkError}
                   benchmarkResult={benchmarkResult}
@@ -6000,6 +6058,8 @@ export function AgentWorkbench() {
                   onCompareBenchmarkPreviewDiffOnlyChange={setCompareBenchmarkPreviewDiffOnly}
                   onRetryLocalRecovery={requestRetryCompareLaneRecovery}
                   onExportLaneMarkdown={handleExportCompareLaneMarkdown}
+                  onCopyMarkdown={handleCopyCompareMarkdown}
+                  onCopyLaneMarkdown={handleCopyCompareLaneMarkdown}
                   onCopy={handleCopy}
                   copyState={copyState}
                 />

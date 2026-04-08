@@ -42,6 +42,7 @@ type AgentCompareLabProps = {
   compareRecoveryPendingTargetId: string;
   compareRecoveryConfirmTargetId: string;
   compareRecoveryCooldownByTargetId: Record<string, number>;
+  compareRecoveryNotice: { tone: "info" | "success" | "warning"; message: string } | null;
   benchmarkPending: boolean;
   benchmarkError: string;
   benchmarkResult: AgentBenchmarkResponse | null;
@@ -67,6 +68,8 @@ type AgentCompareLabProps = {
   onCompareBenchmarkPreviewDiffOnlyChange: (value: boolean) => void;
   onRetryLocalRecovery: (targetId: string) => void;
   onExportLaneMarkdown: (targetId: string) => void;
+  onCopyMarkdown: () => void;
+  onCopyLaneMarkdown: (targetId: string) => void;
   onCopy: (text: string, key: string) => void;
   copyState: string;
 };
@@ -237,6 +240,7 @@ export function AgentCompareLab({
   compareRecoveryPendingTargetId,
   compareRecoveryConfirmTargetId,
   compareRecoveryCooldownByTargetId,
+  compareRecoveryNotice,
   benchmarkPending,
   benchmarkError,
   benchmarkResult,
@@ -262,6 +266,8 @@ export function AgentCompareLab({
   onCompareBenchmarkPreviewDiffOnlyChange,
   onRetryLocalRecovery,
   onExportLaneMarkdown,
+  onCopyMarkdown,
+  onCopyLaneMarkdown,
   onCopy,
   copyState
 }: AgentCompareLabProps) {
@@ -301,6 +307,7 @@ export function AgentCompareLab({
         benchmarkSuccess: "Benchmark handoff ready",
         benchmarkOpen: "Open /admin and track this run",
         exportMarkdown: "Export markdown",
+        copyMarkdown: "Copy markdown",
         rerunLane: "Rerun lane",
         setBaseLane: "Set as base",
         baseLaneTag: "Base lane",
@@ -347,7 +354,8 @@ export function AgentCompareLab({
         compareManualRecoveryConfirmHint: "Click once more within 5 seconds to restart the local gateway from Compare.",
         compareManualRecoveryCooldown: "Recovery cooldown",
         compareManualRecoveryCooldownHint: "A short cooldown is active so we do not spam local restarts.",
-        exportLane: "Export lane"
+        exportLane: "Export lane",
+        copyLaneMarkdown: "Copy markdown"
       }
     : {
         title: "Compare Lab",
@@ -383,6 +391,7 @@ export function AgentCompareLab({
         benchmarkSuccess: "benchmark 已接收",
         benchmarkOpen: "去 /admin 跟踪这轮运行",
         exportMarkdown: "导出 Markdown",
+        copyMarkdown: "复制 Markdown",
         rerunLane: "重跑此 lane",
         setBaseLane: "设为基准",
         baseLaneTag: "基准 lane",
@@ -429,7 +438,8 @@ export function AgentCompareLab({
         compareManualRecoveryConfirmHint: "请在 5 秒内再次点击，Compare 才会真正重启本地网关。",
         compareManualRecoveryCooldown: "恢复冷却中",
         compareManualRecoveryCooldownHint: "为了避免连续误触，本地恢复会有一个很短的冷却时间。",
-        exportLane: "导出此 lane"
+        exportLane: "导出此 lane",
+        copyLaneMarkdown: "复制 Markdown"
       };
 
   const compareTargets = useMemo(
@@ -504,6 +514,19 @@ export function AgentCompareLab({
               <p className="mt-2 text-sm font-medium text-white">{fairnessFingerprint}</p>
             </div>
           </div>
+          {compareRecoveryNotice ? (
+            <div
+              className={`mt-4 rounded-2xl border px-4 py-3 text-sm leading-6 ${
+                compareRecoveryNotice.tone === "success"
+                  ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
+                  : compareRecoveryNotice.tone === "warning"
+                    ? "border-amber-300/20 bg-amber-300/10 text-amber-100"
+                    : "border-cyan-400/20 bg-cyan-400/10 text-cyan-100"
+              }`}
+            >
+              {compareRecoveryNotice.message}
+            </div>
+          ) : null}
         </section>
 
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1.18fr)_minmax(300px,0.82fr)]">
@@ -950,15 +973,26 @@ export function AgentCompareLab({
                     className="mt-3 w-full resize-none rounded-2xl border border-white/10 bg-slate-950/90 px-4 py-3 font-mono text-xs leading-6 text-slate-200 outline-none"
                   />
                 </div>
-                <button
-                  type="button"
-                  disabled={!compareResult}
-                  onClick={onExportMarkdown}
-                  className="w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-left text-sm text-slate-200 transition hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  <span className="block font-medium">{copy.exportMarkdown}</span>
-                  <span className="mt-1 block text-xs leading-6 text-slate-400">{compareResult ? copy.resultReviewHint : copy.noResults}</span>
-                </button>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <button
+                    type="button"
+                    disabled={!compareResult}
+                    onClick={onExportMarkdown}
+                    className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-left text-sm text-slate-200 transition hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <span className="block font-medium">{copy.exportMarkdown}</span>
+                    <span className="mt-1 block text-xs leading-6 text-slate-400">{compareResult ? copy.resultReviewHint : copy.noResults}</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!compareResult}
+                    onClick={onCopyMarkdown}
+                    className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-left text-sm text-slate-200 transition hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <span className="block font-medium">{copyState === "compare:markdown" ? copy.copied : copy.copyMarkdown}</span>
+                    <span className="mt-1 block text-xs leading-6 text-slate-400">{compareResult ? copy.resultReviewHint : copy.noResults}</span>
+                  </button>
+                </div>
                 {pending ? (
                   <p className="text-xs leading-6 text-cyan-200">
                     {locale.startsWith("en")
@@ -1080,6 +1114,13 @@ export function AgentCompareLab({
                             className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:bg-white/10"
                           >
                             {copy.exportLane}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onCopyLaneMarkdown(lane.targetId)}
+                            className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:bg-white/10"
+                          >
+                            {copyState === `compare:lane-markdown:${lane.targetId}` ? copy.copied : copy.copyLaneMarkdown}
                           </button>
                         </div>
                       </div>
