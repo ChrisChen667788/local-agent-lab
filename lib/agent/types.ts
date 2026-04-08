@@ -233,6 +233,7 @@ export type AgentChatRequest = {
   thinkingMode?: AgentThinkingMode;
   plannerEnabled?: boolean;
   memorySummary?: string;
+  disableLocalFallback?: boolean;
 };
 
 export type AgentUsage = {

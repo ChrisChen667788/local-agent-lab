@@ -1126,6 +1126,8 @@ export function AgentWorkbench() {
   const [compareError, setCompareError] = useState("");
   const [compareResult, setCompareResult] = useState<AgentCompareResponse | null>(null);
   const [compareBaseTargetId, setCompareBaseTargetId] = useState("");
+  const [compareRuntimeByTargetId, setCompareRuntimeByTargetId] = useState<Record<string, AgentRuntimeStatus>>({});
+  const [compareBenchmarkUseOutputContract, setCompareBenchmarkUseOutputContract] = useState(true);
   const [benchmarkPending, setBenchmarkPending] = useState(false);
   const [benchmarkError, setBenchmarkError] = useState("");
   const [benchmarkResult, setBenchmarkResult] = useState<AgentBenchmarkResponse | null>(null);
@@ -2198,6 +2200,58 @@ export function AgentWorkbench() {
   }, [compareResult]);
 
   useEffect(() => {
+    setCompareRuntimeByTargetId((current) => {
+      const nextEntries = Object.entries(current).filter(([targetId]) => compareTargetIds.includes(targetId));
+      return nextEntries.length === Object.keys(current).length ? current : Object.fromEntries(nextEntries);
+    });
+  }, [compareTargetIds]);
+
+  useEffect(() => {
+    if (!comparePending) return;
+    const localCompareTargetIds = compareTargetIds.filter(
+      (targetId) => agentTargets.find((target) => target.id === targetId)?.execution === "local"
+    );
+    if (!localCompareTargetIds.length) return;
+
+    let cancelled = false;
+
+    async function loadCompareRuntimeStatuses() {
+      try {
+        const responses = await Promise.all(
+          localCompareTargetIds.map(async (targetId) => {
+            const query = new URLSearchParams({
+              targetId,
+              thinkingMode
+            });
+            const response = await fetch(`/api/agent/runtime?${query.toString()}`, {
+              cache: "no-store"
+            });
+            const payload = (await response.json()) as AgentRuntimeStatus & { error?: string };
+            if (!response.ok) {
+              throw new Error(payload.error || `Failed to load runtime for ${targetId}.`);
+            }
+            return [targetId, payload] as const;
+          })
+        );
+        if (!cancelled) {
+          setCompareRuntimeByTargetId(Object.fromEntries(responses));
+        }
+      } catch {
+        // Keep the latest known runtime snapshot if a polling round fails.
+      }
+    }
+
+    void loadCompareRuntimeStatuses();
+    const timer = window.setInterval(() => {
+      void loadCompareRuntimeStatuses();
+    }, 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [comparePending, compareTargetIds, thinkingMode]);
+
+  useEffect(() => {
     setCompareTargetIds((current) => {
       const validTargetIds = current.filter((targetId) => agentTargets.some((target) => target.id === targetId));
       const deduped = Array.from(new Set(validTargetIds));
@@ -2264,6 +2318,7 @@ export function AgentWorkbench() {
             workbenchMode?: AgentWorkbenchMode;
             compareTargetIds?: string[];
             compareBaseTargetId?: string;
+            compareBenchmarkUseOutputContract?: boolean;
             compareIntent?: AgentCompareIntent;
             compareOutputShape?: AgentCompareOutputShape;
             enableTools?: boolean;
@@ -2294,6 +2349,9 @@ export function AgentWorkbench() {
             && agentTargets.some((target) => target.id === parsed.compareBaseTargetId)
           ) {
             setCompareBaseTargetId(parsed.compareBaseTargetId);
+          }
+          if (typeof parsed.compareBenchmarkUseOutputContract === "boolean") {
+            setCompareBenchmarkUseOutputContract(parsed.compareBenchmarkUseOutputContract);
           }
           if (
             parsed.compareIntent === "model-vs-model"
@@ -2386,6 +2444,7 @@ export function AgentWorkbench() {
         workbenchMode,
         compareTargetIds,
         compareBaseTargetId,
+        compareBenchmarkUseOutputContract,
         compareIntent,
         compareOutputShape,
         enableTools,
@@ -2399,6 +2458,7 @@ export function AgentWorkbench() {
     compareIntent,
     compareOutputShape,
     compareBaseTargetId,
+    compareBenchmarkUseOutputContract,
     compareTargetIds,
     contextWindow,
     enableRetrieval,
@@ -3071,11 +3131,13 @@ export function AgentWorkbench() {
     const comparePrompt = [
       systemPrompt.trim() ? `System frame:\n${systemPrompt.trim()}` : "",
       `Task:\n${input.trim()}`,
-      compareOutputShape === "bullet-list"
-        ? "Output contract:\n- Return 4 to 6 concise bullet points.\n- Keep the answer grounded in the task."
-        : compareOutputShape === "strict-json"
-          ? 'Output contract:\nReturn valid JSON only using {"answer": string, "key_points": string[], "warnings": string[]}.'
-          : ""
+      compareBenchmarkUseOutputContract
+        ? compareOutputShape === "bullet-list"
+          ? "Output contract:\n- Return 4 to 6 concise bullet points.\n- Keep the answer grounded in the task."
+          : compareOutputShape === "strict-json"
+            ? 'Output contract:\nReturn valid JSON only using {"answer": string, "key_points": string[], "warnings": string[]}.'
+            : ""
+        : ""
     ]
       .filter(Boolean)
       .join("\n\n");
@@ -5507,6 +5569,8 @@ export function AgentWorkbench() {
                   compareError={compareError}
                   compareResult={compareResult}
                   compareBaseTargetId={compareBaseTargetId}
+                  compareRuntimeByTargetId={compareRuntimeByTargetId}
+                  compareBenchmarkUseOutputContract={compareBenchmarkUseOutputContract}
                   benchmarkPending={benchmarkPending}
                   benchmarkError={benchmarkError}
                   benchmarkResult={benchmarkResult}
@@ -5528,6 +5592,7 @@ export function AgentWorkbench() {
                   onSetBaseLane={setCompareBaseTargetId}
                   onSendToBenchmark={handleSendCompareToBenchmark}
                   onExportMarkdown={handleExportCompareMarkdown}
+                  onCompareBenchmarkUseOutputContractChange={setCompareBenchmarkUseOutputContract}
                   onCopy={handleCopy}
                   copyState={copyState}
                 />

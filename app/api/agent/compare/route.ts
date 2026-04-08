@@ -9,15 +9,18 @@ import {
   normalizeProviderProfile,
   normalizeThinkingMode,
   resolveEffectiveProviderProfile,
+  resolveTargetWithMode,
   runAgentRequest
 } from "@/lib/agent/providers";
 import { getAgentTarget } from "@/lib/agent/catalog";
+import { restartLocalGateway } from "@/lib/agent/local-gateway";
 import {
   applyGroundedResponsePolicy,
   applyRetrievalBypassStrategy,
   buildGroundedSystemPrompt,
   searchKnowledgeBase
 } from "@/lib/agent/retrieval-store";
+import { prewarmLocalTargetWithRecovery } from "../runtime/prewarm-utils";
 import { buildSessionMemory, buildTaskPlan, composeOperationalSystemPrompt } from "@/lib/agent/session-intelligence";
 import { buildWorkspaceScoutEvidence } from "@/lib/agent/workspace-scout";
 import { beginTrackedRequest, finishTrackedRequest } from "@/lib/agent/runtime-state";
@@ -32,6 +35,120 @@ import type {
 } from "@/lib/agent/types";
 
 export const runtime = "nodejs";
+const COMPARE_LOCAL_PREWARM_WAIT_MS = 120000;
+const COMPARE_LOCAL_PREWARM_POLL_MS = 1500;
+const COMPARE_LOCAL_LOADING_STALL_MS = 90000;
+
+type LocalGatewayHealthPayload = {
+  loaded_alias?: string | null;
+  loading_alias?: string | null;
+  loading_elapsed_ms?: number | null;
+  loading_error?: string | null;
+  busy?: boolean;
+};
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function healthUrl(baseUrl: string) {
+  return `${baseUrl.replace(/\/v1$/, "")}/health`;
+}
+
+async function fetchLocalGatewayHealth(baseUrl: string, timeoutMs = 2000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(healthUrl(baseUrl), {
+      cache: "no-store",
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      return null;
+    }
+    return (await response.json()) as LocalGatewayHealthPayload;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function ensureCompareLocalLaneReady(params: {
+  baseUrl: string;
+  model: string;
+  targetId: string;
+  targetLabel: string;
+}) {
+  const { baseUrl, model, targetId, targetLabel } = params;
+  let recoveryNote = "";
+  let restarted = false;
+
+  const runPrewarm = async (allowRetry = true) =>
+    prewarmLocalTargetWithRecovery({
+      baseUrl,
+      model,
+      targetId,
+      targetLabel,
+      allowRetry
+    });
+
+  let prewarm = await runPrewarm(true);
+  if (!prewarm.ok) {
+    return { ok: false as const, message: prewarm.message };
+  }
+  if (prewarm.status === "ready") {
+    return { ok: true as const, warning: undefined };
+  }
+
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < COMPARE_LOCAL_PREWARM_WAIT_MS) {
+    const health = await fetchLocalGatewayHealth(baseUrl);
+    if (health?.loaded_alias === model && !health.loading_alias) {
+      return {
+        ok: true as const,
+        warning: recoveryNote || (prewarm.status !== "ready" ? prewarm.message : undefined)
+      };
+    }
+
+    const loadingCurrentTarget = health?.loading_alias === model;
+    const loadingStalled =
+      loadingCurrentTarget &&
+      typeof health?.loading_elapsed_ms === "number" &&
+      health.loading_elapsed_ms >= COMPARE_LOCAL_LOADING_STALL_MS;
+
+    if ((health?.loading_error || loadingStalled) && !restarted) {
+      const restartedOk = await restartLocalGateway(baseUrl, { waitMs: 180000, autoPrewarmModel: "false" });
+      if (!restartedOk) {
+        return {
+          ok: false as const,
+          message: health?.loading_error || `${targetLabel} load recovery timed out after restart.`
+        };
+      }
+      restarted = true;
+      recoveryNote = health?.loading_error
+        ? `Recovered after restarting the local gateway because ${targetLabel} reported a loading error.`
+        : `Recovered after restarting the local gateway because ${targetLabel} exceeded the compare loading budget.`;
+      const retryPrewarm = await runPrewarm(false);
+      if (!retryPrewarm.ok) {
+        return { ok: false as const, message: retryPrewarm.message };
+      }
+      prewarm = retryPrewarm;
+      if (retryPrewarm.status === "ready") {
+        return { ok: true as const, warning: recoveryNote };
+      }
+    }
+
+    await sleep(COMPARE_LOCAL_PREWARM_POLL_MS);
+  }
+
+  return {
+    ok: false as const,
+    message: `${targetLabel} did not finish loading within the compare window (${Math.round(
+      COMPARE_LOCAL_PREWARM_WAIT_MS / 1000
+    )}s).`
+  };
+}
 
 function isValidMessageArray(value: unknown): value is AgentMessage[] {
   return (
@@ -198,6 +315,7 @@ export async function POST(request: Request) {
     const results: AgentCompareLaneResult[] = [];
     for (const targetId of targetIds) {
       const target = getAgentTarget(targetId)!;
+      const resolvedTarget = resolveTargetWithMode(targetId, thinkingMode);
       const laneContextWindow = clampContextWindowForTarget(
         targetId,
         target.execution === "remote" ? alignedRemoteContextWindow : requestedContextWindow,
@@ -208,6 +326,35 @@ export async function POST(request: Request) {
       );
 
       const laneStartedAt = Date.now();
+      let laneWarning: string | undefined;
+      if (target.execution === "local") {
+        const localReady = await ensureCompareLocalLaneReady({
+          baseUrl: resolvedTarget.resolvedBaseUrl,
+          model: resolvedTarget.resolvedModel,
+          targetId,
+          targetLabel: target.label
+        });
+        if (!localReady.ok) {
+          results.push({
+            targetId,
+            targetLabel: target.label,
+            providerLabel: target.providerLabel,
+            execution: target.execution,
+            resolvedModel: resolvedTarget.resolvedModel,
+            resolvedBaseUrl: resolvedTarget.resolvedBaseUrl,
+            providerProfile,
+            thinkingMode,
+            contextWindow: laneContextWindow,
+            content: "",
+            warning: localReady.message,
+            toolRuns: [],
+            latencyMs: Date.now() - laneStartedAt,
+            ok: false
+          });
+          continue;
+        }
+        laneWarning = localReady.warning;
+      }
       beginTrackedRequest(targetId);
       try {
         const response = await runAgentRequest(
@@ -222,7 +369,8 @@ export async function POST(request: Request) {
             providerProfile,
             thinkingMode,
             plannerEnabled: body.plannerEnabled,
-            memorySummary
+            memorySummary,
+            disableLocalFallback: true
           },
           systemPrompt
         );
@@ -240,7 +388,7 @@ export async function POST(request: Request) {
           thinkingMode: response.thinkingMode || thinkingMode,
           contextWindow: laneContextWindow,
           content: grounded?.content || response.content,
-          warning: response.warning,
+          warning: [laneWarning, response.warning].filter(Boolean).join(" ").trim() || undefined,
           retrieval: retrieval || undefined,
           verification: grounded?.verification,
           toolRuns: response.toolRuns,

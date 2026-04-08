@@ -909,6 +909,7 @@ export async function runAgentRequest(request: AgentChatRequest, systemPrompt: s
       : undefined;
 
   const localFallbackTarget =
+    !request.disableLocalFallback &&
     target.execution === "local" && LOCAL_COMPARISON_4B_TARGET_IDS.has(target.id)
       ? resolveTargetWithMode("local-qwen3-0.6b", "standard")
       : null;

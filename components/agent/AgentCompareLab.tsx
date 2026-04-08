@@ -7,6 +7,7 @@ import type {
   AgentCompareOutputShape,
   AgentCompareResponse,
   AgentProviderProfile,
+  AgentRuntimeStatus,
   AgentTarget,
   AgentThinkingMode
 } from "@/lib/agent/types";
@@ -30,6 +31,8 @@ type AgentCompareLabProps = {
   compareError: string;
   compareResult: AgentCompareResponse | null;
   compareBaseTargetId: string;
+  compareRuntimeByTargetId: Record<string, AgentRuntimeStatus>;
+  compareBenchmarkUseOutputContract: boolean;
   benchmarkPending: boolean;
   benchmarkError: string;
   benchmarkResult: AgentBenchmarkResponse | null;
@@ -51,6 +54,7 @@ type AgentCompareLabProps = {
   onSetBaseLane: (targetId: string) => void;
   onSendToBenchmark: () => void;
   onExportMarkdown: () => void;
+  onCompareBenchmarkUseOutputContractChange: (value: boolean) => void;
   onCopy: (text: string, key: string) => void;
   copyState: string;
 };
@@ -200,6 +204,8 @@ export function AgentCompareLab({
   compareError,
   compareResult,
   compareBaseTargetId,
+  compareRuntimeByTargetId,
+  compareBenchmarkUseOutputContract,
   benchmarkPending,
   benchmarkError,
   benchmarkResult,
@@ -221,6 +227,7 @@ export function AgentCompareLab({
   onSetBaseLane,
   onSendToBenchmark,
   onExportMarkdown,
+  onCompareBenchmarkUseOutputContractChange,
   onCopy,
   copyState
 }: AgentCompareLabProps) {
@@ -251,6 +258,8 @@ export function AgentCompareLab({
         benchmarkAction: "Send to benchmark",
         benchmarkPending: "Sending to benchmark...",
         benchmarkHint: "Reuse the current compare setup as a prompt benchmark run in /admin.",
+        benchmarkContractToggle: "Preserve compare output contract in handoff",
+        benchmarkContractHint: "Carry over bullet-list or strict JSON instructions when you convert this compare run into a prompt benchmark.",
         benchmarkSuccess: "Benchmark handoff ready",
         benchmarkOpen: "Open /admin and track this run",
         exportMarkdown: "Export markdown",
@@ -313,6 +322,8 @@ export function AgentCompareLab({
         benchmarkAction: "送入 benchmark",
         benchmarkPending: "正在送入 benchmark...",
         benchmarkHint: "沿用当前 compare 配置，直接转成 /admin 里的 prompt benchmark。",
+        benchmarkContractToggle: "handoff 时沿用 compare 输出契约",
+        benchmarkContractHint: "把 bullet-list 或 strict JSON 的输出约束一并带到 prompt benchmark 里。",
         benchmarkSuccess: "benchmark 已接收",
         benchmarkOpen: "去 /admin 跟踪这轮运行",
         exportMarkdown: "导出 Markdown",
@@ -648,39 +659,58 @@ export function AgentCompareLab({
                 </div>
               ) : null}
               <div className="mt-4 space-y-3">
-                {compareTargets.map((target) => (
-                  <div key={target.id} className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <p className="text-sm font-medium text-white">{target.label}</p>
-                          <span
-                            className={`rounded-full px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] ${
-                              target.execution === "local"
-                                ? "bg-emerald-400/10 text-emerald-200"
-                                : "bg-violet-400/10 text-violet-200"
-                            }`}
-                          >
-                            {target.execution === "local" ? copy.local : copy.remote}
-                          </span>
-                          {target.id === selectedTargetId ? (
-                            <span className="rounded-full bg-cyan-400/10 px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] text-cyan-100">
-                              {copy.currentTarget}
+                {compareTargets.map((target) => {
+                  const runtime = compareRuntimeByTargetId[target.id];
+                  const loadingSeconds =
+                    typeof runtime?.loadingElapsedMs === "number"
+                      ? Math.round(runtime.loadingElapsedMs / 1000)
+                      : null;
+                  return (
+                    <div key={target.id} className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="text-sm font-medium text-white">{target.label}</p>
+                            <span
+                              className={`rounded-full px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] ${
+                                target.execution === "local"
+                                  ? "bg-emerald-400/10 text-emerald-200"
+                                  : "bg-violet-400/10 text-violet-200"
+                              }`}
+                            >
+                              {target.execution === "local" ? copy.local : copy.remote}
                             </span>
+                            {target.id === selectedTargetId ? (
+                              <span className="rounded-full bg-cyan-400/10 px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] text-cyan-100">
+                                {copy.currentTarget}
+                              </span>
+                            ) : null}
+                          </div>
+                          <p className="mt-2 text-xs leading-6 text-slate-400">{target.providerLabel}</p>
+                        </div>
+                        <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">
+                          {hasEnoughTargets ? copy.laneReady : copy.lanePending}
+                        </span>
+                      </div>
+                      {runtime ? (
+                        <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-xs leading-6 text-slate-300">
+                          <p className="font-medium text-slate-100">
+                            {runtime.phaseDetail || runtime.phase || "runtime"}
+                          </p>
+                          {loadingSeconds !== null ? (
+                            <p className="text-slate-400">
+                              {locale.startsWith("en") ? "Loading for" : "加载中"} {loadingSeconds}s
+                            </p>
                           ) : null}
                         </div>
-                        <p className="mt-2 text-xs leading-6 text-slate-400">{target.providerLabel}</p>
+                      ) : null}
+                      <div className="mt-3 grid gap-2 text-xs leading-6 text-slate-300">
+                        <p>{copy.recommendedContext}: {target.recommendedContext}</p>
+                        <p>{target.notes[0] || target.description}</p>
                       </div>
-                      <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">
-                        {hasEnoughTargets ? copy.laneReady : copy.lanePending}
-                      </span>
                     </div>
-                    <div className="mt-3 grid gap-2 text-xs leading-6 text-slate-300">
-                      <p>{copy.recommendedContext}: {target.recommendedContext}</p>
-                      <p>{target.notes[0] || target.description}</p>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </section>
 
@@ -709,6 +739,18 @@ export function AgentCompareLab({
                   <span className="block font-medium">{benchmarkPending ? copy.benchmarkPending : copy.benchmarkAction}</span>
                   <span className="mt-1 block text-xs leading-6 text-violet-100/80">{copy.benchmarkHint}</span>
                 </button>
+                <label className="flex items-start gap-3 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-slate-200">
+                  <input
+                    type="checkbox"
+                    checked={compareBenchmarkUseOutputContract}
+                    onChange={(event) => onCompareBenchmarkUseOutputContractChange(event.target.checked)}
+                    className="mt-1 rounded border-white/20 bg-slate-950"
+                  />
+                  <span>
+                    <span className="block font-medium">{copy.benchmarkContractToggle}</span>
+                    <span className="mt-1 block text-xs leading-6 text-slate-400">{copy.benchmarkContractHint}</span>
+                  </span>
+                </label>
                 <button
                   type="button"
                   disabled={!compareResult}
