@@ -39,6 +39,7 @@ type AgentCompareLabProps = {
   compareBenchmarkPromptPreview: string;
   compareBenchmarkPromptDiffPreview: string;
   compareBenchmarkPreviewDiffOnly: boolean;
+  compareRecoveryPendingTargetId: string;
   benchmarkPending: boolean;
   benchmarkError: string;
   benchmarkResult: AgentBenchmarkResponse | null;
@@ -62,6 +63,7 @@ type AgentCompareLabProps = {
   onExportMarkdown: () => void;
   onCompareBenchmarkUseOutputContractChange: (value: boolean) => void;
   onCompareBenchmarkPreviewDiffOnlyChange: (value: boolean) => void;
+  onRetryLocalRecovery: (targetId: string) => void;
   onCopy: (text: string, key: string) => void;
   copyState: string;
 };
@@ -229,6 +231,7 @@ export function AgentCompareLab({
   compareBenchmarkPromptPreview,
   compareBenchmarkPromptDiffPreview,
   compareBenchmarkPreviewDiffOnly,
+  compareRecoveryPendingTargetId,
   benchmarkPending,
   benchmarkError,
   benchmarkResult,
@@ -252,6 +255,7 @@ export function AgentCompareLab({
   onExportMarkdown,
   onCompareBenchmarkUseOutputContractChange,
   onCompareBenchmarkPreviewDiffOnlyChange,
+  onRetryLocalRecovery,
   onCopy,
   copyState
 }: AgentCompareLabProps) {
@@ -330,7 +334,9 @@ export function AgentCompareLab({
         compareLatestRecovery: "Latest recovery",
         compareAwaitingRecovery: "Compare will trigger one local recovery if this lane stays stalled.",
         compareRecoveryTimeline: "Recovery timeline",
-        compareNoTimeline: "Timeline entries will appear here once compare records loading or recovery milestones."
+        compareNoTimeline: "Timeline entries will appear here once compare records loading or recovery milestones.",
+        compareManualRecovery: "Retry local recovery",
+        compareManualRecoveryPending: "Retrying local recovery..."
       }
     : {
         title: "Compare Lab",
@@ -405,7 +411,9 @@ export function AgentCompareLab({
         compareLatestRecovery: "最近恢复动作",
         compareAwaitingRecovery: "如果这条 lane 继续卡住，compare 会触发一次本地恢复。",
         compareRecoveryTimeline: "恢复动作时间线",
-        compareNoTimeline: "当 compare 记录到加载、恢复或完成节点后，这里会显示可读历史。"
+        compareNoTimeline: "当 compare 记录到加载、恢复或完成节点后，这里会显示可读历史。",
+        compareManualRecovery: "手动重试本地恢复",
+        compareManualRecoveryPending: "正在手动重试本地恢复..."
       };
 
   const compareTargets = useMemo(
@@ -784,6 +792,18 @@ export function AgentCompareLab({
                             ) : null}
                           </div>
                         </div>
+                      ) : null}
+                      {target.execution === "local" ? (
+                        <button
+                          type="button"
+                          onClick={() => onRetryLocalRecovery(target.id)}
+                          disabled={compareRecoveryPendingTargetId === target.id || benchmarkPending}
+                          className="mt-3 rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-1.5 text-[11px] font-semibold text-cyan-100 transition hover:bg-cyan-400/15 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {compareRecoveryPendingTargetId === target.id
+                            ? copy.compareManualRecoveryPending
+                            : copy.compareManualRecovery}
+                        </button>
                       ) : null}
                       <div className="mt-3 rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-xs leading-6 text-slate-300">
                         <p className="font-medium text-slate-100">{copy.compareRecoveryTimeline}</p>

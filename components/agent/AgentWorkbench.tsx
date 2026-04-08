@@ -985,6 +985,7 @@ function deriveCompareSchemaStatus(base: string, candidate: string) {
 
 function serializeCompareResultAsMarkdown(params: {
   compareResult: AgentCompareResponse;
+  compareProgressByTargetId?: Record<string, AgentCompareLaneProgress>;
   compareBaseTargetId?: string;
   prompt: string;
   systemPrompt: string;
@@ -996,6 +997,7 @@ function serializeCompareResultAsMarkdown(params: {
 }) {
   const {
     compareResult,
+    compareProgressByTargetId,
     compareBaseTargetId,
     prompt,
     systemPrompt,
@@ -1051,6 +1053,15 @@ function serializeCompareResultAsMarkdown(params: {
       lines.push(
         `- Usage: prompt ${lane.usage.promptTokens}, completion ${lane.usage.completionTokens}, total ${lane.usage.totalTokens}`
       );
+    }
+    const compareProgress = compareProgressByTargetId?.[lane.targetId];
+    if (compareProgress?.timeline?.length) {
+      lines.push("");
+      lines.push("### Recovery Timeline");
+      lines.push("");
+      for (const entry of compareProgress.timeline) {
+        lines.push(`- ${entry.at} · ${entry.phase} · ${entry.detail}`);
+      }
     }
     lines.push("", "```text", lane.content || lane.warning || "—", "```", "");
   }
@@ -1199,6 +1210,7 @@ export function AgentWorkbench() {
   const [compareProgressByTargetId, setCompareProgressByTargetId] = useState<Record<string, AgentCompareLaneProgress>>({});
   const [compareBenchmarkUseOutputContract, setCompareBenchmarkUseOutputContract] = useState(true);
   const [compareBenchmarkPreviewDiffOnly, setCompareBenchmarkPreviewDiffOnly] = useState(false);
+  const [compareRecoveryPendingTargetId, setCompareRecoveryPendingTargetId] = useState("");
   const [benchmarkPending, setBenchmarkPending] = useState(false);
   const [benchmarkError, setBenchmarkError] = useState("");
   const [benchmarkResult, setBenchmarkResult] = useState<AgentBenchmarkResponse | null>(null);
@@ -3297,6 +3309,111 @@ export function AgentWorkbench() {
     }
   }
 
+  async function syncCompareProgressPatch(input: {
+    requestId: string;
+    targetId: string;
+    phase: AgentCompareLaneProgress["phase"];
+    detail: string;
+    loadingElapsedMs?: number | null;
+    recoveryThresholdMs?: number | null;
+    recoveryAction?: string;
+    recoveryTriggeredAt?: string | null;
+    recoveryTriggerElapsedMs?: number | null;
+    warning?: string;
+    recordTimeline?: boolean;
+  }) {
+    const response = await fetch("/api/agent/compare/progress", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input)
+    });
+    const payload = (await response.json()) as AgentCompareProgress & { error?: string };
+    if (!response.ok) {
+      throw new Error(payload.error || "Failed to update compare progress.");
+    }
+    setCompareProgressByTargetId(Object.fromEntries(payload.lanes.map((lane) => [lane.targetId, lane])));
+  }
+
+  async function handleRetryCompareLaneRecovery(targetId: string) {
+    if (!compareRequestId) {
+      setCompareError(locale.startsWith("en") ? "Run compare first." : "请先运行一次 compare。");
+      return;
+    }
+    const target = agentTargets.find((entry) => entry.id === targetId);
+    if (!target || target.execution !== "local") {
+      setCompareError(locale.startsWith("en") ? "Manual recovery is available only for local lanes." : "手动恢复仅支持本地 lane。");
+      return;
+    }
+
+    const recoveryDetail = locale.startsWith("en")
+      ? `Manual recovery requested for ${target.label}. Restarting the local gateway from Compare.`
+      : `已为 ${target.label} 发起手动恢复，Compare 正在重启本地网关。`;
+    setCompareRecoveryPendingTargetId(targetId);
+    setCompareError("");
+    try {
+      await syncCompareProgressPatch({
+        requestId: compareRequestId,
+        targetId,
+        phase: "recovering",
+        detail: recoveryDetail,
+        recoveryAction: recoveryDetail,
+        recoveryTriggeredAt: new Date().toISOString(),
+        recordTimeline: true
+      });
+
+      const response = await fetch("/api/agent/runtime/actions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          targetId,
+          action: "restart"
+        })
+      });
+      const payload = (await response.json()) as AgentRuntimeActionResponse & { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error || payload.message || "Manual local recovery failed.");
+      }
+
+      if (payload.runtime) {
+        setCompareRuntimeByTargetId((current) => ({
+          ...current,
+          [targetId]: payload.runtime as AgentRuntimeStatus
+        }));
+      }
+
+      const completionDetail = payload.message
+        ? `${payload.message} Compare will keep polling this lane.`
+        : locale.startsWith("en")
+          ? `Local gateway restarted for ${target.label}. Compare will keep polling this lane.`
+          : `${target.label} 的本地网关已重启，Compare 会继续轮询这条 lane。`;
+      await syncCompareProgressPatch({
+        requestId: compareRequestId,
+        targetId,
+        phase: "prewarming",
+        detail: completionDetail,
+        recoveryAction: payload.message || completionDetail,
+        recordTimeline: true
+      });
+    } catch (recoveryError) {
+      const message = recoveryError instanceof Error ? recoveryError.message : "Manual local recovery failed.";
+      setCompareError(message);
+      try {
+        await syncCompareProgressPatch({
+          requestId: compareRequestId,
+          targetId,
+          phase: "failed",
+          detail: message,
+          warning: message,
+          recordTimeline: true
+        });
+      } catch {
+        // Ignore secondary sync failures. The primary error is already surfaced.
+      }
+    } finally {
+      setCompareRecoveryPendingTargetId("");
+    }
+  }
+
   const compareBenchmarkPromptPreview = useMemo(
     () =>
       buildCompareBenchmarkPrompt({
@@ -3322,6 +3439,7 @@ export function AgentWorkbench() {
     if (!compareResult) return;
     const content = serializeCompareResultAsMarkdown({
       compareResult,
+      compareProgressByTargetId,
       compareBaseTargetId,
       prompt: input,
       systemPrompt,
@@ -5722,6 +5840,7 @@ export function AgentWorkbench() {
                   compareBenchmarkPromptPreview={compareBenchmarkPromptPreview}
                   compareBenchmarkPromptDiffPreview={compareBenchmarkPromptDiffPreview}
                   compareBenchmarkPreviewDiffOnly={compareBenchmarkPreviewDiffOnly}
+                  compareRecoveryPendingTargetId={compareRecoveryPendingTargetId}
                   benchmarkPending={benchmarkPending}
                   benchmarkError={benchmarkError}
                   benchmarkResult={benchmarkResult}
@@ -5745,6 +5864,7 @@ export function AgentWorkbench() {
                   onExportMarkdown={handleExportCompareMarkdown}
                   onCompareBenchmarkUseOutputContractChange={setCompareBenchmarkUseOutputContract}
                   onCompareBenchmarkPreviewDiffOnlyChange={setCompareBenchmarkPreviewDiffOnly}
+                  onRetryLocalRecovery={handleRetryCompareLaneRecovery}
                   onCopy={handleCopy}
                   copyState={copyState}
                 />
