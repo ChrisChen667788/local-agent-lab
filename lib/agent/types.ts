@@ -266,6 +266,53 @@ export type AgentChatResponse = {
   memorySummary?: string;
 };
 
+export type AgentCompareRequest = {
+  targetIds: string[];
+  input: string;
+  messages: AgentMessage[];
+  systemPrompt?: string;
+  compareIntent?: AgentCompareIntent;
+  compareOutputShape?: AgentCompareOutputShape;
+  enableTools?: boolean;
+  enableRetrieval?: boolean;
+  contextWindow?: number;
+  providerProfile?: AgentProviderProfile;
+  thinkingMode?: AgentThinkingMode;
+  plannerEnabled?: boolean;
+  memorySummary?: string;
+};
+
+export type AgentCompareLaneResult = {
+  targetId: string;
+  targetLabel: string;
+  providerLabel: string;
+  execution: AgentExecution;
+  resolvedModel: string;
+  resolvedBaseUrl: string;
+  providerProfile?: AgentProviderProfile;
+  thinkingMode?: AgentThinkingMode;
+  contextWindow: number;
+  content: string;
+  warning?: string;
+  retrieval?: AgentRetrievalSummary;
+  verification?: AgentGroundedVerification;
+  toolRuns: AgentToolRun[];
+  usage?: AgentUsage;
+  latencyMs: number;
+  ok: boolean;
+};
+
+export type AgentCompareResponse = {
+  ok: boolean;
+  runId: string;
+  generatedAt: string;
+  compareIntent: AgentCompareIntent;
+  compareOutputShape: AgentCompareOutputShape;
+  fairnessFingerprint: string;
+  warning?: string;
+  results: AgentCompareLaneResult[];
+};
+
 export type AgentToolDecisionRequest = {
   targetId: string;
   toolName: string;

@@ -16,6 +16,7 @@ import type {
   AgentChatResponse,
   AgentCompareIntent,
   AgentCompareOutputShape,
+  AgentCompareResponse,
   AgentConnectionCheckResponse,
   AgentConnectionCheckStage,
   AgentGroundedVerification,
@@ -1005,6 +1006,9 @@ export function AgentWorkbench() {
   const [compareTargetIds, setCompareTargetIds] = useState<string[]>([]);
   const [compareIntent, setCompareIntent] = useState<AgentCompareIntent>("model-vs-model");
   const [compareOutputShape, setCompareOutputShape] = useState<AgentCompareOutputShape>("freeform");
+  const [comparePending, setComparePending] = useState(false);
+  const [compareError, setCompareError] = useState("");
+  const [compareResult, setCompareResult] = useState<AgentCompareResponse | null>(null);
   const [turns, setTurns] = useState<AgentTurn[]>([]);
   const [input, setInput] = useState(() => getLocalizedStarterPrompts("zh-CN")[0]);
   const [systemPrompt, setSystemPrompt] = useState(() => getDefaultSystemPromptForLocale("zh-CN"));
@@ -2056,6 +2060,10 @@ export function AgentWorkbench() {
   }, [selectedTargetId]);
 
   useEffect(() => {
+    setCompareError("");
+  }, [compareIntent, compareOutputShape, compareTargetIds, contextWindow, enableRetrieval, enableTools, input, providerProfile, systemPrompt, thinkingMode]);
+
+  useEffect(() => {
     setCompareTargetIds((current) => {
       const validTargetIds = current.filter((targetId) => agentTargets.some((target) => target.id === targetId));
       const deduped = Array.from(new Set(validTargetIds));
@@ -2814,6 +2822,44 @@ export function AgentWorkbench() {
       setCopyState(key);
     } catch (copyError) {
       setError(copyError instanceof Error ? copyError.message : uiText.copyFailed);
+    }
+  }
+
+  async function handleRunCompare() {
+    if (compareTargetIds.length < 2) {
+      setCompareError(locale.startsWith("en") ? "Choose at least two targets." : "至少选择两个对比目标。");
+      return;
+    }
+
+    setComparePending(true);
+    setCompareError("");
+    try {
+      const response = await fetch("/api/agent/compare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          targetIds: compareTargetIds,
+          input,
+          messages: historyMessages,
+          systemPrompt,
+          compareIntent,
+          compareOutputShape,
+          enableTools,
+          enableRetrieval,
+          contextWindow,
+          providerProfile,
+          thinkingMode
+        })
+      });
+      const payload = (await response.json()) as AgentCompareResponse & { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error || "Compare run failed.");
+      }
+      setCompareResult(payload);
+    } catch (compareRunError) {
+      setCompareError(compareRunError instanceof Error ? compareRunError.message : "Compare run failed.");
+    } finally {
+      setComparePending(false);
     }
   }
 
@@ -5186,6 +5232,9 @@ export function AgentWorkbench() {
                   providerProfile={providerProfile}
                   thinkingMode={thinkingMode}
                   pending={pending}
+                  comparePending={comparePending}
+                  compareError={compareError}
+                  compareResult={compareResult}
                   contextWindowOptions={CONTEXT_WINDOW_OPTIONS}
                   providerProfileOptions={PROVIDER_PROFILE_OPTIONS}
                   thinkingModeOptions={THINKING_MODE_OPTIONS}
@@ -5199,6 +5248,9 @@ export function AgentWorkbench() {
                   onContextWindowChange={setContextWindow}
                   onProviderProfileChange={setProviderProfile}
                   onThinkingModeChange={setThinkingMode}
+                  onRunCompare={handleRunCompare}
+                  onCopy={handleCopy}
+                  copyState={copyState}
                 />
               )}
             </div>

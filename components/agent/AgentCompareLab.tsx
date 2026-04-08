@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import type {
   AgentCompareIntent,
   AgentCompareOutputShape,
+  AgentCompareResponse,
   AgentProviderProfile,
   AgentTarget,
   AgentThinkingMode
@@ -24,6 +25,9 @@ type AgentCompareLabProps = {
   providerProfile: AgentProviderProfile;
   thinkingMode: AgentThinkingMode;
   pending: boolean;
+  comparePending: boolean;
+  compareError: string;
+  compareResult: AgentCompareResponse | null;
   contextWindowOptions: number[];
   providerProfileOptions: AgentProviderProfile[];
   thinkingModeOptions: AgentThinkingMode[];
@@ -37,6 +41,9 @@ type AgentCompareLabProps = {
   onContextWindowChange: (value: number) => void;
   onProviderProfileChange: (value: AgentProviderProfile) => void;
   onThinkingModeChange: (value: AgentThinkingMode) => void;
+  onRunCompare: () => void;
+  onCopy: (text: string, key: string) => void;
+  copyState: string;
 };
 
 const MAX_COMPARE_LANES = 4;
@@ -132,6 +139,39 @@ function formatProviderProfile(locale: string, value: AgentProviderProfile) {
   return locale.startsWith("en") ? "Speed" : "速度优先";
 }
 
+function createTokenSet(content: string) {
+  return new Set(
+    content
+      .toLowerCase()
+      .split(/[^a-z0-9_\u4e00-\u9fff]+/i)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 2)
+  );
+}
+
+function computeTokenOverlap(base: string, candidate: string) {
+  const baseSet = createTokenSet(base);
+  const candidateSet = createTokenSet(candidate);
+  if (!baseSet.size && !candidateSet.size) return 1;
+  const union = new Set([...baseSet, ...candidateSet]);
+  let intersection = 0;
+  union.forEach((token) => {
+    if (baseSet.has(token) && candidateSet.has(token)) {
+      intersection += 1;
+    }
+  });
+  return union.size ? intersection / union.size : 0;
+}
+
+function extractJsonKeys(content: string) {
+  try {
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+    return Object.keys(parsed).sort();
+  } catch {
+    return null;
+  }
+}
+
 export function AgentCompareLab({
   locale,
   targets,
@@ -147,6 +187,9 @@ export function AgentCompareLab({
   providerProfile,
   thinkingMode,
   pending,
+  comparePending,
+  compareError,
+  compareResult,
   contextWindowOptions,
   providerProfileOptions,
   thinkingModeOptions,
@@ -159,7 +202,10 @@ export function AgentCompareLab({
   onEnableRetrievalChange,
   onContextWindowChange,
   onProviderProfileChange,
-  onThinkingModeChange
+  onThinkingModeChange,
+  onRunCompare,
+  onCopy,
+  copyState
 }: AgentCompareLabProps) {
   const copy = locale.startsWith("en")
     ? {
@@ -184,6 +230,7 @@ export function AgentCompareLab({
         remote: "Remote",
         recommendedContext: "Recommended context",
         runCompare: "Run compare",
+        runningCompare: "Running compare...",
         apiNext: "API next",
         benchmarkNext: "Send to benchmark",
         benchmarkNextHint: "Benchmark handoff lands after the compare run API is wired.",
@@ -193,7 +240,30 @@ export function AgentCompareLab({
         tools: "Tool loop",
         retrieval: "Retrieval",
         on: "On",
-        off: "Off"
+        off: "Off",
+        resultReview: "Result review",
+        resultReviewHint: "First pass review focuses on response shape, output length, warning state, and overlap against the base lane.",
+        latestRun: "Latest run",
+        baseLane: "Base lane",
+        overlap: "Overlap",
+        lengthDelta: "Length delta",
+        schema: "Schema",
+        warning: "Warning",
+        copyOutput: "Copy output",
+        copied: "Copied",
+        noResults: "Run compare to inspect side-by-side outputs and review notes.",
+        laneFailed: "Lane failed",
+        laneOk: "Lane ok",
+        actualContext: "Actual context",
+        usage: "Usage",
+        promptTokens: "Prompt",
+        completionTokens: "Completion",
+        totalTokens: "Total",
+        partialRun: "Compare completed with one or more failed lanes.",
+        compareWarning: "Compare note",
+        schemaMatch: "Matched keys",
+        schemaMismatch: "Different keys",
+        schemaUnavailable: "Not JSON"
       }
     : {
         title: "Compare Lab",
@@ -216,6 +286,7 @@ export function AgentCompareLab({
         remote: "远端",
         recommendedContext: "推荐上下文",
         runCompare: "运行对比",
+        runningCompare: "对比运行中...",
         apiNext: "API 下一步",
         benchmarkNext: "送入 benchmark",
         benchmarkNextHint: "等 compare run API 接好后，再把这套配置一键送到 benchmark。",
@@ -225,7 +296,30 @@ export function AgentCompareLab({
         tools: "工具循环",
         retrieval: "检索增强",
         on: "开启",
-        off: "关闭"
+        off: "关闭",
+        resultReview: "结果审阅",
+        resultReviewHint: "第一版先看输出形态、长度、warning 和相对基准 lane 的重合度，后面再接更细的 diff。",
+        latestRun: "最近一次运行",
+        baseLane: "基准 lane",
+        overlap: "重合度",
+        lengthDelta: "长度差",
+        schema: "结构",
+        warning: "告警",
+        copyOutput: "复制输出",
+        copied: "已复制",
+        noResults: "运行 compare 后，这里会出现并排输出和基础审阅结论。",
+        laneFailed: "lane 失败",
+        laneOk: "lane 正常",
+        actualContext: "实际上下文",
+        usage: "用量",
+        promptTokens: "提示",
+        completionTokens: "生成",
+        totalTokens: "总计",
+        partialRun: "这轮 compare 已完成，但有一个或多个 lane 失败。",
+        compareWarning: "对比说明",
+        schemaMatch: "键一致",
+        schemaMismatch: "键不同",
+        schemaUnavailable: "非 JSON"
       };
 
   const compareTargets = useMemo(
@@ -259,6 +353,27 @@ export function AgentCompareLab({
   );
 
   const hasEnoughTargets = compareTargets.length >= 2;
+  const baseResult = compareResult?.results[0] || null;
+  const reviewRows = useMemo(() => {
+    if (!compareResult?.results.length || !baseResult) return [];
+    const baseJsonKeys = extractJsonKeys(baseResult.content);
+    return compareResult.results.map((lane) => {
+      const overlap = computeTokenOverlap(baseResult.content, lane.content);
+      const candidateJsonKeys = extractJsonKeys(lane.content);
+      const schemaStatus =
+        !baseJsonKeys || !candidateJsonKeys
+          ? copy.schemaUnavailable
+          : JSON.stringify(baseJsonKeys) === JSON.stringify(candidateJsonKeys)
+            ? copy.schemaMatch
+            : copy.schemaMismatch;
+      return {
+        lane,
+        overlap,
+        lengthDelta: lane.content.length - baseResult.content.length,
+        schemaStatus
+      };
+    });
+  }, [baseResult, compareResult?.results, copy.schemaMatch, copy.schemaMismatch, copy.schemaUnavailable]);
 
   return (
     <div className="h-[52vh] min-h-[360px] max-h-[72vh] overflow-y-auto bg-[linear-gradient(180deg,rgba(15,23,42,0.18),rgba(2,6,23,0.12))] sm:h-[58vh]">
@@ -543,11 +658,14 @@ export function AgentCompareLab({
               <div className="mt-4 space-y-3">
                 <button
                   type="button"
-                  disabled
-                  className="w-full rounded-2xl border border-cyan-400/20 bg-cyan-400/10 px-4 py-3 text-left text-sm text-cyan-100 opacity-70"
+                  disabled={!hasEnoughTargets || comparePending || pending}
+                  onClick={onRunCompare}
+                  className="w-full rounded-2xl border border-cyan-400/20 bg-cyan-400/10 px-4 py-3 text-left text-sm text-cyan-100 transition hover:bg-cyan-400/15 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  <span className="block font-medium">{copy.runCompare}</span>
-                  <span className="mt-1 block text-xs leading-6 text-cyan-100/80">{copy.apiNext}</span>
+                  <span className="block font-medium">{comparePending ? copy.runningCompare : copy.runCompare}</span>
+                  <span className="mt-1 block text-xs leading-6 text-cyan-100/80">
+                    {hasEnoughTargets ? copy.apiNext : copy.needMoreTargets}
+                  </span>
                 </button>
                 <button
                   type="button"
@@ -564,7 +682,118 @@ export function AgentCompareLab({
                       : "当前已有聊天请求进行中。后续 compare 执行会直接复用这套运行时保护逻辑。"}
                   </p>
                 ) : null}
+                {compareError ? (
+                  <div className="rounded-2xl border border-rose-400/25 bg-rose-400/10 px-4 py-3 text-sm leading-6 text-rose-100">
+                    {compareError}
+                  </div>
+                ) : null}
+                {compareResult?.warning ? (
+                  <div className="rounded-2xl border border-amber-300/25 bg-amber-300/10 px-4 py-3 text-sm leading-6 text-amber-100">
+                    <p className="text-[11px] uppercase tracking-[0.22em] text-amber-50/80">{copy.compareWarning}</p>
+                    <p className="mt-2">{compareResult.warning}</p>
+                  </div>
+                ) : null}
+                {compareResult && !compareResult.ok ? (
+                  <div className="rounded-2xl border border-amber-300/25 bg-amber-300/10 px-4 py-3 text-sm leading-6 text-amber-100">
+                    {copy.partialRun}
+                  </div>
+                ) : null}
               </div>
+            </section>
+
+            <section className="rounded-3xl border border-white/10 bg-white/[0.03] p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{copy.resultReview}</p>
+                  <p className="mt-2 text-sm leading-6 text-slate-400">{copy.resultReviewHint}</p>
+                </div>
+                {compareResult ? (
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-right">
+                    <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{copy.latestRun}</p>
+                    <p className="mt-1 text-xs text-white">{new Date(compareResult.generatedAt).toLocaleString()}</p>
+                  </div>
+                ) : null}
+              </div>
+
+              {!compareResult ? (
+                <div className="mt-4 rounded-2xl border border-dashed border-white/10 bg-black/20 px-4 py-4 text-sm leading-6 text-slate-400">
+                  {copy.noResults}
+                </div>
+              ) : (
+                <div className="mt-4 space-y-4">
+                  {baseResult ? (
+                    <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3">
+                      <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{copy.baseLane}</p>
+                      <p className="mt-2 text-sm font-medium text-white">
+                        {baseResult.targetLabel} · {baseResult.resolvedModel}
+                      </p>
+                      <p className="mt-1 text-xs leading-6 text-slate-400">{compareResult.fairnessFingerprint}</p>
+                    </div>
+                  ) : null}
+
+                  {reviewRows.map(({ lane, overlap, lengthDelta, schemaStatus }) => (
+                    <article key={`${compareResult.runId}:${lane.targetId}`} className="rounded-2xl border border-white/10 bg-slate-950/75 px-4 py-4">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="text-sm font-medium text-white">{lane.targetLabel}</p>
+                            <span className={`rounded-full px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] ${
+                              lane.ok ? "bg-emerald-400/10 text-emerald-200" : "bg-rose-400/10 text-rose-200"
+                            }`}>
+                              {lane.ok ? copy.laneOk : copy.laneFailed}
+                            </span>
+                          </div>
+                          <p className="mt-2 text-xs leading-6 text-slate-400">
+                            {lane.providerLabel} · {lane.resolvedModel}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => onCopy(lane.content || lane.warning || "", `compare:${lane.targetId}`)}
+                          className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:bg-white/10"
+                        >
+                          {copyState === `compare:${lane.targetId}` ? copy.copied : copy.copyOutput}
+                        </button>
+                      </div>
+
+                      <div className="mt-4 grid gap-2 text-xs leading-6 text-slate-300 sm:grid-cols-2">
+                        <p>{copy.actualContext}: {formatContextWindowLabel(lane.contextWindow)}</p>
+                        <p>{copy.overlap}: {(overlap * 100).toFixed(0)}%</p>
+                        <p>{copy.lengthDelta}: {lengthDelta >= 0 ? `+${lengthDelta}` : `${lengthDelta}`}</p>
+                        <p>{copy.schema}: {schemaStatus}</p>
+                      </div>
+
+                      {lane.warning ? (
+                        <div className="mt-3 rounded-xl border border-amber-300/20 bg-amber-300/10 px-3 py-3 text-xs leading-6 text-amber-100">
+                          <span className="font-semibold">{copy.warning}: </span>
+                          {lane.warning}
+                        </div>
+                      ) : null}
+
+                      {lane.usage ? (
+                        <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-slate-400">
+                          <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1">
+                            {copy.usage}
+                          </span>
+                          <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1">
+                            {copy.promptTokens} {lane.usage.promptTokens}
+                          </span>
+                          <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1">
+                            {copy.completionTokens} {lane.usage.completionTokens}
+                          </span>
+                          <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1">
+                            {copy.totalTokens} {lane.usage.totalTokens}
+                          </span>
+                        </div>
+                      ) : null}
+
+                      <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-xs leading-6 text-slate-200">
+                        {lane.content || lane.warning || "—"}
+                      </pre>
+                    </article>
+                  ))}
+                </div>
+              )}
             </section>
           </div>
         </div>
