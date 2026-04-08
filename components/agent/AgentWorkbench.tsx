@@ -13,6 +13,7 @@ import {
 import { clampContextWindowForTarget } from "@/lib/agent/metrics";
 import type {
   AgentCacheMode,
+  AgentBenchmarkResponse,
   AgentChatResponse,
   AgentCompareIntent,
   AgentCompareOutputShape,
@@ -940,6 +941,121 @@ function serializeTurnsAsMarkdown(turns: AgentTurn[]) {
   return lines.join("\n");
 }
 
+function createCompareTokenSet(content: string) {
+  return new Set(
+    content
+      .toLowerCase()
+      .split(/[^a-z0-9_\u4e00-\u9fff]+/i)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 2)
+  );
+}
+
+function computeCompareOverlap(base: string, candidate: string) {
+  const baseSet = createCompareTokenSet(base);
+  const candidateSet = createCompareTokenSet(candidate);
+  if (!baseSet.size && !candidateSet.size) return 1;
+  const union = new Set([...baseSet, ...candidateSet]);
+  let intersection = 0;
+  union.forEach((token) => {
+    if (baseSet.has(token) && candidateSet.has(token)) {
+      intersection += 1;
+    }
+  });
+  return union.size ? intersection / union.size : 0;
+}
+
+function extractCompareJsonKeys(content: string) {
+  try {
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+    return Object.keys(parsed).sort();
+  } catch {
+    return null;
+  }
+}
+
+function deriveCompareSchemaStatus(base: string, candidate: string) {
+  const baseJsonKeys = extractCompareJsonKeys(base);
+  const candidateJsonKeys = extractCompareJsonKeys(candidate);
+  if (!baseJsonKeys || !candidateJsonKeys) return "not-json";
+  return JSON.stringify(baseJsonKeys) === JSON.stringify(candidateJsonKeys) ? "matched-keys" : "different-keys";
+}
+
+function serializeCompareResultAsMarkdown(params: {
+  compareResult: AgentCompareResponse;
+  compareBaseTargetId?: string;
+  prompt: string;
+  systemPrompt: string;
+  contextWindow: number;
+  providerProfile: AgentProviderProfile;
+  thinkingMode: AgentThinkingMode;
+  enableTools: boolean;
+  enableRetrieval: boolean;
+}) {
+  const {
+    compareResult,
+    compareBaseTargetId,
+    prompt,
+    systemPrompt,
+    contextWindow,
+    providerProfile,
+    thinkingMode,
+    enableTools,
+    enableRetrieval
+  } = params;
+  const baseLane =
+    compareResult.results.find((lane) => lane.targetId === compareBaseTargetId) || compareResult.results[0] || null;
+
+  const lines = [
+    "# Compare Lab Export",
+    "",
+    `- Run ID: ${compareResult.runId}`,
+    `- Generated At: ${compareResult.generatedAt}`,
+    `- Compare Intent: ${compareResult.compareIntent}`,
+    `- Output Shape: ${compareResult.compareOutputShape}`,
+    `- Base Lane: ${baseLane?.targetLabel || "n/a"}`,
+    `- Fairness Fingerprint: ${compareResult.fairnessFingerprint}`,
+    `- Context Window: ${formatContextWindowLabel(contextWindow)}`,
+    `- Provider Profile: ${providerProfile}`,
+    `- Thinking Mode: ${thinkingMode}`,
+    `- Tools: ${enableTools ? "on" : "off"}`,
+    `- Retrieval: ${enableRetrieval ? "on" : "off"}`,
+    ""
+  ];
+
+  if (compareResult.warning) {
+    lines.push("## Compare Note", "", compareResult.warning, "");
+  }
+
+  lines.push("## Prompt", "", "```text", prompt, "```", "", "## System Prompt", "", "```text", systemPrompt, "```", "");
+
+  for (const lane of compareResult.results) {
+    const overlapBase = baseLane?.content ? computeCompareOverlap(baseLane.content, lane.content) : 1;
+    const schemaStatus = deriveCompareSchemaStatus(baseLane?.content || "", lane.content);
+    lines.push(`## ${lane.targetLabel}`);
+    lines.push("");
+    lines.push(`- Target ID: ${lane.targetId}`);
+    lines.push(`- Provider: ${lane.providerLabel}`);
+    lines.push(`- Execution: ${lane.execution}`);
+    lines.push(`- Model: ${lane.resolvedModel}`);
+    lines.push(`- Context Window: ${formatContextWindowLabel(lane.contextWindow)}`);
+    lines.push(`- Status: ${lane.ok ? "ok" : "failed"}`);
+    lines.push(`- Overlap vs base: ${Math.round(overlapBase * 100)}%`);
+    lines.push(`- Schema vs base: ${schemaStatus}`);
+    if (lane.warning) {
+      lines.push(`- Warning: ${lane.warning}`);
+    }
+    if (lane.usage) {
+      lines.push(
+        `- Usage: prompt ${lane.usage.promptTokens}, completion ${lane.usage.completionTokens}, total ${lane.usage.totalTokens}`
+      );
+    }
+    lines.push("", "```text", lane.content || lane.warning || "—", "```", "");
+  }
+
+  return lines.join("\n");
+}
+
 function serializeSessionsAsMarkdown(sessions: StoredAgentSession[]) {
   const lines: string[] = [
     "# Agent Sessions",
@@ -1009,6 +1125,10 @@ export function AgentWorkbench() {
   const [comparePending, setComparePending] = useState(false);
   const [compareError, setCompareError] = useState("");
   const [compareResult, setCompareResult] = useState<AgentCompareResponse | null>(null);
+  const [compareBaseTargetId, setCompareBaseTargetId] = useState("");
+  const [benchmarkPending, setBenchmarkPending] = useState(false);
+  const [benchmarkError, setBenchmarkError] = useState("");
+  const [benchmarkResult, setBenchmarkResult] = useState<AgentBenchmarkResponse | null>(null);
   const [turns, setTurns] = useState<AgentTurn[]>([]);
   const [input, setInput] = useState(() => getLocalizedStarterPrompts("zh-CN")[0]);
   const [systemPrompt, setSystemPrompt] = useState(() => getDefaultSystemPromptForLocale("zh-CN"));
@@ -2061,7 +2181,21 @@ export function AgentWorkbench() {
 
   useEffect(() => {
     setCompareError("");
+    setBenchmarkError("");
   }, [compareIntent, compareOutputShape, compareTargetIds, contextWindow, enableRetrieval, enableTools, input, providerProfile, systemPrompt, thinkingMode]);
+
+  useEffect(() => {
+    if (!compareResult?.results.length) {
+      setCompareBaseTargetId("");
+      return;
+    }
+    setCompareBaseTargetId((current) => {
+      if (current && compareResult.results.some((lane) => lane.targetId === current)) {
+        return current;
+      }
+      return compareResult.results[0]?.targetId || "";
+    });
+  }, [compareResult]);
 
   useEffect(() => {
     setCompareTargetIds((current) => {
@@ -2129,6 +2263,7 @@ export function AgentWorkbench() {
             selectedTargetId?: string;
             workbenchMode?: AgentWorkbenchMode;
             compareTargetIds?: string[];
+            compareBaseTargetId?: string;
             compareIntent?: AgentCompareIntent;
             compareOutputShape?: AgentCompareOutputShape;
             enableTools?: boolean;
@@ -2153,6 +2288,12 @@ export function AgentWorkbench() {
             if (normalizedCompareTargetIds.length) {
               setCompareTargetIds(Array.from(new Set(normalizedCompareTargetIds)).slice(0, MAX_COMPARE_LANES));
             }
+          }
+          if (
+            typeof parsed.compareBaseTargetId === "string"
+            && agentTargets.some((target) => target.id === parsed.compareBaseTargetId)
+          ) {
+            setCompareBaseTargetId(parsed.compareBaseTargetId);
           }
           if (
             parsed.compareIntent === "model-vs-model"
@@ -2244,6 +2385,7 @@ export function AgentWorkbench() {
         selectedTargetId,
         workbenchMode,
         compareTargetIds,
+        compareBaseTargetId,
         compareIntent,
         compareOutputShape,
         enableTools,
@@ -2256,6 +2398,7 @@ export function AgentWorkbench() {
   }, [
     compareIntent,
     compareOutputShape,
+    compareBaseTargetId,
     compareTargetIds,
     contextWindow,
     enableRetrieval,
@@ -2833,6 +2976,8 @@ export function AgentWorkbench() {
 
     setComparePending(true);
     setCompareError("");
+    setBenchmarkError("");
+    setBenchmarkResult(null);
     try {
       const response = await fetch("/api/agent/compare", {
         method: "POST",
@@ -2856,11 +3001,137 @@ export function AgentWorkbench() {
         throw new Error(payload.error || "Compare run failed.");
       }
       setCompareResult(payload);
+      setCompareBaseTargetId(payload.results[0]?.targetId || "");
     } catch (compareRunError) {
       setCompareError(compareRunError instanceof Error ? compareRunError.message : "Compare run failed.");
     } finally {
       setComparePending(false);
     }
+  }
+
+  async function handleRerunCompareLane(targetId: string) {
+    if (!targetId) return;
+
+    setComparePending(true);
+    setCompareError("");
+    setBenchmarkError("");
+    setBenchmarkResult(null);
+    try {
+      const response = await fetch("/api/agent/compare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          targetIds: [targetId],
+          input,
+          messages: historyMessages,
+          systemPrompt,
+          compareIntent,
+          compareOutputShape,
+          enableTools,
+          enableRetrieval,
+          contextWindow,
+          providerProfile,
+          thinkingMode
+        })
+      });
+      const payload = (await response.json()) as AgentCompareResponse & { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error || "Lane rerun failed.");
+      }
+
+      const nextLane = payload.results[0];
+      if (!nextLane) {
+        throw new Error("Lane rerun returned no result.");
+      }
+
+      setCompareResult((current) => {
+        if (!current?.results.length) return payload;
+        const nextResults = current.results.map((lane) => (lane.targetId === targetId ? nextLane : lane));
+        return {
+          ...current,
+          ok: nextResults.some((lane) => lane.ok),
+          generatedAt: payload.generatedAt,
+          results: nextResults,
+          warning: payload.warning || current.warning
+        };
+      });
+    } catch (rerunError) {
+      setCompareError(rerunError instanceof Error ? rerunError.message : "Lane rerun failed.");
+    } finally {
+      setComparePending(false);
+    }
+  }
+
+  async function handleSendCompareToBenchmark() {
+    if (!compareResult?.results.length) {
+      setBenchmarkError(locale.startsWith("en") ? "Run compare first." : "请先运行一次 compare。");
+      return;
+    }
+
+    const comparePrompt = [
+      systemPrompt.trim() ? `System frame:\n${systemPrompt.trim()}` : "",
+      `Task:\n${input.trim()}`,
+      compareOutputShape === "bullet-list"
+        ? "Output contract:\n- Return 4 to 6 concise bullet points.\n- Keep the answer grounded in the task."
+        : compareOutputShape === "strict-json"
+          ? 'Output contract:\nReturn valid JSON only using {"answer": string, "key_points": string[], "warnings": string[]}.'
+          : ""
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
+    setBenchmarkPending(true);
+    setBenchmarkError("");
+    setBenchmarkResult(null);
+    try {
+      const response = await fetch("/api/admin/benchmark", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          targetIds: compareResult.results.map((lane) => lane.targetId),
+          benchmarkMode: "prompt",
+          prompt: comparePrompt,
+          runs: 1,
+          contextWindow,
+          providerProfile,
+          thinkingMode
+        })
+      });
+      const payload = (await response.json()) as AgentBenchmarkResponse & { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error || "Benchmark handoff failed.");
+      }
+      setBenchmarkResult(payload);
+    } catch (handoffError) {
+      setBenchmarkError(handoffError instanceof Error ? handoffError.message : "Benchmark handoff failed.");
+    } finally {
+      setBenchmarkPending(false);
+    }
+  }
+
+  function handleExportCompareMarkdown() {
+    if (!compareResult) return;
+    const content = serializeCompareResultAsMarkdown({
+      compareResult,
+      compareBaseTargetId,
+      prompt: input,
+      systemPrompt,
+      contextWindow,
+      providerProfile,
+      thinkingMode,
+      enableTools,
+      enableRetrieval
+    });
+
+    const blob = new Blob([content], {
+      type: "text/markdown;charset=utf-8"
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `compare-${compareResult.runId}.md`;
+    anchor.click();
+    URL.revokeObjectURL(url);
   }
 
   function handleStepWorkspaceFileAnchor(direction: -1 | 1) {
@@ -5235,6 +5506,10 @@ export function AgentWorkbench() {
                   comparePending={comparePending}
                   compareError={compareError}
                   compareResult={compareResult}
+                  compareBaseTargetId={compareBaseTargetId}
+                  benchmarkPending={benchmarkPending}
+                  benchmarkError={benchmarkError}
+                  benchmarkResult={benchmarkResult}
                   contextWindowOptions={CONTEXT_WINDOW_OPTIONS}
                   providerProfileOptions={PROVIDER_PROFILE_OPTIONS}
                   thinkingModeOptions={THINKING_MODE_OPTIONS}
@@ -5249,6 +5524,10 @@ export function AgentWorkbench() {
                   onProviderProfileChange={setProviderProfile}
                   onThinkingModeChange={setThinkingMode}
                   onRunCompare={handleRunCompare}
+                  onRerunLane={handleRerunCompareLane}
+                  onSetBaseLane={setCompareBaseTargetId}
+                  onSendToBenchmark={handleSendCompareToBenchmark}
+                  onExportMarkdown={handleExportCompareMarkdown}
                   onCopy={handleCopy}
                   copyState={copyState}
                 />

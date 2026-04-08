@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import type {
+  AgentBenchmarkResponse,
   AgentCompareIntent,
   AgentCompareOutputShape,
   AgentCompareResponse,
@@ -28,6 +29,10 @@ type AgentCompareLabProps = {
   comparePending: boolean;
   compareError: string;
   compareResult: AgentCompareResponse | null;
+  compareBaseTargetId: string;
+  benchmarkPending: boolean;
+  benchmarkError: string;
+  benchmarkResult: AgentBenchmarkResponse | null;
   contextWindowOptions: number[];
   providerProfileOptions: AgentProviderProfile[];
   thinkingModeOptions: AgentThinkingMode[];
@@ -42,6 +47,10 @@ type AgentCompareLabProps = {
   onProviderProfileChange: (value: AgentProviderProfile) => void;
   onThinkingModeChange: (value: AgentThinkingMode) => void;
   onRunCompare: () => void;
+  onRerunLane: (targetId: string) => void;
+  onSetBaseLane: (targetId: string) => void;
+  onSendToBenchmark: () => void;
+  onExportMarkdown: () => void;
   onCopy: (text: string, key: string) => void;
   copyState: string;
 };
@@ -190,6 +199,10 @@ export function AgentCompareLab({
   comparePending,
   compareError,
   compareResult,
+  compareBaseTargetId,
+  benchmarkPending,
+  benchmarkError,
+  benchmarkResult,
   contextWindowOptions,
   providerProfileOptions,
   thinkingModeOptions,
@@ -204,6 +217,10 @@ export function AgentCompareLab({
   onProviderProfileChange,
   onThinkingModeChange,
   onRunCompare,
+  onRerunLane,
+  onSetBaseLane,
+  onSendToBenchmark,
+  onExportMarkdown,
   onCopy,
   copyState
 }: AgentCompareLabProps) {
@@ -223,7 +240,7 @@ export function AgentCompareLab({
         promptInput: "Task prompt",
         systemFrame: "System frame",
         lanePreview: "Lane preview",
-        lanePreviewHint: "This first slice focuses on layout and state. Server-side compare execution lands in the next implementation step.",
+        lanePreviewHint: "This compares real outputs while keeping the current /agent workbench frame intact.",
         fairnessFingerprint: "Fairness fingerprint",
         currentTarget: "Current target",
         local: "Local",
@@ -231,9 +248,15 @@ export function AgentCompareLab({
         recommendedContext: "Recommended context",
         runCompare: "Run compare",
         runningCompare: "Running compare...",
-        apiNext: "API next",
-        benchmarkNext: "Send to benchmark",
-        benchmarkNextHint: "Benchmark handoff lands after the compare run API is wired.",
+        benchmarkAction: "Send to benchmark",
+        benchmarkPending: "Sending to benchmark...",
+        benchmarkHint: "Reuse the current compare setup as a prompt benchmark run in /admin.",
+        benchmarkSuccess: "Benchmark handoff ready",
+        benchmarkOpen: "Open /admin and track this run",
+        exportMarkdown: "Export markdown",
+        rerunLane: "Rerun lane",
+        setBaseLane: "Set as base",
+        baseLaneTag: "Base lane",
         needMoreTargets: "Add at least one more lane to make the comparison meaningful.",
         laneReady: "Lane ready",
         lanePending: "Waiting",
@@ -242,7 +265,7 @@ export function AgentCompareLab({
         on: "On",
         off: "Off",
         resultReview: "Result review",
-        resultReviewHint: "First pass review focuses on response shape, output length, warning state, and overlap against the base lane.",
+        resultReviewHint: "Review response shape, output length, warning state, and overlap against the base lane.",
         latestRun: "Latest run",
         baseLane: "Base lane",
         overlap: "Overlap",
@@ -279,7 +302,7 @@ export function AgentCompareLab({
         promptInput: "任务提示词",
         systemFrame: "系统提示词",
         lanePreview: "对比 lane 预览",
-        lanePreviewHint: "这第一版先把布局和状态模型接进现有工作台；真正的服务端 compare run 会在下一步补齐。",
+        lanePreviewHint: "在现有 /agent 工作台里直接跑真实 compare，同时保持现有框架和交互骨架不变。",
         fairnessFingerprint: "公平性指纹",
         currentTarget: "当前目标",
         local: "本地",
@@ -287,9 +310,15 @@ export function AgentCompareLab({
         recommendedContext: "推荐上下文",
         runCompare: "运行对比",
         runningCompare: "对比运行中...",
-        apiNext: "API 下一步",
-        benchmarkNext: "送入 benchmark",
-        benchmarkNextHint: "等 compare run API 接好后，再把这套配置一键送到 benchmark。",
+        benchmarkAction: "送入 benchmark",
+        benchmarkPending: "正在送入 benchmark...",
+        benchmarkHint: "沿用当前 compare 配置，直接转成 /admin 里的 prompt benchmark。",
+        benchmarkSuccess: "benchmark 已接收",
+        benchmarkOpen: "去 /admin 跟踪这轮运行",
+        exportMarkdown: "导出 Markdown",
+        rerunLane: "重跑此 lane",
+        setBaseLane: "设为基准",
+        baseLaneTag: "基准 lane",
         needMoreTargets: "至少再加一条 lane，才能形成有意义的对比。",
         laneReady: "已就绪",
         lanePending: "待补齐",
@@ -298,7 +327,7 @@ export function AgentCompareLab({
         on: "开启",
         off: "关闭",
         resultReview: "结果审阅",
-        resultReviewHint: "第一版先看输出形态、长度、warning 和相对基准 lane 的重合度，后面再接更细的 diff。",
+        resultReviewHint: "现在可以看输出形态、长度、warning，以及相对基准 lane 的重合度和结构差异。",
         latestRun: "最近一次运行",
         baseLane: "基准 lane",
         overlap: "重合度",
@@ -353,7 +382,10 @@ export function AgentCompareLab({
   );
 
   const hasEnoughTargets = compareTargets.length >= 2;
-  const baseResult = compareResult?.results[0] || null;
+  const baseResult = useMemo(
+    () => compareResult?.results.find((lane) => lane.targetId === compareBaseTargetId) || compareResult?.results[0] || null,
+    [compareBaseTargetId, compareResult?.results]
+  );
   const reviewRows = useMemo(() => {
     if (!compareResult?.results.length || !baseResult) return [];
     const baseJsonKeys = extractJsonKeys(baseResult.content);
@@ -370,7 +402,8 @@ export function AgentCompareLab({
         lane,
         overlap,
         lengthDelta: lane.content.length - baseResult.content.length,
-        schemaStatus
+        schemaStatus,
+        isBase: lane.targetId === baseResult.targetId
       };
     });
   }, [baseResult, compareResult?.results, copy.schemaMatch, copy.schemaMismatch, copy.schemaUnavailable]);
@@ -664,27 +697,42 @@ export function AgentCompareLab({
                 >
                   <span className="block font-medium">{comparePending ? copy.runningCompare : copy.runCompare}</span>
                   <span className="mt-1 block text-xs leading-6 text-cyan-100/80">
-                    {hasEnoughTargets ? copy.apiNext : copy.needMoreTargets}
+                    {hasEnoughTargets ? copy.fairnessFingerprint : copy.needMoreTargets}
                   </span>
                 </button>
                 <button
                   type="button"
-                  disabled
-                  className="w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-left text-sm text-slate-200 opacity-70"
+                  disabled={!compareResult || benchmarkPending || comparePending}
+                  onClick={onSendToBenchmark}
+                  className="w-full rounded-2xl border border-violet-400/20 bg-violet-400/10 px-4 py-3 text-left text-sm text-violet-100 transition hover:bg-violet-400/15 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  <span className="block font-medium">{copy.benchmarkNext}</span>
-                  <span className="mt-1 block text-xs leading-6 text-slate-400">{copy.benchmarkNextHint}</span>
+                  <span className="block font-medium">{benchmarkPending ? copy.benchmarkPending : copy.benchmarkAction}</span>
+                  <span className="mt-1 block text-xs leading-6 text-violet-100/80">{copy.benchmarkHint}</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={!compareResult}
+                  onClick={onExportMarkdown}
+                  className="w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-left text-sm text-slate-200 transition hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <span className="block font-medium">{copy.exportMarkdown}</span>
+                  <span className="mt-1 block text-xs leading-6 text-slate-400">{compareResult ? copy.resultReviewHint : copy.noResults}</span>
                 </button>
                 {pending ? (
                   <p className="text-xs leading-6 text-cyan-200">
                     {locale.startsWith("en")
                       ? "A chat run is already in flight. Compare execution will reuse the same runtime guardrails."
-                      : "当前已有聊天请求进行中。后续 compare 执行会直接复用这套运行时保护逻辑。"}
+                      : "当前已有聊天请求进行中。compare 会继续复用同一套运行时保护逻辑。"}
                   </p>
                 ) : null}
                 {compareError ? (
                   <div className="rounded-2xl border border-rose-400/25 bg-rose-400/10 px-4 py-3 text-sm leading-6 text-rose-100">
                     {compareError}
+                  </div>
+                ) : null}
+                {benchmarkError ? (
+                  <div className="rounded-2xl border border-rose-400/25 bg-rose-400/10 px-4 py-3 text-sm leading-6 text-rose-100">
+                    {benchmarkError}
                   </div>
                 ) : null}
                 {compareResult?.warning ? (
@@ -693,9 +741,18 @@ export function AgentCompareLab({
                     <p className="mt-2">{compareResult.warning}</p>
                   </div>
                 ) : null}
-                {compareResult && !compareResult.ok ? (
+                {compareResult?.results.some((lane) => !lane.ok) ? (
                   <div className="rounded-2xl border border-amber-300/25 bg-amber-300/10 px-4 py-3 text-sm leading-6 text-amber-100">
                     {copy.partialRun}
+                  </div>
+                ) : null}
+                {benchmarkResult?.runId ? (
+                  <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 px-4 py-3 text-sm leading-6 text-emerald-100">
+                    <p className="font-medium">{copy.benchmarkSuccess}</p>
+                    <p className="mt-1 text-xs text-emerald-100/90">runId: {benchmarkResult.runId}</p>
+                    <a href="/admin" className="mt-2 inline-flex text-xs font-semibold text-emerald-50 underline underline-offset-4">
+                      {copy.benchmarkOpen}
+                    </a>
                   </div>
                 ) : null}
               </div>
@@ -731,7 +788,7 @@ export function AgentCompareLab({
                     </div>
                   ) : null}
 
-                  {reviewRows.map(({ lane, overlap, lengthDelta, schemaStatus }) => (
+                  {reviewRows.map(({ lane, overlap, lengthDelta, schemaStatus, isBase }) => (
                     <article key={`${compareResult.runId}:${lane.targetId}`} className="rounded-2xl border border-white/10 bg-slate-950/75 px-4 py-4">
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
@@ -742,18 +799,41 @@ export function AgentCompareLab({
                             }`}>
                               {lane.ok ? copy.laneOk : copy.laneFailed}
                             </span>
+                            {isBase ? (
+                              <span className="rounded-full bg-cyan-400/10 px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] text-cyan-100">
+                                {copy.baseLaneTag}
+                              </span>
+                            ) : null}
                           </div>
                           <p className="mt-2 text-xs leading-6 text-slate-400">
                             {lane.providerLabel} · {lane.resolvedModel}
                           </p>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => onCopy(lane.content || lane.warning || "", `compare:${lane.targetId}`)}
-                          className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:bg-white/10"
-                        >
-                          {copyState === `compare:${lane.targetId}` ? copy.copied : copy.copyOutput}
-                        </button>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => onRerunLane(lane.targetId)}
+                            disabled={comparePending}
+                            className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {copy.rerunLane}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onSetBaseLane(lane.targetId)}
+                            disabled={isBase}
+                            className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {copy.setBaseLane}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onCopy(lane.content || lane.warning || "", `compare:${lane.targetId}`)}
+                            className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:bg-white/10"
+                          >
+                            {copyState === `compare:${lane.targetId}` ? copy.copied : copy.copyOutput}
+                          </button>
+                        </div>
                       </div>
 
                       <div className="mt-4 grid gap-2 text-xs leading-6 text-slate-300 sm:grid-cols-2">

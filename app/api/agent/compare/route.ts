@@ -117,8 +117,8 @@ export async function POST(request: Request) {
   try {
     const body = (await request.json()) as Partial<AgentCompareRequest>;
 
-    if (!Array.isArray(body.targetIds) || body.targetIds.length < 2) {
-      return NextResponse.json({ error: "targetIds must contain at least two targets." }, { status: 400 });
+    if (!Array.isArray(body.targetIds) || body.targetIds.length < 1) {
+      return NextResponse.json({ error: "targetIds must contain at least one target." }, { status: 400 });
     }
     if (!body.input || typeof body.input !== "string") {
       return NextResponse.json({ error: "input is required." }, { status: 400 });
@@ -128,8 +128,8 @@ export async function POST(request: Request) {
     }
 
     const targetIds = Array.from(new Set(body.targetIds.filter((value): value is string => typeof value === "string"))).slice(0, 4);
-    if (targetIds.length < 2) {
-      return NextResponse.json({ error: "Need at least two valid targetIds." }, { status: 400 });
+    if (!targetIds.length) {
+      return NextResponse.json({ error: "Need at least one valid targetId." }, { status: 400 });
     }
 
     for (const targetId of targetIds) {
@@ -271,7 +271,7 @@ export async function POST(request: Request) {
     }
 
     const response: AgentCompareResponse = {
-      ok: results.every((lane) => lane.ok),
+      ok: results.some((lane) => lane.ok),
       runId: crypto.randomUUID(),
       generatedAt: new Date().toISOString(),
       compareIntent,
