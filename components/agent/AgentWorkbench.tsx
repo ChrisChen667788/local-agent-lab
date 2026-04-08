@@ -1058,26 +1058,70 @@ function serializeCompareResultAsMarkdown(params: {
   return lines.join("\n");
 }
 
-function buildCompareBenchmarkPrompt(params: {
+function buildCompareBenchmarkPromptParts(params: {
   input: string;
   systemPrompt: string;
   compareOutputShape: AgentCompareOutputShape;
   compareBenchmarkUseOutputContract: boolean;
 }) {
   const { input, systemPrompt, compareOutputShape, compareBenchmarkUseOutputContract } = params;
-  return [
+  const basePrompt = [
     systemPrompt.trim() ? `System frame:\n${systemPrompt.trim()}` : "",
-    input.trim() ? `Task:\n${input.trim()}` : "",
-    compareBenchmarkUseOutputContract
-      ? compareOutputShape === "bullet-list"
-        ? "Output contract:\n- Return 4 to 6 concise bullet points.\n- Keep the answer grounded in the task."
-        : compareOutputShape === "strict-json"
-          ? 'Output contract:\nReturn valid JSON only using {"answer": string, "key_points": string[], "warnings": string[]}.'
-          : ""
-      : ""
+    input.trim() ? `Task:\n${input.trim()}` : ""
   ]
     .filter(Boolean)
     .join("\n\n");
+  const contractBlock = compareBenchmarkUseOutputContract
+    ? compareOutputShape === "bullet-list"
+      ? "Output contract:\n- Return 4 to 6 concise bullet points.\n- Keep the answer grounded in the task."
+      : compareOutputShape === "strict-json"
+        ? 'Output contract:\nReturn valid JSON only using {"answer": string, "key_points": string[], "warnings": string[]}.'
+        : ""
+    : "";
+  return {
+    basePrompt,
+    contractBlock,
+    finalPrompt: [basePrompt, contractBlock].filter(Boolean).join("\n\n")
+  };
+}
+
+function buildCompareBenchmarkPrompt(params: {
+  input: string;
+  systemPrompt: string;
+  compareOutputShape: AgentCompareOutputShape;
+  compareBenchmarkUseOutputContract: boolean;
+}) {
+  return buildCompareBenchmarkPromptParts(params).finalPrompt;
+}
+
+function buildCompareBenchmarkPromptDiff(params: {
+  input: string;
+  systemPrompt: string;
+  compareOutputShape: AgentCompareOutputShape;
+  compareBenchmarkUseOutputContract: boolean;
+}) {
+  const { basePrompt, contractBlock } = buildCompareBenchmarkPromptParts(params);
+  if (contractBlock) {
+    return [
+      "# Handoff additions",
+      "",
+      "The benchmark handoff keeps the current system frame and task, then appends:",
+      "",
+      "```text",
+      contractBlock,
+      "```"
+    ].join("\n");
+  }
+  return [
+    "# Handoff additions",
+    "",
+    "No extra output contract will be appended.",
+    "The benchmark handoff will send the current system frame and task only.",
+    "",
+    "```text",
+    basePrompt || "(empty prompt)",
+    "```"
+  ].join("\n");
 }
 
 function serializeSessionsAsMarkdown(sessions: StoredAgentSession[]) {
@@ -1154,6 +1198,7 @@ export function AgentWorkbench() {
   const [compareRuntimeByTargetId, setCompareRuntimeByTargetId] = useState<Record<string, AgentRuntimeStatus>>({});
   const [compareProgressByTargetId, setCompareProgressByTargetId] = useState<Record<string, AgentCompareLaneProgress>>({});
   const [compareBenchmarkUseOutputContract, setCompareBenchmarkUseOutputContract] = useState(true);
+  const [compareBenchmarkPreviewDiffOnly, setCompareBenchmarkPreviewDiffOnly] = useState(false);
   const [benchmarkPending, setBenchmarkPending] = useState(false);
   const [benchmarkError, setBenchmarkError] = useState("");
   const [benchmarkResult, setBenchmarkResult] = useState<AgentBenchmarkResponse | null>(null);
@@ -2387,6 +2432,7 @@ export function AgentWorkbench() {
             compareTargetIds?: string[];
             compareBaseTargetId?: string;
             compareBenchmarkUseOutputContract?: boolean;
+            compareBenchmarkPreviewDiffOnly?: boolean;
             compareIntent?: AgentCompareIntent;
             compareOutputShape?: AgentCompareOutputShape;
             enableTools?: boolean;
@@ -2420,6 +2466,9 @@ export function AgentWorkbench() {
           }
           if (typeof parsed.compareBenchmarkUseOutputContract === "boolean") {
             setCompareBenchmarkUseOutputContract(parsed.compareBenchmarkUseOutputContract);
+          }
+          if (typeof parsed.compareBenchmarkPreviewDiffOnly === "boolean") {
+            setCompareBenchmarkPreviewDiffOnly(parsed.compareBenchmarkPreviewDiffOnly);
           }
           if (
             parsed.compareIntent === "model-vs-model"
@@ -2513,6 +2562,7 @@ export function AgentWorkbench() {
         compareTargetIds,
         compareBaseTargetId,
         compareBenchmarkUseOutputContract,
+        compareBenchmarkPreviewDiffOnly,
         compareIntent,
         compareOutputShape,
         enableTools,
@@ -2527,6 +2577,7 @@ export function AgentWorkbench() {
     compareOutputShape,
     compareBaseTargetId,
     compareBenchmarkUseOutputContract,
+    compareBenchmarkPreviewDiffOnly,
     compareTargetIds,
     contextWindow,
     enableRetrieval,
@@ -3249,6 +3300,16 @@ export function AgentWorkbench() {
   const compareBenchmarkPromptPreview = useMemo(
     () =>
       buildCompareBenchmarkPrompt({
+        input,
+        systemPrompt,
+        compareOutputShape,
+        compareBenchmarkUseOutputContract
+      }),
+    [compareBenchmarkUseOutputContract, compareOutputShape, input, systemPrompt]
+  );
+  const compareBenchmarkPromptDiffPreview = useMemo(
+    () =>
+      buildCompareBenchmarkPromptDiff({
         input,
         systemPrompt,
         compareOutputShape,
@@ -5659,6 +5720,8 @@ export function AgentWorkbench() {
                   compareProgressByTargetId={compareProgressByTargetId}
                   compareBenchmarkUseOutputContract={compareBenchmarkUseOutputContract}
                   compareBenchmarkPromptPreview={compareBenchmarkPromptPreview}
+                  compareBenchmarkPromptDiffPreview={compareBenchmarkPromptDiffPreview}
+                  compareBenchmarkPreviewDiffOnly={compareBenchmarkPreviewDiffOnly}
                   benchmarkPending={benchmarkPending}
                   benchmarkError={benchmarkError}
                   benchmarkResult={benchmarkResult}
@@ -5681,6 +5744,7 @@ export function AgentWorkbench() {
                   onSendToBenchmark={handleSendCompareToBenchmark}
                   onExportMarkdown={handleExportCompareMarkdown}
                   onCompareBenchmarkUseOutputContractChange={setCompareBenchmarkUseOutputContract}
+                  onCompareBenchmarkPreviewDiffOnlyChange={setCompareBenchmarkPreviewDiffOnly}
                   onCopy={handleCopy}
                   copyState={copyState}
                 />

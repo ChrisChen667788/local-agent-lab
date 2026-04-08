@@ -5,6 +5,7 @@ import type {
   AgentBenchmarkResponse,
   AgentCompareIntent,
   AgentCompareLaneProgress,
+  AgentCompareLaneTimelineEntry,
   AgentCompareOutputShape,
   AgentCompareResponse,
   AgentProviderProfile,
@@ -36,6 +37,8 @@ type AgentCompareLabProps = {
   compareProgressByTargetId: Record<string, AgentCompareLaneProgress>;
   compareBenchmarkUseOutputContract: boolean;
   compareBenchmarkPromptPreview: string;
+  compareBenchmarkPromptDiffPreview: string;
+  compareBenchmarkPreviewDiffOnly: boolean;
   benchmarkPending: boolean;
   benchmarkError: string;
   benchmarkResult: AgentBenchmarkResponse | null;
@@ -58,6 +61,7 @@ type AgentCompareLabProps = {
   onSendToBenchmark: () => void;
   onExportMarkdown: () => void;
   onCompareBenchmarkUseOutputContractChange: (value: boolean) => void;
+  onCompareBenchmarkPreviewDiffOnlyChange: (value: boolean) => void;
   onCopy: (text: string, key: string) => void;
   copyState: string;
 };
@@ -188,6 +192,18 @@ function extractJsonKeys(content: string) {
   }
 }
 
+function formatTimelineTime(locale: string, value: string) {
+  try {
+    return new Date(value).toLocaleTimeString(locale.startsWith("en") ? "en-US" : "zh-CN", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit"
+    });
+  } catch {
+    return value;
+  }
+}
+
 export function AgentCompareLab({
   locale,
   targets,
@@ -211,6 +227,8 @@ export function AgentCompareLab({
   compareProgressByTargetId,
   compareBenchmarkUseOutputContract,
   compareBenchmarkPromptPreview,
+  compareBenchmarkPromptDiffPreview,
+  compareBenchmarkPreviewDiffOnly,
   benchmarkPending,
   benchmarkError,
   benchmarkResult,
@@ -233,6 +251,7 @@ export function AgentCompareLab({
   onSendToBenchmark,
   onExportMarkdown,
   onCompareBenchmarkUseOutputContractChange,
+  onCompareBenchmarkPreviewDiffOnlyChange,
   onCopy,
   copyState
 }: AgentCompareLabProps) {
@@ -267,6 +286,8 @@ export function AgentCompareLab({
         benchmarkContractHint: "Carry over bullet-list or strict JSON instructions when you convert this compare run into a prompt benchmark.",
         benchmarkPromptPreview: "Benchmark prompt preview",
         benchmarkPromptPreviewHint: "This read-only prompt is the exact payload that compare handoff will send to /api/admin/benchmark.",
+        benchmarkPromptDiffOnly: "Show diff only",
+        benchmarkPromptCopy: "Copy preview",
         benchmarkSuccess: "Benchmark handoff ready",
         benchmarkOpen: "Open /admin and track this run",
         exportMarkdown: "Export markdown",
@@ -307,7 +328,9 @@ export function AgentCompareLab({
         compareLoadingFor: "Loading for",
         compareRecoveryBudget: "Recovery budget",
         compareLatestRecovery: "Latest recovery",
-        compareAwaitingRecovery: "Compare will trigger one local recovery if this lane stays stalled."
+        compareAwaitingRecovery: "Compare will trigger one local recovery if this lane stays stalled.",
+        compareRecoveryTimeline: "Recovery timeline",
+        compareNoTimeline: "Timeline entries will appear here once compare records loading or recovery milestones."
       }
     : {
         title: "Compare Lab",
@@ -338,6 +361,8 @@ export function AgentCompareLab({
         benchmarkContractHint: "把 bullet-list 或 strict JSON 的输出约束一并带到 prompt benchmark 里。",
         benchmarkPromptPreview: "benchmark prompt 预览",
         benchmarkPromptPreviewHint: "这里展示的只读 prompt，就是 compare handoff 真正会送到 /api/admin/benchmark 的内容。",
+        benchmarkPromptDiffOnly: "只看差异",
+        benchmarkPromptCopy: "复制预览",
         benchmarkSuccess: "benchmark 已接收",
         benchmarkOpen: "去 /admin 跟踪这轮运行",
         exportMarkdown: "导出 Markdown",
@@ -378,7 +403,9 @@ export function AgentCompareLab({
         compareLoadingFor: "加载时长",
         compareRecoveryBudget: "恢复预算",
         compareLatestRecovery: "最近恢复动作",
-        compareAwaitingRecovery: "如果这条 lane 继续卡住，compare 会触发一次本地恢复。"
+        compareAwaitingRecovery: "如果这条 lane 继续卡住，compare 会触发一次本地恢复。",
+        compareRecoveryTimeline: "恢复动作时间线",
+        compareNoTimeline: "当 compare 记录到加载、恢复或完成节点后，这里会显示可读历史。"
       };
 
   const compareTargets = useMemo(
@@ -681,6 +708,7 @@ export function AgentCompareLab({
                 {compareTargets.map((target) => {
                   const runtime = compareRuntimeByTargetId[target.id];
                   const compareProgress = compareProgressByTargetId[target.id];
+                  const compareTimeline = compareProgress?.timeline || [];
                   const loadingSeconds =
                     typeof runtime?.loadingElapsedMs === "number"
                       ? Math.round(runtime.loadingElapsedMs / 1000)
@@ -757,6 +785,31 @@ export function AgentCompareLab({
                           </div>
                         </div>
                       ) : null}
+                      <div className="mt-3 rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-xs leading-6 text-slate-300">
+                        <p className="font-medium text-slate-100">{copy.compareRecoveryTimeline}</p>
+                        {compareTimeline.length ? (
+                          <div className="mt-2 space-y-2">
+                            {compareTimeline.map((entry: AgentCompareLaneTimelineEntry, index) => (
+                              <div key={`${target.id}:${entry.at}:${index}`} className="rounded-lg border border-white/5 bg-white/[0.03] px-3 py-2">
+                                <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">
+                                  {formatTimelineTime(locale, entry.at)} · {entry.phase}
+                                </p>
+                                <p className="mt-1 text-slate-200">{entry.detail}</p>
+                                {typeof entry.recoveryTriggerElapsedMs === "number" ? (
+                                  <p className="mt-1 text-slate-400">
+                                    {copy.compareLoadingFor}: {Math.max(1, Math.round(entry.recoveryTriggerElapsedMs / 1000))}s
+                                  </p>
+                                ) : null}
+                                {entry.recoveryAction ? (
+                                  <p className="mt-1 text-slate-400">{entry.recoveryAction}</p>
+                                ) : null}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="mt-2 text-slate-400">{copy.compareNoTimeline}</p>
+                        )}
+                      </div>
                       <div className="mt-3 grid gap-2 text-xs leading-6 text-slate-300">
                         <p>{copy.recommendedContext}: {target.recommendedContext}</p>
                         <p>{target.notes[0] || target.description}</p>
@@ -805,11 +858,40 @@ export function AgentCompareLab({
                   </span>
                 </label>
                 <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3">
-                  <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{copy.benchmarkPromptPreview}</p>
-                  <p className="mt-2 text-xs leading-6 text-slate-400">{copy.benchmarkPromptPreviewHint}</p>
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{copy.benchmarkPromptPreview}</p>
+                      <p className="mt-2 text-xs leading-6 text-slate-400">{copy.benchmarkPromptPreviewHint}</p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <label className="flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11px] text-slate-200">
+                        <input
+                          type="checkbox"
+                          checked={compareBenchmarkPreviewDiffOnly}
+                          onChange={(event) => onCompareBenchmarkPreviewDiffOnlyChange(event.target.checked)}
+                          className="rounded border-white/20 bg-slate-950"
+                        />
+                        {copy.benchmarkPromptDiffOnly}
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onCopy(
+                            compareBenchmarkPreviewDiffOnly
+                              ? compareBenchmarkPromptDiffPreview
+                              : compareBenchmarkPromptPreview,
+                            "compare:benchmark-prompt"
+                          )
+                        }
+                        className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:bg-white/10"
+                      >
+                        {copyState === "compare:benchmark-prompt" ? copy.copied : copy.benchmarkPromptCopy}
+                      </button>
+                    </div>
+                  </div>
                   <textarea
                     readOnly
-                    value={compareBenchmarkPromptPreview}
+                    value={compareBenchmarkPreviewDiffOnly ? compareBenchmarkPromptDiffPreview : compareBenchmarkPromptPreview}
                     rows={10}
                     className="mt-3 w-full resize-none rounded-2xl border border-white/10 bg-slate-950/90 px-4 py-3 font-mono text-xs leading-6 text-slate-200 outline-none"
                   />

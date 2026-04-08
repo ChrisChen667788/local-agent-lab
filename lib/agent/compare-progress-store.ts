@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
-import type { AgentCompareProgress, AgentExecution } from "@/lib/agent/types";
+import type { AgentCompareLaneTimelineEntry, AgentCompareProgress, AgentExecution } from "@/lib/agent/types";
 import { getLocalAgentDataPath } from "@/lib/agent/data-dir";
 
 function getProgressDir() {
@@ -45,7 +45,14 @@ export function createCompareProgress(input: {
       loadingElapsedMs: null,
       recoveryThresholdMs: null,
       recoveryTriggeredAt: null,
-      recoveryTriggerElapsedMs: null
+      recoveryTriggerElapsedMs: null,
+      timeline: [
+        {
+          at: now,
+          phase: "queued",
+          detail: lane.detail || "Waiting for compare execution."
+        }
+      ]
     }))
   };
   writeProgress(progress);
@@ -79,17 +86,51 @@ export function touchCompareLaneProgress(
   patch: Partial<AgentCompareProgress["lanes"][number]> & {
     phase: AgentCompareProgress["lanes"][number]["phase"];
     detail: string;
+    recordTimeline?: boolean;
   }
 ) {
   return updateCompareProgress(requestId, (current) => {
     const now = new Date().toISOString();
+    const { recordTimeline, ...lanePatch } = patch;
     const nextLanes = current.lanes.map((lane) =>
       lane.targetId === targetId
-        ? {
-            ...lane,
-            ...patch,
-            updatedAt: now
-          }
+        ? (() => {
+            const timelineEntry: AgentCompareLaneTimelineEntry = {
+              at: now,
+              phase: lanePatch.phase,
+              detail: lanePatch.detail,
+              loadingElapsedMs:
+                typeof lanePatch.loadingElapsedMs === "number" ? lanePatch.loadingElapsedMs : undefined,
+              recoveryAction: lanePatch.recoveryAction,
+              recoveryTriggerElapsedMs:
+                typeof lanePatch.recoveryTriggerElapsedMs === "number" ? lanePatch.recoveryTriggerElapsedMs : undefined,
+              warning: lanePatch.warning
+            };
+            const shouldAppendTimeline = Boolean(recordTimeline);
+            const nextTimeline = shouldAppendTimeline
+              ? (() => {
+                  const currentTimeline = lane.timeline || [];
+                  const previousEntry = currentTimeline[currentTimeline.length - 1];
+                  if (
+                    previousEntry &&
+                    previousEntry.phase === timelineEntry.phase &&
+                    previousEntry.detail === timelineEntry.detail &&
+                    previousEntry.recoveryAction === timelineEntry.recoveryAction &&
+                    previousEntry.warning === timelineEntry.warning
+                  ) {
+                    return currentTimeline;
+                  }
+                  return [...currentTimeline, timelineEntry];
+                })()
+              : lane.timeline || [];
+
+            return {
+              ...lane,
+              ...lanePatch,
+              updatedAt: now,
+              timeline: nextTimeline
+            };
+          })()
         : lane
     );
     return {

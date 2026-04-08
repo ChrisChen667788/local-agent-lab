@@ -339,6 +339,17 @@ export type AgentCompareLaneProgress = {
   recoveryTriggeredAt?: string | null;
   recoveryTriggerElapsedMs?: number | null;
   warning?: string;
+  timeline: AgentCompareLaneTimelineEntry[];
+};
+
+export type AgentCompareLaneTimelineEntry = {
+  at: string;
+  phase: AgentCompareLaneProgressPhase;
+  detail: string;
+  loadingElapsedMs?: number | null;
+  recoveryAction?: string;
+  recoveryTriggerElapsedMs?: number | null;
+  warning?: string;
 };
 
 export type AgentCompareProgress = {
