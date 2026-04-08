@@ -66,6 +66,17 @@ function buildExecutionSections<T extends { execution?: "local" | "remote" }>(
   return sections;
 }
 
+function summarizeBenchmarkRunNote(value: string, maxLength = 220) {
+  const normalized = value
+    .split("\n")
+    .map((line) => line.replace(/^[#>\-\*\d\.\s]+/, "").trim())
+    .filter(Boolean)
+    .slice(0, 3)
+    .join(" · ");
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+}
+
 type DashboardResponse = {
   generatedAt: string;
   target: {
@@ -977,8 +988,10 @@ export function AdminDashboard() {
   const [runtimeLastSwitchAt, setRuntimeLastSwitchAt] = useState<Record<string, string | null>>({});
   const [prewarmAllPending, setPrewarmAllPending] = useState(false);
   const [prewarmAllMessage, setPrewarmAllMessage] = useState("");
+  const [benchmarkCopyState, setBenchmarkCopyState] = useState<{ key: string; tone: "success" | "error" } | null>(null);
   const knowledgeImportInputRef = useRef<HTMLInputElement | null>(null);
   const knowledgeHighlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const benchmarkCopyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [windowMinutes, setWindowMinutes] = useState(60);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [pending, setPending] = useState(false);
@@ -1814,6 +1827,51 @@ export function AdminDashboard() {
         };
     }
   }, [locale]);
+
+  useEffect(() => {
+    return () => {
+      if (benchmarkCopyTimeoutRef.current) {
+        clearTimeout(benchmarkCopyTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  async function handleCopyBenchmarkRunNote(value: string, key: string) {
+    const fallbackCopy = (text: string) => {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "absolute";
+      textarea.style.left = "-9999px";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+    };
+
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+      } else {
+        fallbackCopy(value);
+      }
+      setBenchmarkCopyState({ key, tone: "success" });
+    } catch {
+      try {
+        fallbackCopy(value);
+        setBenchmarkCopyState({ key, tone: "success" });
+      } catch {
+        setBenchmarkCopyState({ key, tone: "error" });
+      }
+    }
+
+    if (benchmarkCopyTimeoutRef.current) {
+      clearTimeout(benchmarkCopyTimeoutRef.current);
+    }
+    benchmarkCopyTimeoutRef.current = setTimeout(() => {
+      setBenchmarkCopyState((current) => (current?.key === key ? null : current));
+    }, 2200);
+  }
 
   useEffect(() => {
     setCompareTargetIds((current) => (current.includes(selectedTargetId) ? current : [...current, selectedTargetId]));
@@ -4819,14 +4877,40 @@ export function AdminDashboard() {
                 </div>
                 {benchmarkData.runNote ? (
                   <details className="rounded-2xl border border-cyan-400/15 bg-cyan-400/5 px-4 py-3 text-sm text-cyan-50">
-                    <summary className="cursor-pointer list-none text-xs font-semibold uppercase tracking-[0.18em] text-cyan-100">
-                      {locale.startsWith("en") ? "Run note" : "运行备注"}
+                    <summary className="cursor-pointer list-none">
+                      <div className="space-y-1">
+                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-cyan-100">
+                          {locale.startsWith("en") ? "Run note" : "运行备注"}
+                        </p>
+                        <p className="text-[11px] leading-5 text-cyan-100/75">
+                          {summarizeBenchmarkRunNote(benchmarkData.runNote)}
+                        </p>
+                      </div>
                     </summary>
-                    <p className="mt-2 text-[11px] leading-5 text-cyan-100/75">
-                      {locale.startsWith("en")
-                        ? "This note came from the Compare handoff and keeps the benchmark run tied to its original review framing."
-                        : "这段备注来自 Compare handoff，用来把 benchmark 结果和当时的 compare 审阅语境继续绑在一起。"}
-                    </p>
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                      <p className="text-[11px] leading-5 text-cyan-100/75">
+                        {locale.startsWith("en")
+                          ? "This note came from the Compare handoff and keeps the benchmark run tied to its original review framing."
+                          : "这段备注来自 Compare handoff，用来把 benchmark 结果和当时的 compare 审阅语境继续绑在一起。"}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => void handleCopyBenchmarkRunNote(benchmarkData.runNote || "", "current-run-note")}
+                        className="rounded-full border border-cyan-200/20 bg-cyan-400/10 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-cyan-50 transition hover:border-cyan-200/35 hover:bg-cyan-400/20"
+                      >
+                        {benchmarkCopyState?.key === "current-run-note"
+                          ? benchmarkCopyState.tone === "success"
+                            ? locale.startsWith("en")
+                              ? "Copied"
+                              : "已复制"
+                            : locale.startsWith("en")
+                              ? "Copy failed"
+                              : "复制失败"
+                          : locale.startsWith("en")
+                            ? "Copy run note"
+                            : "复制备注"}
+                      </button>
+                    </div>
                     <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 text-[11px] leading-6 text-slate-200">
                       {benchmarkData.runNote}
                     </pre>
@@ -5192,14 +5276,40 @@ export function AdminDashboard() {
                         )}
                         {entry.runNote ? (
                           <details className="rounded-2xl border border-cyan-400/15 bg-cyan-400/5 px-3 py-3 text-sm text-cyan-50">
-                            <summary className="cursor-pointer list-none text-xs font-semibold uppercase tracking-[0.18em] text-cyan-100">
-                              {locale.startsWith("en") ? "Run note" : "运行备注"}
+                            <summary className="cursor-pointer list-none">
+                              <div className="space-y-1">
+                                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-cyan-100">
+                                  {locale.startsWith("en") ? "Run note" : "运行备注"}
+                                </p>
+                                <p className="text-[11px] leading-5 text-cyan-100/75">
+                                  {summarizeBenchmarkRunNote(entry.runNote)}
+                                </p>
+                              </div>
                             </summary>
-                            <p className="mt-2 text-[11px] leading-5 text-cyan-100/75">
-                              {locale.startsWith("en")
-                                ? "Captured from Compare handoff so this benchmark run keeps its original review context."
-                                : "这段内容来自 Compare handoff，用来保留这轮 benchmark 当时的审阅上下文。"}
-                            </p>
+                            <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                              <p className="text-[11px] leading-5 text-cyan-100/75">
+                                {locale.startsWith("en")
+                                  ? "Captured from Compare handoff so this benchmark run keeps its original review context."
+                                  : "这段内容来自 Compare handoff，用来保留这轮 benchmark 当时的审阅上下文。"}
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() => void handleCopyBenchmarkRunNote(entry.runNote || "", `history-run-note:${entry.id}`)}
+                                className="rounded-full border border-cyan-200/20 bg-cyan-400/10 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-cyan-50 transition hover:border-cyan-200/35 hover:bg-cyan-400/20"
+                              >
+                                {benchmarkCopyState?.key === `history-run-note:${entry.id}`
+                                  ? benchmarkCopyState.tone === "success"
+                                    ? locale.startsWith("en")
+                                      ? "Copied"
+                                      : "已复制"
+                                    : locale.startsWith("en")
+                                      ? "Copy failed"
+                                      : "复制失败"
+                                  : locale.startsWith("en")
+                                    ? "Copy run note"
+                                    : "复制备注"}
+                              </button>
+                            </div>
                             <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 text-[11px] leading-6 text-slate-200">
                               {entry.runNote}
                             </pre>

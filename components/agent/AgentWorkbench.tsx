@@ -1509,7 +1509,9 @@ function buildMarkdownPreviewHtml(locale: string, title: string, markdown: strin
   const rawLabel = locale.startsWith("en") ? "Raw markdown" : "原始 Markdown";
   const eyebrow = locale.startsWith("en") ? "Compare markdown preview" : "Compare Markdown 预览";
   const copyRenderedLabel = locale.startsWith("en") ? "Copy rendered summary" : "复制渲染摘要";
+  const copyRawLabel = locale.startsWith("en") ? "Copy raw markdown" : "复制原始 Markdown";
   const copiedLabel = locale.startsWith("en") ? "Rendered summary copied." : "已复制渲染摘要。";
+  const rawCopiedLabel = locale.startsWith("en") ? "Raw markdown copied." : "已复制原始 Markdown。";
   const copyFailedLabel = locale.startsWith("en") ? "Copy failed. Try again." : "复制失败，请重试。";
   return `<!doctype html>
 <html lang="en">
@@ -1561,6 +1563,7 @@ function buildMarkdownPreviewHtml(locale: string, title: string, markdown: strin
             <div class="header-actions">
               <div class="copy-status" id="copy-status" role="status" aria-live="polite"></div>
               <button type="button" class="copy-button" id="copy-rendered">${escapeHtml(copyRenderedLabel)}</button>
+              <button type="button" class="copy-button" id="copy-raw">${escapeHtml(copyRawLabel)}</button>
               <div class="tabs" role="tablist" aria-label="${escapeHtml(eyebrow)}">
                 <button type="button" class="tab-button is-active" data-tab="rendered">${escapeHtml(renderedLabel)}</button>
                 <button type="button" class="tab-button" data-tab="raw">${escapeHtml(rawLabel)}</button>
@@ -1627,6 +1630,26 @@ function buildMarkdownPreviewHtml(locale: string, title: string, markdown: strin
           try {
             fallbackCopy(text);
             setCopyStatus(${JSON.stringify(copiedLabel)});
+          } catch {
+            setCopyStatus(${JSON.stringify(copyFailedLabel)});
+          }
+        }
+      });
+      document.getElementById("copy-raw")?.addEventListener("click", async () => {
+        const rawPanel = document.querySelector('[data-panel="raw"] pre');
+        const text = (rawPanel?.innerText || "").trim();
+        if (!text) return;
+        try {
+          if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(text);
+          } else {
+            fallbackCopy(text);
+          }
+          setCopyStatus(${JSON.stringify(rawCopiedLabel)});
+        } catch {
+          try {
+            fallbackCopy(text);
+            setCopyStatus(${JSON.stringify(rawCopiedLabel)});
           } catch {
             setCopyStatus(${JSON.stringify(copyFailedLabel)});
           }
