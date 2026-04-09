@@ -4,6 +4,7 @@ import { FormEvent, KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect,
 import dynamic from "next/dynamic";
 import { agentTargets as builtinAgentTargets, agentToolSpecs } from "@/lib/agent/catalog";
 import { useLocale } from "@/components/layout/LocaleProvider";
+import { useAgentCompareState } from "@/components/agent/useAgentCompareState";
 import {
   getDefaultSystemPromptForLocale,
   getLocalizedStarterPrompts,
@@ -1046,28 +1047,50 @@ export function AgentWorkbench() {
   const [sessionExportScope, setSessionExportScope] = useState<"visible" | "pinned">("visible");
   const [selectedTargetId, setSelectedTargetId] = useState("anthropic-claude");
   const [workbenchMode, setWorkbenchMode] = useState<AgentWorkbenchMode>("chat");
-  const [compareTargetIds, setCompareTargetIds] = useState<string[]>([]);
-  const [compareIntent, setCompareIntent] = useState<AgentCompareIntent>("model-vs-model");
-  const [compareOutputShape, setCompareOutputShape] = useState<AgentCompareOutputShape>("freeform");
-  const [comparePending, setComparePending] = useState(false);
-  const [compareError, setCompareError] = useState("");
-  const [compareResult, setCompareResult] = useState<AgentCompareResponse | null>(null);
-  const [compareBaseTargetId, setCompareBaseTargetId] = useState("");
-  const [compareReviewSummaryTone, setCompareReviewSummaryTone] = useState<AgentCompareReviewSummaryTone>("pr");
-  const [compareReviewSummaryDetail, setCompareReviewSummaryDetail] =
-    useState<AgentCompareReviewSummaryDetail>("compact");
-  const [compareRequestId, setCompareRequestId] = useState("");
-  const [compareRuntimeByTargetId, setCompareRuntimeByTargetId] = useState<Record<string, AgentRuntimeStatus>>({});
-  const [compareProgressByTargetId, setCompareProgressByTargetId] = useState<Record<string, AgentCompareLaneProgress>>({});
-  const [compareBenchmarkUseOutputContract, setCompareBenchmarkUseOutputContract] = useState(true);
-  const [compareBenchmarkPreviewDiffOnly, setCompareBenchmarkPreviewDiffOnly] = useState(false);
-  const [compareRecoveryPendingTargetId, setCompareRecoveryPendingTargetId] = useState("");
-  const [compareRecoveryConfirmTargetId, setCompareRecoveryConfirmTargetId] = useState("");
-  const [compareRecoveryCooldownByTargetId, setCompareRecoveryCooldownByTargetId] = useState<Record<string, number>>({});
-  const [compareRecoveryNotice, setCompareRecoveryNotice] = useState<{ tone: "info" | "success" | "warning"; message: string } | null>(null);
-  const [benchmarkPending, setBenchmarkPending] = useState(false);
-  const [benchmarkError, setBenchmarkError] = useState("");
-  const [benchmarkResult, setBenchmarkResult] = useState<AgentBenchmarkResponse | null>(null);
+  const {
+    compareTargetIds,
+    compareIntent,
+    compareOutputShape,
+    comparePending,
+    compareError,
+    compareResult,
+    compareBaseTargetId,
+    compareReviewSummaryTone,
+    compareReviewSummaryDetail,
+    compareRequestId,
+    compareRuntimeByTargetId,
+    compareProgressByTargetId,
+    compareBenchmarkUseOutputContract,
+    compareBenchmarkPreviewDiffOnly,
+    compareRecoveryPendingTargetId,
+    compareRecoveryConfirmTargetId,
+    compareRecoveryCooldownByTargetId,
+    compareRecoveryNotice,
+    benchmarkPending,
+    benchmarkError,
+    benchmarkResult,
+    setCompareTargetIds,
+    setCompareIntent,
+    setCompareOutputShape,
+    setComparePending,
+    setCompareError,
+    setCompareResult,
+    setCompareBaseTargetId,
+    setCompareReviewSummaryTone,
+    setCompareReviewSummaryDetail,
+    setCompareRequestId,
+    setCompareRuntimeByTargetId,
+    setCompareProgressByTargetId,
+    setCompareBenchmarkUseOutputContract,
+    setCompareBenchmarkPreviewDiffOnly,
+    setCompareRecoveryPendingTargetId,
+    setCompareRecoveryConfirmTargetId,
+    setCompareRecoveryCooldownByTargetId,
+    setCompareRecoveryNotice,
+    setBenchmarkPending,
+    setBenchmarkError,
+    setBenchmarkResult
+  } = useAgentCompareState();
   const [turns, setTurns] = useState<AgentTurn[]>([]);
   const [input, setInput] = useState(() => getLocalizedStarterPrompts("zh-CN")[0]);
   const [systemPrompt, setSystemPrompt] = useState(() => getDefaultSystemPromptForLocale("zh-CN"));

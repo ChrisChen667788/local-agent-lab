@@ -42,6 +42,8 @@ fi
 
 COMMAND="${1:-dev}"
 PORT="${2:-3011}"
+NEXT_DEV_DIST_DIR="${NEXT_DEV_DIST_DIR:-.next-dev}"
+NEXT_BUILD_DIST_DIR="${NEXT_BUILD_DIST_DIR:-.next-build}"
 
 cd "$ROOT"
 load_env_file "$ROOT/.env.local"
@@ -54,12 +56,15 @@ export LOCAL_AGENT_DATA_DIR="${LOCAL_AGENT_DATA_DIR:-$HOME/Library/Application S
 
 case "$COMMAND" in
   dev)
+    export NEXT_DIST_DIR="${NEXT_DIST_DIR:-$NEXT_DEV_DIST_DIR}"
     exec "$NODE_BIN" node_modules/next/dist/bin/next dev -p "$PORT"
     ;;
   build)
+    export NEXT_DIST_DIR="${NEXT_DIST_DIR:-$NEXT_BUILD_DIST_DIR}"
     exec "$NODE_BIN" node_modules/next/dist/bin/next build
     ;;
   start)
+    export NEXT_DIST_DIR="${NEXT_DIST_DIR:-$NEXT_BUILD_DIST_DIR}"
     exec "$NODE_BIN" node_modules/next/dist/bin/next start -p "$PORT"
     ;;
   *)
