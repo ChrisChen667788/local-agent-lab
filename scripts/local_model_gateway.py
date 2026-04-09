@@ -2462,8 +2462,12 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
             self.send_json(500, {"detail": str(exc)})
 
 
+class ReusableThreadingHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+
+
 if __name__ == "__main__":
-    server = ThreadingHTTPServer(("127.0.0.1", 4000), GatewayRequestHandler)
+    server = ReusableThreadingHTTPServer(("127.0.0.1", 4000), GatewayRequestHandler)
     server.daemon_threads = True
     print("[boot] local_model_gateway serving on http://127.0.0.1:4000", flush=True)
     try:
