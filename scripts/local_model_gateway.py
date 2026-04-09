@@ -99,7 +99,7 @@ mlx_load = None
 mlx_stream_generate = None
 mlx_import_error = None
 
-MODEL_REPOS = {
+BASE_MODEL_REPOS = {
     "local-qwen3-0.6b": os.getenv("LOCAL_QWEN_0_6B_REPO", "Qwen/Qwen3-0.6B-MLX-6bit"),
     "local-qwen3-4b-4bit": os.getenv(
         "LOCAL_QWEN_4B_4BIT_REPO", "mlx-community/Qwen3-4B-Instruct-2507-4bit"
@@ -108,6 +108,7 @@ MODEL_REPOS = {
         "LOCAL_QWEN35_4B_4BIT_REPO", "mlx-community/Qwen3.5-4B-4bit"
     ),
 }
+MODEL_REPOS = dict(BASE_MODEL_REPOS)
 WORKSPACE_ROOT = Path(os.getenv("LOCAL_AGENT_WORKSPACE_ROOT", os.getcwd())).resolve()
 MAX_TOOL_STEPS = max(1, min(8, int(os.getenv("LOCAL_AGENT_TOOL_STEPS", "6"))))
 MAX_ACTION_RETRIES = max(0, min(3, int(os.getenv("LOCAL_AGENT_JSON_RETRIES", "2"))))
@@ -146,6 +147,165 @@ PRIVILEGED_COMMAND_PATTERNS = [
     re.compile(r"\bmv\s+.+\s+/[^\s]+", re.IGNORECASE),
     re.compile(r"\bcp\s+.+\s+/[^\s]+", re.IGNORECASE),
 ]
+
+
+def normalize_local_model_alias(value: str):
+    normalized = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
+    return normalized if normalized.startswith("local-") else f"local-{normalized}"
+
+
+def infer_repo_id_from_cache_dir(entry: Path):
+    name = entry.name
+    if not name.startswith("models--"):
+        return None
+    repo_id = name[len("models--") :].replace("--", "/")
+    return repo_id if "/" in repo_id else None
+
+
+def list_huggingface_cache_roots():
+    candidates = [
+        Path(os.environ.get("HF_HUB_CACHE", "")).expanduser() if os.environ.get("HF_HUB_CACHE") else None,
+        Path.home() / ".cache" / "huggingface" / "hub",
+        Path.home() / "Library" / "Caches" / "huggingface" / "hub",
+    ]
+    roots = []
+    seen = set()
+    for candidate in candidates:
+        if not candidate:
+            continue
+        key = str(candidate.resolve()) if candidate.exists() else str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(candidate)
+    return roots
+
+
+def list_local_model_scan_roots():
+    candidates = [
+        Path.home() / ".lmstudio" / "models",
+        Path.home() / "Library" / "Application Support" / "LM Studio" / "models",
+    ]
+    extra_dirs = os.getenv("LOCAL_AGENT_MODEL_SCAN_DIRS", "")
+    if extra_dirs.strip():
+        for raw_entry in extra_dirs.split(os.pathsep):
+            raw_entry = raw_entry.strip()
+            if raw_entry:
+                candidates.append(Path(raw_entry).expanduser())
+
+    roots = []
+    seen = set()
+    for candidate in candidates:
+        key = str(candidate.resolve()) if candidate.exists() else str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(candidate)
+    return roots
+
+
+def is_probably_generative_mlx_repo(repo_id: str, snapshot_dir: Path):
+    try:
+        file_names = {item.name.lower() for item in snapshot_dir.iterdir() if item.is_file()}
+    except Exception:
+        return False
+
+    if "config.json" not in file_names or "tokenizer.json" not in file_names:
+        return False
+    if not any(name.endswith(".safetensors") or name.endswith(".safetensors.index.json") for name in file_names):
+        return False
+    if "chat_template.jinja" in file_names or "generation_config.json" in file_names:
+        return True
+
+    normalized = repo_id.lower()
+    likely_model_markers = ("mlx", "instruct", "chat", "qwen", "llama", "gemma", "mistral", "phi")
+    return any(marker in normalized for marker in likely_model_markers)
+
+
+def discover_cached_model_repos():
+    discovered = {}
+    for root in list_huggingface_cache_roots():
+        if not root.exists():
+            continue
+        for entry in sorted(root.glob("models--*")):
+            repo_id = infer_repo_id_from_cache_dir(entry)
+            if not repo_id or repo_id in BASE_MODEL_REPOS.values():
+                continue
+            snapshots_dir = entry / "snapshots"
+            if not snapshots_dir.exists():
+                continue
+            try:
+                snapshots = sorted(
+                    [child for child in snapshots_dir.iterdir() if child.is_dir()],
+                    key=lambda child: child.stat().st_mtime,
+                    reverse=True,
+                )
+            except Exception:
+                continue
+            if not snapshots:
+                continue
+            snapshot_dir = snapshots[0]
+            if not is_probably_generative_mlx_repo(repo_id, snapshot_dir):
+                continue
+            alias = normalize_local_model_alias(repo_id.split("/", 1)[1] if "/" in repo_id else repo_id)
+            if alias in BASE_MODEL_REPOS or alias in discovered:
+                continue
+            discovered[alias] = repo_id
+    return discovered
+
+
+def infer_repo_id_from_local_model_dir(root: Path, model_dir: Path):
+    try:
+        relative = model_dir.relative_to(root)
+    except Exception:
+        relative = model_dir
+    parts = [part for part in relative.parts if part and part != "."]
+    if not parts:
+        return None
+    if len(parts) >= 2:
+        return f"{parts[-2]}/{parts[-1]}"
+    return parts[-1]
+
+
+def discover_local_installed_model_paths():
+    discovered = {}
+    for root in list_local_model_scan_roots():
+        if not root.exists():
+            continue
+        candidate_dirs = []
+        try:
+            candidate_dirs.extend(child for child in root.iterdir() if child.is_dir())
+            for child in list(candidate_dirs):
+                try:
+                    candidate_dirs.extend(grandchild for grandchild in child.iterdir() if grandchild.is_dir())
+                except Exception:
+                    continue
+        except Exception:
+            continue
+
+        seen_dirs = set()
+        for candidate in candidate_dirs:
+            candidate_key = str(candidate)
+            if candidate_key in seen_dirs:
+                continue
+            seen_dirs.add(candidate_key)
+            repo_id = infer_repo_id_from_local_model_dir(root, candidate)
+            if not repo_id or repo_id in BASE_MODEL_REPOS.values():
+                continue
+            if not is_probably_generative_mlx_repo(repo_id, candidate):
+                continue
+            alias = normalize_local_model_alias(repo_id.split("/", 1)[1] if "/" in repo_id else repo_id)
+            if alias in BASE_MODEL_REPOS or alias in discovered:
+                continue
+            discovered[alias] = str(candidate)
+    return discovered
+
+
+def refresh_model_repos():
+    global MODEL_REPOS
+    discovered = {**discover_cached_model_repos(), **discover_local_installed_model_paths()}
+    MODEL_REPOS = {**BASE_MODEL_REPOS, **discovered}
+    return MODEL_REPOS
 READ_ONLY_COMMAND_PATTERNS = [
     re.compile(r"^pwd$", re.IGNORECASE),
     re.compile(r"^ls(?:\s|$)", re.IGNORECASE),
@@ -1049,6 +1209,7 @@ TOOL_HANDLERS = {
 def get_loaded_runtime(alias: str):
     global loaded_alias, loaded_model, loaded_tokenizer, loading_alias, loading_started_at, loading_error
 
+    refresh_model_repos()
     repo = MODEL_REPOS.get(alias)
     if not repo:
         raise HTTPException(status_code=404, detail=f"Unsupported local model alias: {alias}")
@@ -1779,6 +1940,7 @@ def run_local_tool_loop(model_alias: str, model: Any, tokenizer: Any, request: C
 @app.get("/health")
 def health():
     cleanup_expired_confirmations()
+    refresh_model_repos()
     with state_lock:
         current_queue_depth = queued_requests
         current_active_requests = active_requests
@@ -1803,6 +1965,7 @@ def health():
 
 @app.get("/v1/models")
 def list_models():
+    refresh_model_repos()
     return {
         "data": [
             {

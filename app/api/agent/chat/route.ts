@@ -12,7 +12,7 @@ import {
   resolveEffectiveProviderProfile,
   runAgentRequest
 } from "@/lib/agent/providers";
-import { getAgentTarget } from "@/lib/agent/catalog";
+import { getServerAgentTarget } from "@/lib/agent/server-targets";
 import { appendChatLog } from "@/lib/agent/log-store";
 import { lookupPromptCache, savePromptCache } from "@/lib/agent/cache-store";
 import {
@@ -65,7 +65,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "messages must be a valid history array." }, { status: 400 });
     }
 
-    const target = getAgentTarget(body.targetId);
+    const target = getServerAgentTarget(body.targetId);
     if (!target) {
       return NextResponse.json({ error: `Unknown target: ${body.targetId}` }, { status: 404 });
     }
@@ -239,7 +239,7 @@ export async function POST(request: Request) {
     const message = error instanceof Error ? error.message : "Unknown error";
     if (targetId) {
       finishTrackedRequest(targetId, false);
-      const target = getAgentTarget(targetId);
+      const target = getServerAgentTarget(targetId);
       appendChatLog({
         kind: "chat",
         id: crypto.randomUUID(),

@@ -1,8 +1,8 @@
 "use client";
 
-import { FormEvent, KeyboardEvent as ReactKeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgentCompareLab } from "@/components/agent/AgentCompareLab";
-import { agentTargets, agentToolSpecs } from "@/lib/agent/catalog";
+import { agentTargets as builtinAgentTargets, agentToolSpecs } from "@/lib/agent/catalog";
 import { useLocale } from "@/components/layout/LocaleProvider";
 import {
   getDefaultSystemPromptForLocale,
@@ -93,6 +93,8 @@ type StoredAgentSession = {
   turns: AgentTurn[];
   connectionChecksByTargetId: Record<string, AgentConnectionCheckResponse>;
 };
+
+const TRANSCRIPT_BOTTOM_THRESHOLD_PX = 96;
 
 type ParsedToolOutput = Record<string, unknown>;
 type ToolReviewItem = {
@@ -366,6 +368,11 @@ function describeRuntimePhase(runtime: AgentRuntimeStatus | null, locale: string
         label: locale.startsWith("en") ? "Remote" : "远端",
         className: "bg-violet-400/15 text-violet-200"
       };
+    case "unloaded":
+      return {
+        label: locale.startsWith("en") ? "Unloaded" : "空载",
+        className: "bg-slate-400/15 text-slate-200"
+      };
     case "ready":
       return {
         label: locale.startsWith("en") ? "Ready" : "已就绪",
@@ -405,6 +412,7 @@ function buildRuntimeStageItems(runtime: AgentRuntimeStatus | null, locale: stri
         offline: "Offline",
         recovering: "Recovering",
         loading: "Loading",
+        unloaded: "Unloaded",
         busy: "Busy",
         ready: "Ready"
       }
@@ -412,10 +420,11 @@ function buildRuntimeStageItems(runtime: AgentRuntimeStatus | null, locale: stri
         offline: "离线",
         recovering: "恢复中",
         loading: "加载中",
+        unloaded: "空载",
         busy: "处理中",
         ready: "已就绪"
       };
-  const steps: Array<keyof typeof labels> = ["offline", "recovering", "loading", "busy", "ready"];
+  const steps: Array<keyof typeof labels> = ["offline", "recovering", "loading", "unloaded", "busy", "ready"];
   const phase = runtime?.phase || "offline";
   const phaseIndex = steps.indexOf(phase as keyof typeof labels);
   return steps.map((step, index) => ({
@@ -1783,6 +1792,8 @@ function getHealthBadge(check: AgentConnectionCheckResponse | null) {
 export function AgentWorkbench() {
   const { locale, dictionary } = useLocale();
   const starterPrompts = useMemo(() => getLocalizedStarterPrompts(locale), [locale]);
+  const [availableTargets, setAvailableTargets] = useState<AgentTarget[]>(builtinAgentTargets);
+  const agentTargets = availableTargets;
   const [sessionId, setSessionId] = useState(() => crypto.randomUUID());
   const [savedSessions, setSavedSessions] = useState<StoredAgentSession[]>([]);
   const [sessionSearch, setSessionSearch] = useState("");
@@ -1843,6 +1854,8 @@ export function AgentWorkbench() {
     {}
   );
   const [copyState, setCopyState] = useState("");
+  const [transcriptPinnedToBottom, setTranscriptPinnedToBottom] = useState(true);
+  const [unseenTranscriptTurns, setUnseenTranscriptTurns] = useState(0);
   const [connectionChecksByTargetId, setConnectionChecksByTargetId] = useState<
     Record<string, AgentConnectionCheckResponse>
   >({});
@@ -1852,15 +1865,48 @@ export function AgentWorkbench() {
   const [serverSessionSyncState, setServerSessionSyncState] = useState<"" | "syncing" | "synced" | "error">("");
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const lastObservedTurnCountRef = useRef(0);
   const runtimeRequestInFlightRef = useRef(false);
   const sessionSyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const compareRecoveryConfirmTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const compareRecoveryNoticeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadAvailableTargets() {
+      try {
+        const response = await fetch("/api/agent/targets", { cache: "no-store" });
+        const payload = (await response.json()) as { targets?: AgentTarget[] };
+        if (!response.ok || cancelled || !Array.isArray(payload.targets) || !payload.targets.length) return;
+        setAvailableTargets(payload.targets);
+      } catch {
+        // keep builtin targets when sync fails
+      }
+    }
+
+    void loadAvailableTargets();
+    const timer = window.setInterval(() => {
+      void loadAvailableTargets();
+    }, 30000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
   const selectedTarget = useMemo(
     () => agentTargets.find((target) => target.id === selectedTargetId) || agentTargets[0],
-    [selectedTargetId]
+    [agentTargets, selectedTargetId]
   );
+  useEffect(() => {
+    if (!agentTargets.length) return;
+    if (!agentTargets.some((target) => target.id === selectedTargetId)) {
+      setSelectedTargetId(agentTargets[0].id);
+    }
+    setCompareTargetIds((current) => current.filter((targetId) => agentTargets.some((target) => target.id === targetId)));
+  }, [agentTargets, selectedTargetId]);
   const compareLaneCount = useMemo(
     () => agentTargets.filter((target) => compareTargetIds.includes(target.id)).length,
     [compareTargetIds]
@@ -2714,6 +2760,7 @@ export function AgentWorkbench() {
   );
 
   function restoreSession(session: StoredAgentSession) {
+    setTranscriptPinnedToBottom(true);
     setSessionId(session.id);
     setSelectedTargetId(
       agentTargets.some((target) => target.id === session.selectedTargetId)
@@ -2746,6 +2793,7 @@ export function AgentWorkbench() {
   }
 
   function startNewSession() {
+    setTranscriptPinnedToBottom(true);
     setSessionId(crypto.randomUUID());
     setTurns([]);
     setInput("");
@@ -3317,10 +3365,64 @@ export function AgentWorkbench() {
     window.localStorage.setItem(RUNTIME_SWITCH_HISTORY_STORAGE_KEY, JSON.stringify(payload));
   }, [runtimeLastSwitchAtByTarget, runtimeLastSwitchMsByTarget]);
 
+  const scrollTranscriptToLatest = useCallback((behavior: ScrollBehavior = "auto") => {
+    const node = transcriptRef.current;
+    if (!node) return;
+    node.scrollTo({ top: node.scrollHeight, behavior });
+  }, []);
+
+  const handleJumpToLatestTranscript = useCallback(() => {
+    setTranscriptPinnedToBottom(true);
+    setUnseenTranscriptTurns(0);
+    scrollTranscriptToLatest("smooth");
+  }, [scrollTranscriptToLatest]);
+
+  const updateTranscriptPinnedState = useCallback(() => {
+    const node = transcriptRef.current;
+    if (!node) return;
+    const distanceFromBottom = node.scrollHeight - node.scrollTop - node.clientHeight;
+    setTranscriptPinnedToBottom(distanceFromBottom <= TRANSCRIPT_BOTTOM_THRESHOLD_PX);
+  }, []);
+
+  const handleTranscriptScroll = useCallback(() => {
+    updateTranscriptPinnedState();
+  }, [updateTranscriptPinnedState]);
+
   useEffect(() => {
-    if (!transcriptRef.current) return;
-    transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
-  }, [turns, pending, toolDecisionBusyKey]);
+    if (workbenchMode !== "chat") return;
+    if (!transcriptPinnedToBottom) return;
+    setUnseenTranscriptTurns(0);
+    const rafId = window.requestAnimationFrame(() => {
+      scrollTranscriptToLatest("auto");
+    });
+    return () => window.cancelAnimationFrame(rafId);
+  }, [turns, pending, toolDecisionBusyKey, transcriptPinnedToBottom, workbenchMode, scrollTranscriptToLatest]);
+
+  useEffect(() => {
+    if (workbenchMode !== "chat") return;
+    const rafId = window.requestAnimationFrame(() => {
+      scrollTranscriptToLatest("auto");
+      setTranscriptPinnedToBottom(true);
+      setUnseenTranscriptTurns(0);
+    });
+    return () => window.cancelAnimationFrame(rafId);
+  }, [sessionId, workbenchMode, scrollTranscriptToLatest]);
+
+  useEffect(() => {
+    if (workbenchMode !== "chat") {
+      lastObservedTurnCountRef.current = turns.length;
+      setUnseenTranscriptTurns(0);
+      return;
+    }
+    const previousTurnCount = lastObservedTurnCountRef.current;
+    if (!transcriptPinnedToBottom && turns.length > previousTurnCount) {
+      setUnseenTranscriptTurns((current) => current + (turns.length - previousTurnCount));
+    }
+    if (transcriptPinnedToBottom && unseenTranscriptTurns !== 0) {
+      setUnseenTranscriptTurns(0);
+    }
+    lastObservedTurnCountRef.current = turns.length;
+  }, [turns.length, transcriptPinnedToBottom, unseenTranscriptTurns, workbenchMode]);
 
   useEffect(() => {
     if (!copyState) return;
@@ -3428,6 +3530,7 @@ export function AgentWorkbench() {
     const requestMessages = flattenTurns(priorTurns);
     const turnId = `${Date.now()}`;
 
+    setTranscriptPinnedToBottom(true);
     setPending(true);
     setError("");
     setInput("");
@@ -4979,67 +5082,71 @@ export function AgentWorkbench() {
                     </button>
                   </div>
                 </div>
-                {sessionGroups.length ? (
-                  sessionGroups.map((group) => (
-                    <div key={group.targetId} className="space-y-2">
-                      <p className="px-1 text-[11px] uppercase tracking-[0.22em] text-slate-500">
-                        {uiText.targetGroup} · {group.targetLabel}
-                      </p>
-                      {group.sessions.map((session) => (
-                        <div
-                          key={session.id}
-                          className="rounded-2xl border border-white/10 bg-black/20 px-3 py-3"
-                        >
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="min-w-0">
-                              <p className="truncate text-sm text-white">{session.title}</p>
-                              <p className="mt-2 text-xs text-slate-400">{new Date(session.updatedAt).toLocaleString()}</p>
+                <div className="max-h-[42vh] overflow-y-auto overscroll-contain pr-1">
+                  <div className="space-y-3">
+                    {sessionGroups.length ? (
+                      sessionGroups.map((group) => (
+                        <div key={group.targetId} className="space-y-2">
+                          <p className="px-1 text-[11px] uppercase tracking-[0.22em] text-slate-500">
+                            {uiText.targetGroup} · {group.targetLabel}
+                          </p>
+                          {group.sessions.map((session) => (
+                            <div
+                              key={session.id}
+                              className="rounded-2xl border border-white/10 bg-black/20 px-3 py-3"
+                            >
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="min-w-0">
+                                  <p className="truncate text-sm text-white">{session.title}</p>
+                                  <p className="mt-2 text-xs text-slate-400">{new Date(session.updatedAt).toLocaleString()}</p>
+                                </div>
+                                {session.pinned ? (
+                                  <span className="rounded-full bg-white/5 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">
+                                    {uiText.pinned}
+                                  </span>
+                                ) : null}
+                              </div>
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => restoreSession(session)}
+                                  className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1.5 text-[11px] font-semibold text-cyan-100 transition hover:bg-cyan-400/20"
+                                >
+                                  {uiText.restoreSession}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRenameSession(session.id)}
+                                  className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:bg-white/10"
+                                >
+                                  {uiText.renameSession}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleTogglePinSession(session.id)}
+                                  className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:bg-white/10"
+                                >
+                                  {session.pinned ? uiText.unpinSession : uiText.pinSession}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteSession(session.id)}
+                                  className="rounded-full border border-rose-400/30 bg-rose-400/10 px-3 py-1.5 text-[11px] font-semibold text-rose-100 transition hover:bg-rose-400/20"
+                                >
+                                  {uiText.deleteSession}
+                                </button>
+                              </div>
                             </div>
-                            {session.pinned ? (
-                              <span className="rounded-full bg-white/5 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">
-                                {uiText.pinned}
-                              </span>
-                            ) : null}
-                          </div>
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            <button
-                              type="button"
-                              onClick={() => restoreSession(session)}
-                              className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1.5 text-[11px] font-semibold text-cyan-100 transition hover:bg-cyan-400/20"
-                            >
-                              {uiText.restoreSession}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleRenameSession(session.id)}
-                              className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:bg-white/10"
-                            >
-                              {uiText.renameSession}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleTogglePinSession(session.id)}
-                              className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:bg-white/10"
-                            >
-                              {session.pinned ? uiText.unpinSession : uiText.pinSession}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteSession(session.id)}
-                              className="rounded-full border border-rose-400/30 bg-rose-400/10 px-3 py-1.5 text-[11px] font-semibold text-rose-100 transition hover:bg-rose-400/20"
-                            >
-                              {uiText.deleteSession}
-                            </button>
-                          </div>
+                          ))}
                         </div>
-                      ))}
-                    </div>
-                  ))
-                ) : (
-                  <p className="rounded-2xl border border-white/10 bg-black/20 px-3 py-3 text-sm text-slate-400">
-                    {uiText.noSessions}
-                  </p>
-                )}
+                      ))
+                    ) : (
+                      <p className="rounded-2xl border border-white/10 bg-black/20 px-3 py-3 text-sm text-slate-400">
+                        {uiText.noSessions}
+                      </p>
+                    )}
+                  </div>
+                </div>
               </div>
               <button
                 type="button"
@@ -5268,7 +5375,8 @@ export function AgentWorkbench() {
                 <>
               <div
                 ref={transcriptRef}
-                className="h-[52vh] min-h-[360px] max-h-[72vh] resize-y overflow-y-auto bg-[linear-gradient(180deg,rgba(15,23,42,0.18),rgba(2,6,23,0.12))] px-5 py-5 font-mono text-[13px] leading-7 sm:h-[58vh]"
+                onScroll={handleTranscriptScroll}
+                className="h-[52vh] min-h-[360px] max-h-[72vh] overflow-y-auto overscroll-contain bg-[linear-gradient(180deg,rgba(15,23,42,0.18),rgba(2,6,23,0.12))] px-5 py-5 font-mono text-[13px] leading-7 sm:h-[58vh]"
               >
                 {turns.length === 0 ? (
                   <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.03] px-4 py-5 text-sm leading-7 text-slate-400">
@@ -6450,6 +6558,40 @@ export function AgentWorkbench() {
                   </div>
                 )}
               </div>
+
+              {!transcriptPinnedToBottom ? (
+                <div className="border-t border-cyan-400/15 bg-slate-950/80 px-5 py-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-cyan-400/15 bg-cyan-400/[0.06] px-3 py-3">
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-cyan-200">
+                        {locale.startsWith("en") ? "Reading history" : "正在查看历史"}
+                      </p>
+                      <p className="mt-1 text-xs leading-6 text-slate-300">
+                        {pending
+                          ? locale.startsWith("en")
+                            ? "Live output is still streaming below. We paused auto-follow so you can keep reading."
+                            : "底部仍有新内容在继续生成。为了不打断阅读，自动跟随已暂停。"
+                          : unseenTranscriptTurns > 0
+                            ? locale.startsWith("en")
+                              ? `${unseenTranscriptTurns} new turn${unseenTranscriptTurns > 1 ? "s" : ""} arrived while you were reading earlier messages.`
+                              : `你查看较早消息时，已有 ${unseenTranscriptTurns} 条新轮次到达。`
+                            : locale.startsWith("en")
+                              ? "Auto-follow is paused until you jump back to the latest turn."
+                              : "自动跟随已暂停，回到最新内容后会恢复。"}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleJumpToLatestTranscript}
+                      className="shrink-0 rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.18em] text-cyan-100 transition hover:bg-cyan-400/20"
+                    >
+                      {locale.startsWith("en")
+                        ? `Jump to latest${unseenTranscriptTurns > 0 ? ` (${unseenTranscriptTurns})` : ""}`
+                        : `回到最新${unseenTranscriptTurns > 0 ? ` (${unseenTranscriptTurns})` : ""}`}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
 
               <form onSubmit={handleSubmit} className="border-t border-white/10 bg-slate-950/90 px-5 py-4">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-3">

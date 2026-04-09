@@ -12,7 +12,7 @@ import {
   resolveTargetWithMode,
   runAgentRequest
 } from "@/lib/agent/providers";
-import { getAgentTarget } from "@/lib/agent/catalog";
+import { getServerAgentTarget } from "@/lib/agent/server-targets";
 import {
   completeCompareProgress,
   createCompareProgress,
@@ -378,7 +378,7 @@ export async function POST(request: Request) {
         : crypto.randomUUID();
 
     for (const targetId of targetIds) {
-      if (!getAgentTarget(targetId)) {
+      if (!getServerAgentTarget(targetId)) {
         return NextResponse.json({ error: `Unknown target: ${targetId}` }, { status: 404 });
       }
     }
@@ -386,7 +386,7 @@ export async function POST(request: Request) {
     createCompareProgress({
       requestId,
       lanes: targetIds.map((targetId) => {
-        const target = getAgentTarget(targetId)!;
+        const target = getServerAgentTarget(targetId)!;
         return {
           targetId,
           targetLabel: target.label,
@@ -442,7 +442,7 @@ export async function POST(request: Request) {
     const effectiveInput = `${body.input}${shapeInstructions.inputSuffix}`;
 
     const localLaneContexts = targetIds
-      .filter((targetId) => getAgentTarget(targetId)?.execution === "local")
+      .filter((targetId) => getServerAgentTarget(targetId)?.execution === "local")
       .map((targetId) =>
         clampContextWindowForTarget(targetId, requestedContextWindow, {
           enableTools,
@@ -455,7 +455,7 @@ export async function POST(request: Request) {
 
     const results: AgentCompareLaneResult[] = [];
     for (const targetId of targetIds) {
-      const target = getAgentTarget(targetId)!;
+      const target = getServerAgentTarget(targetId)!;
       const resolvedTarget = resolveTargetWithMode(targetId, thinkingMode);
       const laneContextWindow = clampContextWindowForTarget(
         targetId,

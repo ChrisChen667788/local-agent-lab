@@ -1,9 +1,10 @@
-import { agentToolSpecs, getAgentTarget } from "@/lib/agent/catalog";
+import { agentToolSpecs } from "@/lib/agent/catalog";
 import {
   ensureLocalGatewayAvailableDetailed,
   probeLocalGateway,
   restartLocalGateway
 } from "@/lib/agent/local-gateway";
+import { getServerAgentTarget } from "@/lib/agent/server-targets";
 import { runWorkspaceTool } from "@/lib/agent/server-tools";
 import type {
   AgentChatRequest,
@@ -86,7 +87,7 @@ export function resolveTargetWithMode(
   targetId: string,
   thinkingMode: AgentThinkingMode = "standard"
 ): ResolvedTarget {
-  const target = getAgentTarget(targetId);
+  const target = getServerAgentTarget(targetId);
   if (!target) {
     throw new Error(`Unknown target: ${targetId}`);
   }
@@ -111,7 +112,7 @@ export function resolveTargetWithMode(
 }
 
 export function isThinkingModelConfigured(targetId: string) {
-  const target = getAgentTarget(targetId);
+  const target = getServerAgentTarget(targetId);
   if (!target?.thinkingModelEnv) return false;
   const localEnv = loadLocalEnv();
   return Boolean(process.env[target.thinkingModelEnv] || localEnv[target.thinkingModelEnv]);

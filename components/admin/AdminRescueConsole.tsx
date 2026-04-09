@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
-import { agentTargets } from "@/lib/agent/catalog";
+import { agentTargets as builtinAgentTargets } from "@/lib/agent/catalog";
 import type { AgentBenchmarkResponse } from "@/lib/agent/types";
 
 const SUITE_OPTIONS = [
@@ -12,6 +12,8 @@ const SUITE_OPTIONS = [
 ];
 
 export function AdminRescueConsole() {
+  const [availableTargets, setAvailableTargets] = useState(builtinAgentTargets);
+  const agentTargets = availableTargets;
   const [targetId, setTargetId] = useState("local-qwen3-0.6b");
   const [suiteId, setSuiteId] = useState("milestone-formal");
   const [contextWindow, setContextWindow] = useState(32768);
@@ -21,10 +23,35 @@ export function AdminRescueConsole() {
   const [result, setResult] = useState<AgentBenchmarkResponse | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
+
+    async function loadAvailableTargets() {
+      try {
+        const response = await fetch("/api/agent/targets", { cache: "no-store" });
+        const payload = (await response.json()) as { targets?: typeof builtinAgentTargets };
+        if (!response.ok || cancelled || !Array.isArray(payload.targets) || !payload.targets.length) return;
+        setAvailableTargets(payload.targets);
+      } catch {
+        // keep builtin targets when sync fails
+      }
+    }
+
+    void loadAvailableTargets();
+    const timer = window.setInterval(() => {
+      void loadAvailableTargets();
+    }, 30000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
     setTargetId((current) =>
       agentTargets.some((target) => target.id === current) ? current : agentTargets[0]?.id || ""
     );
-  }, []);
+  }, [agentTargets]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import { existsSync, readFileSync } from "fs";
 import path from "path";
-import { getAgentTarget } from "@/lib/agent/catalog";
+import { getServerAgentTarget } from "@/lib/agent/server-targets";
 import {
   ensureLocalGatewayAvailableDetailed,
   getLocalGatewaySupervisorInfo,
   probeLocalGateway
 } from "@/lib/agent/local-gateway";
+import { readRuntimeProcessMetrics } from "@/lib/agent/runtime-process-metrics";
 import { normalizeThinkingMode, resolveTargetWithMode } from "@/lib/agent/providers";
 import type { AgentRuntimeStatus } from "@/lib/agent/types";
 
@@ -61,6 +62,7 @@ function deriveRuntimePhase(input: {
   execution: "local" | "remote";
   available: boolean;
   busy?: boolean;
+  loadedAlias?: string | null;
   loadingAlias?: string | null;
   loadingError?: string | null;
   supervisorAlive?: boolean;
@@ -91,6 +93,12 @@ function deriveRuntimePhase(input: {
       phaseDetail: "The local runtime is serializing requests."
     };
   }
+  if (input.available && !input.loadedAlias) {
+    return {
+      phase: "unloaded" as const,
+      phaseDetail: "No local model is currently loaded. The gateway is idle and ready for a prewarm or chat request."
+    };
+  }
   if (input.available) {
     return {
       phase: "ready" as const,
@@ -118,7 +126,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "targetId is required." }, { status: 400 });
   }
 
-  const target = getAgentTarget(targetId);
+  const target = getServerAgentTarget(targetId);
   if (!target) {
     return NextResponse.json({ error: `Unknown target: ${targetId}` }, { status: 404 });
   }
@@ -135,6 +143,8 @@ export async function GET(request: Request) {
           (process.env[target.thinkingModelEnv] || loadLocalEnv()[target.thinkingModelEnv])
         )
       : false;
+  const supervisor = getLocalGatewaySupervisorInfo();
+  const processMetrics = readRuntimeProcessMetrics(supervisor.gatewayPid ?? supervisor.supervisorPid);
 
   if (target.execution !== "local") {
     const phase = deriveRuntimePhase({
@@ -157,6 +167,8 @@ export async function GET(request: Request) {
       busy: false,
       queueDepth: 0,
       activeRequests: 0,
+      gatewayCpuPct: processMetrics.gatewayCpuPct,
+      gatewayResidentMemoryMb: processMetrics.gatewayResidentMemoryMb,
       loadedAlias: null,
       message: "Remote target. No local runtime queue."
     };
@@ -166,7 +178,6 @@ export async function GET(request: Request) {
   const localEnv = loadLocalEnv();
   const resolvedBaseUrl = readEnv(localEnv, target.baseUrlEnv, target.baseUrlDefault).replace(/\/$/, "");
   const healthUrl = `${resolvedBaseUrl.replace(/\/v1$/, "")}/health`;
-  const supervisor = getLocalGatewaySupervisorInfo();
 
   try {
     let ensureReason: string | undefined;
@@ -199,6 +210,8 @@ export async function GET(request: Request) {
           busy: true,
           queueDepth: 0,
           activeRequests: 0,
+          gatewayCpuPct: processMetrics.gatewayCpuPct,
+          gatewayResidentMemoryMb: processMetrics.gatewayResidentMemoryMb,
           loadedAlias: null,
           loadingAlias: null,
           loadingElapsedMs: null,
@@ -228,6 +241,10 @@ export async function GET(request: Request) {
         execution: target.execution,
         available: typeof data.loading_alias === "string" ? false : true,
         busy: Boolean(data.busy),
+        loadedAlias:
+          typeof data.loaded_alias === "string" || data.loaded_alias === null
+            ? (data.loaded_alias as string | null)
+            : null,
         loadingAlias:
           typeof data.loading_alias === "string" || data.loading_alias === null
             ? (data.loading_alias as string | null)
@@ -246,6 +263,8 @@ export async function GET(request: Request) {
       thinkingResolvedModel: thinkingResolvedTarget?.resolvedModel || null,
       activeThinkingMode: thinkingMode,
       thinkingModelConfigured,
+      gatewayCpuPct: processMetrics.gatewayCpuPct,
+      gatewayResidentMemoryMb: processMetrics.gatewayResidentMemoryMb,
       busy: Boolean(data.busy),
       queueDepth: typeof data.queue_depth === "number" ? data.queue_depth : 0,
       activeRequests: typeof data.active_requests === "number" ? data.active_requests : 0,
@@ -299,6 +318,8 @@ export async function GET(request: Request) {
       busy: false,
       queueDepth: 0,
       activeRequests: 0,
+      gatewayCpuPct: processMetrics.gatewayCpuPct,
+      gatewayResidentMemoryMb: processMetrics.gatewayResidentMemoryMb,
       loadedAlias: null,
       loadingAlias: null,
       loadingElapsedMs: null,

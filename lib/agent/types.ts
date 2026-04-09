@@ -382,7 +382,7 @@ export type AgentRuntimeStatus = {
   targetLabel: string;
   execution: AgentExecution;
   available: boolean;
-  phase?: "remote" | "ready" | "busy" | "loading" | "recovering" | "offline" | "error";
+  phase?: "remote" | "unloaded" | "ready" | "busy" | "loading" | "recovering" | "offline" | "error";
   phaseDetail?: string;
   resolvedModel?: string;
   resolvedBaseUrl?: string;
@@ -408,6 +408,8 @@ export type AgentRuntimeStatus = {
   lastExitAt?: string | null;
   lastExitCode?: number | null;
   lastEvent?: string | null;
+  gatewayCpuPct?: number | null;
+  gatewayResidentMemoryMb?: number | null;
   lastEnsureReason?: string | null;
   logFile?: string;
 };

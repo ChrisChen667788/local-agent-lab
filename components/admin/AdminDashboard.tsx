@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { agentTargets } from "@/lib/agent/catalog";
+import { agentTargets as builtinAgentTargets } from "@/lib/agent/catalog";
 import {
   benchmarkDatasets,
   benchmarkMilestoneSuites
@@ -32,6 +32,110 @@ type RuntimeSwitchHistoryEntry = {
   loadMs: number | null;
   switchedAt: string | null;
 };
+
+type BenchmarkCoverageHelpRow = {
+  id: string;
+  labelZh: string;
+  labelEn: string;
+  workloads: string[];
+  publicCoverage: boolean;
+  internalCoverage: boolean;
+  nextPublicBenchmarkZh: string;
+  nextPublicBenchmarkEn: string;
+};
+
+const BENCHMARK_COVERAGE_HELP_ROWS: BenchmarkCoverageHelpRow[] = [
+  {
+    id: "latency-throughput",
+    labelZh: "性能 / 首字延时 / 总耗时 / 吞吐",
+    labelEn: "Latency / total time / throughput",
+    workloads: ["latency-smoke"],
+    publicCoverage: false,
+    internalCoverage: true,
+    nextPublicBenchmarkZh: "先继续沿用内部 serving 回归协议，不急着补公开集。",
+    nextPublicBenchmarkEn: "Keep this as an internal serving regression lane before adding a public benchmark."
+  },
+  {
+    id: "instruction-following",
+    labelZh: "指令遵循 / 格式遵循",
+    labelEn: "Instruction following / format discipline",
+    workloads: ["instruction-following-lite", "ifeval-starter"],
+    publicCoverage: true,
+    internalCoverage: true,
+    nextPublicBenchmarkZh: "IFEval 已托底，优先级不高。",
+    nextPublicBenchmarkEn: "Already backed by IFEval, so this is not an urgent gap."
+  },
+  {
+    id: "chinese-knowledge",
+    labelZh: "中文知识 / 中文专业能力",
+    labelEn: "Chinese knowledge / domain understanding",
+    workloads: ["ceval-cs-starter", "cmmlu-cs-starter"],
+    publicCoverage: true,
+    internalCoverage: false,
+    nextPublicBenchmarkZh: "后续更适合扩 sample，不必先换集。",
+    nextPublicBenchmarkEn: "Expand sample coverage later rather than swapping benchmarks first."
+  },
+  {
+    id: "tool-calling",
+    labelZh: "工具调用 / 参数格式",
+    labelEn: "Tool calling / argument format",
+    workloads: ["bfcl-starter"],
+    publicCoverage: true,
+    internalCoverage: true,
+    nextPublicBenchmarkZh: "后续可补更复杂 multi-step tool benchmark。",
+    nextPublicBenchmarkEn: "A more complex multi-step tool benchmark would be the natural next step."
+  },
+  {
+    id: "long-context",
+    labelZh: "长上下文材料问答",
+    labelEn: "Long-context grounded QA",
+    workloads: ["longbench-starter"],
+    publicCoverage: true,
+    internalCoverage: false,
+    nextPublicBenchmarkZh: "如后续偏 repo-long-context，再补专项集。",
+    nextPublicBenchmarkEn: "Add a repo-long-context benchmark later if that becomes a core lane."
+  },
+  {
+    id: "grounded-rag",
+    labelZh: "Grounded QA / RAG 引用 / 低置信度处理",
+    labelEn: "Grounded QA / citation / low-confidence fallback",
+    workloads: ["grounded-kb-qa"],
+    publicCoverage: false,
+    internalCoverage: true,
+    nextPublicBenchmarkZh: "下一步最值得补：CRAG / RAGBench。",
+    nextPublicBenchmarkEn: "Best next addition: CRAG or RAGBench."
+  },
+  {
+    id: "repo-qa",
+    labelZh: "仓库级代码检索问答 / Repo QA",
+    labelEn: "Repo-grounded code QA",
+    workloads: ["code-rag-repo-qa"],
+    publicCoverage: false,
+    internalCoverage: true,
+    nextPublicBenchmarkZh: "下一步最值得补：RepoBench。",
+    nextPublicBenchmarkEn: "Best next addition: RepoBench."
+  },
+  {
+    id: "agent-workflow",
+    labelZh: "Agent 规划 / 记忆 / 恢复 / 状态持久化",
+    labelEn: "Agent planning / memory / recovery / state",
+    workloads: ["agent-flow-lite"],
+    publicCoverage: false,
+    internalCoverage: true,
+    nextPublicBenchmarkZh: "下一步最值得补：τ-bench / ToolSandbox。",
+    nextPublicBenchmarkEn: "Best next addition: τ-bench or ToolSandbox."
+  },
+  {
+    id: "codegen",
+    labelZh: "代码生成",
+    labelEn: "Code generation",
+    workloads: ["humaneval-starter", "mbppplus-starter"],
+    publicCoverage: true,
+    internalCoverage: false,
+    nextPublicBenchmarkZh: "如果以后强调真实仓库修复，再补 SWE-bench Lite。",
+    nextPublicBenchmarkEn: "Add SWE-bench Lite later if repo repair becomes a headline capability."
+  }
+];
 
 function formatTargetModelVersion(modelDefault: string, thinkingModelDefault?: string) {
   if (thinkingModelDefault && thinkingModelDefault !== modelDefault) {
@@ -845,6 +949,11 @@ function describeRuntimePhase(runtime: AgentRuntimeStatus | null, locale: string
         label: locale.startsWith("en") ? "Remote" : "远端",
         className: "border-violet-400/20 bg-violet-400/10 text-violet-100"
       };
+    case "unloaded":
+      return {
+        label: locale.startsWith("en") ? "Unloaded" : "空载",
+        className: "border-white/10 bg-white/5 text-slate-200"
+      };
     case "ready":
       return {
         label: locale.startsWith("en") ? "Ready" : "已就绪",
@@ -913,8 +1022,10 @@ function buildDeltaClass(value: number | null | undefined, preferLower: boolean)
 
 export function AdminDashboard() {
   const { dictionary, locale } = useLocale();
-  const benchmarkTargets = useMemo(() => agentTargets, []);
-  const localTargets = useMemo(() => agentTargets.filter((target) => target.execution === "local"), []);
+  const [availableTargets, setAvailableTargets] = useState<AgentTarget[]>(builtinAgentTargets);
+  const agentTargets = availableTargets;
+  const benchmarkTargets = useMemo(() => agentTargets, [agentTargets]);
+  const localTargets = useMemo(() => agentTargets.filter((target) => target.execution === "local"), [agentTargets]);
   const [promptSets, setPromptSets] = useState<PromptSetRecord[]>([]);
   const [promptSetsPending, setPromptSetsPending] = useState(false);
   const [promptSetMessage, setPromptSetMessage] = useState("");
@@ -1009,6 +1120,47 @@ export function AdminDashboard() {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const [data, setData] = useState<DashboardResponse | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadAvailableTargets() {
+      try {
+        const response = await fetch("/api/agent/targets", { cache: "no-store" });
+        const payload = (await response.json()) as { targets?: AgentTarget[] };
+        if (!response.ok || cancelled || !Array.isArray(payload.targets) || !payload.targets.length) return;
+        setAvailableTargets(payload.targets);
+      } catch {
+        // keep builtin targets when sync fails
+      }
+    }
+
+    void loadAvailableTargets();
+    const timer = window.setInterval(() => {
+      void loadAvailableTargets();
+    }, 30000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!agentTargets.length) return;
+    if (!agentTargets.some((target) => target.id === selectedTargetId)) {
+      setSelectedTargetId(agentTargets[0].id);
+    }
+    setCompareTargetIds((current) => {
+      const valid = current.filter((targetId) => agentTargets.some((target) => target.id === targetId));
+      return valid.length ? valid : [agentTargets[0].id];
+    });
+    setBenchmarkTargetIds((current) => {
+      const valid = current.filter((targetId) => agentTargets.some((target) => target.id === targetId));
+      return valid.length ? valid : getDefaultBenchmarkTargetIds(localTargets.map((target) => target.id));
+    });
+  }, [agentTargets, localTargets, selectedTargetId]);
+
   const uiText = useMemo(() => {
     switch (locale) {
       case "zh-TW":
@@ -4085,6 +4237,75 @@ export function AdminDashboard() {
                         ))}
                       </div>
                     </div>
+                    {selectedBenchmarkSuite?.id === "milestone-formal" ? (
+                      <div className="rounded-2xl border border-cyan-400/15 bg-cyan-400/5 p-3">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="text-xs uppercase tracking-[0.22em] text-cyan-200">
+                              {locale.startsWith("en") ? "Coverage map" : "评测维度覆盖图"}
+                            </p>
+                            <p className="mt-2 text-sm leading-6 text-slate-300">
+                              {locale.startsWith("en")
+                                ? "Formal benchmark mixes public benchmark-backed lanes with internal regression lanes. The rows below show where coverage is already strong and where we should add a public benchmark next."
+                                : "正式评测集同时包含公开 benchmark 托底和内部工程回归。下面这张覆盖图用来区分哪些维度已经有公开集支撑，哪些维度目前仍主要依赖内部回归，后续最值得补哪条公开标准集。"}
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap gap-2 text-[11px]">
+                            <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2.5 py-1 text-emerald-100">
+                              {locale.startsWith("en") ? "Public benchmark backed" : "已有公开 benchmark"}
+                            </span>
+                            <span className="rounded-full border border-violet-400/20 bg-violet-400/10 px-2.5 py-1 text-violet-100">
+                              {locale.startsWith("en") ? "Internal regression backed" : "已有内部回归"}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="mt-3 space-y-2">
+                          {BENCHMARK_COVERAGE_HELP_ROWS.map((row) => (
+                            <div
+                              key={row.id}
+                              className="rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-3 text-sm text-slate-300"
+                            >
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div>
+                                  <p className="font-medium text-white">
+                                    {locale.startsWith("en") ? row.labelEn : row.labelZh}
+                                  </p>
+                                  <p className="mt-1 text-xs leading-6 text-slate-400">
+                                    {locale.startsWith("en") ? "Workloads" : "当前工作负载"}: {row.workloads.join(" · ")}
+                                  </p>
+                                </div>
+                                <div className="flex flex-wrap gap-2 text-[11px]">
+                                  <span
+                                    className={`rounded-full border px-2.5 py-1 ${
+                                      row.publicCoverage
+                                        ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
+                                        : "border-white/10 bg-white/5 text-slate-400"
+                                    }`}
+                                  >
+                                    {locale.startsWith("en") ? "Public" : "公开集"}
+                                  </span>
+                                  <span
+                                    className={`rounded-full border px-2.5 py-1 ${
+                                      row.internalCoverage
+                                        ? "border-violet-400/20 bg-violet-400/10 text-violet-100"
+                                        : "border-white/10 bg-white/5 text-slate-400"
+                                    }`}
+                                  >
+                                    {locale.startsWith("en") ? "Internal" : "内部回归"}
+                                  </span>
+                                </div>
+                              </div>
+                              <p className="mt-2 text-xs leading-6 text-slate-400">
+                                {locale.startsWith("en") ? "Next public gap to fill" : "下一步最值得补的公开标准集"}:{" "}
+                                <span className="text-slate-200">
+                                  {locale.startsWith("en") ? row.nextPublicBenchmarkEn : row.nextPublicBenchmarkZh}
+                                </span>
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 )}
               </div>
@@ -6048,6 +6269,11 @@ export function AdminDashboard() {
               const loadedAliasForTarget = runtime?.loadedAlias === target.id ? runtime.loadedAlias : null;
               const gatewayLoadedOtherAlias =
                 runtime?.loadedAlias && runtime.loadedAlias !== target.id ? runtime.loadedAlias : null;
+              const liveCostTargetLabel = loadedAliasForTarget
+                ? target.label
+                : gatewayLoadedOtherAlias
+                  ? describeRuntimeAlias(gatewayLoadedOtherAlias, localTargets)
+                  : null;
               const lastSwitchMsForTarget = runtimeLastSwitchMs[target.id] ?? null;
               const lastSwitchAtForTarget = runtimeLastSwitchAt[target.id] ?? null;
               return (
@@ -6088,6 +6314,15 @@ export function AdminDashboard() {
                       <p className="mt-1 text-xs text-slate-500">
                         {uiText.queueLabel}: {runtime?.queueDepth ?? 0} · {uiText.activeLabel}: {runtime?.activeRequests ?? 0}
                       </p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        {locale.startsWith("en")
+                          ? liveCostTargetLabel
+                            ? `Live hardware cost currently reflects ${liveCostTargetLabel}.`
+                            : "Load a local model to inspect live hardware cost."
+                          : liveCostTargetLabel
+                            ? `当前实时硬件开销反映的是 ${liveCostTargetLabel}。`
+                            : "先加载一个本地模型，才能看到实时硬件开销。"}
+                      </p>
                     </div>
                   </div>
 
@@ -6119,6 +6354,38 @@ export function AdminDashboard() {
                         <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-4 text-sm text-slate-300">
                           <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeLastExit}</p>
                           <p className="mt-3 text-base font-semibold text-white">{runtime?.lastExitAt ? new Date(runtime.lastExitAt).toLocaleString() : dictionary.common.unknown}</p>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-4 text-sm text-slate-300">
+                          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">
+                            {locale.startsWith("en") ? "Gateway CPU" : "网关 CPU"}
+                          </p>
+                          <p className="mt-3 text-xl font-semibold text-white">
+                            {typeof runtime?.gatewayCpuPct === "number" ? `${runtime.gatewayCpuPct.toFixed(1)}%` : "--"}
+                          </p>
+                          <p className="mt-2 text-xs text-slate-400">
+                            {liveCostTargetLabel
+                              ? locale.startsWith("en")
+                                ? `Realtime process usage for ${liveCostTargetLabel}`
+                                : `${liveCostTargetLabel} 的实时进程开销`
+                              : locale.startsWith("en")
+                                ? "No local model loaded"
+                                : "当前没有已加载模型"}
+                          </p>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-4 text-sm text-slate-300">
+                          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">
+                            {locale.startsWith("en") ? "Gateway RSS" : "网关内存"}
+                          </p>
+                          <p className="mt-3 text-xl font-semibold text-white">
+                            {typeof runtime?.gatewayResidentMemoryMb === "number"
+                              ? `${runtime.gatewayResidentMemoryMb.toFixed(1)} MB`
+                              : "--"}
+                          </p>
+                          <p className="mt-2 text-xs text-slate-400">
+                            {locale.startsWith("en")
+                              ? "Shared local gateway resident memory"
+                              : "共享本地网关进程的常驻内存"}
+                          </p>
                         </div>
                       </div>
                     </div>

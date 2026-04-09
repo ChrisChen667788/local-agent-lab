@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import { NextResponse } from "next/server";
-import { agentTargets } from "@/lib/agent/catalog";
+import { listServerAgentTargets } from "@/lib/agent/server-targets";
 import {
   ensureLocalGatewayAvailableDetailed,
   probeLocalGateway,
@@ -42,6 +42,11 @@ import {
   resolveTargetWithMode,
   suggestMaxTokens
 } from "@/lib/agent/providers";
+import {
+  getRemoteBenchmarkProviderKind,
+  getRemoteBenchmarkRetryDelayMs,
+  resolveRemoteBenchmarkPolicy
+} from "@/lib/agent/benchmark-remote-policy";
 import { appendBenchmarkLog, readBenchmarkLogs } from "@/lib/agent/log-store";
 import type {
   AgentBenchmarkResponse,
@@ -222,8 +227,6 @@ function buildSuitePlan(
 const REMOTE_BENCHMARK_SAMPLE_CONCURRENCY = 1;
 const REMOTE_BENCHMARK_GROUP_CONCURRENCY = 2;
 const REMOTE_BENCHMARK_MAX_ATTEMPTS = 6;
-const REMOTE_BENCHMARK_TIMEOUT_MS = 120000;
-const REMOTE_BENCHMARK_FIRST_TOKEN_TIMEOUT_MS = 20000;
 const REMOTE_PROFILE_COMPARISON_WORKLOAD_IDS = new Set([
   "latency-smoke",
   "instruction-following-lite",
@@ -299,249 +302,6 @@ function isRetryableRemoteBenchmarkFailure(message: string) {
     normalized.includes("bad gateway") ||
     normalized.includes("service unavailable")
   );
-}
-
-type RemoteBenchmarkProviderKind = "openai-compatible" | "claude-compatible";
-
-function getRemoteBenchmarkProviderKind(target: ResolvedTarget): RemoteBenchmarkProviderKind {
-  if (target.id === "anthropic-claude" || /claude/i.test(target.resolvedModel)) {
-    return "claude-compatible";
-  }
-  return "openai-compatible";
-}
-
-function getRemoteBenchmarkRetryDelayMs(message: string, attempt: number, workloadId: string) {
-  const normalized = message.toLowerCase();
-  if (
-    workloadId === "latency-smoke" &&
-    (normalized.includes("timeout") ||
-      normalized.includes("timed out") ||
-      normalized.includes("stream idle timeout") ||
-      normalized.includes("first token timeout"))
-  ) {
-    return Math.min(2500, 500 * attempt);
-  }
-  if (
-    normalized.includes("502") ||
-    normalized.includes("503") ||
-    normalized.includes("504") ||
-    normalized.includes("bad gateway") ||
-    normalized.includes("service unavailable")
-  ) {
-    return Math.min(15000, 2500 * attempt);
-  }
-  if (
-    normalized.includes("rate limit") ||
-    normalized.includes("429") ||
-    normalized.includes("max concurrent")
-  ) {
-    return Math.min(12000, 2000 * attempt);
-  }
-  return Math.min(10000, 1000 * attempt);
-}
-
-function getRemoteBenchmarkTimeoutMs(
-  workloadId: string,
-  providerProfile: AgentProviderProfile,
-  thinkingMode: AgentThinkingMode
-) {
-  let timeoutMs = REMOTE_BENCHMARK_TIMEOUT_MS;
-  if (thinkingMode === "thinking") timeoutMs += 45000;
-  if (providerProfile === "tool-first") timeoutMs += 30000;
-  if (
-    workloadId === "grounded-kb-qa" ||
-    workloadId === "code-rag-repo-qa" ||
-    workloadId === "agent-flow-lite" ||
-    workloadId === "longbench-starter"
-  ) {
-    timeoutMs += 30000;
-  }
-  if (workloadId === "humaneval-starter" || workloadId === "mbppplus-starter") {
-    timeoutMs += 45000;
-  }
-  return timeoutMs;
-}
-
-function getRemoteBenchmarkFirstTokenTimeoutMs(
-  workloadId: string,
-  providerProfile: AgentProviderProfile,
-  thinkingMode: AgentThinkingMode,
-  totalTimeoutMs: number,
-  providerKind: RemoteBenchmarkProviderKind
-) {
-  let timeoutMs = REMOTE_BENCHMARK_FIRST_TOKEN_TIMEOUT_MS;
-  if (providerProfile === "balanced") timeoutMs += 5000;
-  if (providerProfile === "tool-first") timeoutMs += 5000;
-  if (thinkingMode === "thinking") timeoutMs += 15000;
-  if (
-    workloadId === "grounded-kb-qa" ||
-    workloadId === "code-rag-repo-qa" ||
-    workloadId === "agent-flow-lite" ||
-    workloadId === "longbench-starter"
-  ) {
-    timeoutMs += 10000;
-  }
-  if (workloadId === "humaneval-starter" || workloadId === "mbppplus-starter") {
-    timeoutMs += 15000;
-  }
-  if (providerKind === "claude-compatible") {
-    if (thinkingMode === "thinking") {
-      timeoutMs = Math.min(timeoutMs, 30000);
-    } else if (providerProfile === "tool-first") {
-      timeoutMs = Math.min(timeoutMs, 22000);
-    } else if (providerProfile === "balanced") {
-      timeoutMs = Math.min(timeoutMs, 20000);
-    } else {
-      timeoutMs = Math.min(timeoutMs, 17000);
-    }
-  }
-  if (workloadId === "latency-smoke") {
-    if (providerKind === "claude-compatible") {
-      if (thinkingMode === "thinking") {
-        timeoutMs = 18000;
-      } else if (providerProfile === "tool-first") {
-        timeoutMs = 15000;
-      } else if (providerProfile === "balanced") {
-        timeoutMs = 14000;
-      } else {
-        timeoutMs = 12000;
-      }
-    } else {
-      timeoutMs = Math.min(timeoutMs, 12000);
-    }
-  }
-  if (
-    providerKind === "claude-compatible" &&
-    thinkingMode === "standard" &&
-    (workloadId === "instruction-following-lite" || workloadId === "ifeval-starter")
-  ) {
-    if (providerProfile === "balanced") {
-      timeoutMs = Math.min(Math.max(timeoutMs, 18000), 20000);
-    } else if (providerProfile !== "tool-first") {
-      timeoutMs = Math.min(Math.max(timeoutMs, 16000), 18000);
-    }
-  }
-  if (workloadId === "bfcl-starter") {
-    if (providerKind === "claude-compatible") {
-      if (thinkingMode === "thinking") {
-        timeoutMs = Math.min(Math.max(timeoutMs, 28000), 30000);
-      } else if (providerProfile === "balanced" || providerProfile === "tool-first") {
-        timeoutMs = Math.min(Math.max(timeoutMs, 22000), 24000);
-      } else {
-        timeoutMs = Math.min(Math.max(timeoutMs, 20000), 22000);
-      }
-    } else if (providerProfile === "tool-first" || thinkingMode === "thinking") {
-      timeoutMs = Math.min(Math.max(timeoutMs, 20000), 22000);
-    }
-  }
-  return Math.min(Math.max(12000, timeoutMs), Math.max(18000, totalTimeoutMs - 10000));
-}
-
-function getRemoteBenchmarkRetryBudgetMs(
-  workloadId: string,
-  providerProfile: AgentProviderProfile,
-  thinkingMode: AgentThinkingMode,
-  totalTimeoutMs: number,
-  firstTokenTimeoutMs: number,
-  providerKind: RemoteBenchmarkProviderKind
-) {
-  let budgetMs = Math.max(firstTokenTimeoutMs + 15000, 35000);
-  if (providerProfile === "tool-first") budgetMs += 5000;
-  if (thinkingMode === "thinking") budgetMs += 15000;
-  if (
-    workloadId === "grounded-kb-qa" ||
-    workloadId === "code-rag-repo-qa" ||
-    workloadId === "agent-flow-lite" ||
-    workloadId === "longbench-starter"
-  ) {
-    budgetMs += 10000;
-  }
-  if (workloadId === "humaneval-starter" || workloadId === "mbppplus-starter") {
-    budgetMs += 15000;
-  }
-  if (workloadId === "latency-smoke") {
-    if (providerKind === "claude-compatible") {
-      budgetMs = providerProfile === "balanced" ? 38000 : 32000;
-      if (thinkingMode === "thinking") {
-        budgetMs = 45000;
-      }
-    } else {
-      budgetMs = 28000;
-    }
-  }
-  if (
-    providerKind === "claude-compatible" &&
-    thinkingMode === "standard" &&
-    (workloadId === "instruction-following-lite" || workloadId === "ifeval-starter")
-  ) {
-    budgetMs = Math.min(budgetMs, providerProfile === "balanced" ? 50000 : 42000);
-  }
-  if (workloadId === "bfcl-starter") {
-    if (providerKind === "claude-compatible") {
-      if (thinkingMode === "thinking") {
-        budgetMs = 90000;
-      } else if (providerProfile === "tool-first") {
-        budgetMs = 70000;
-      } else if (providerProfile === "balanced") {
-        budgetMs = 60000;
-      } else {
-        budgetMs = 55000;
-      }
-    } else {
-      budgetMs = Math.max(budgetMs, 45000);
-    }
-  }
-  budgetMs = Math.max(budgetMs, firstTokenTimeoutMs + 8000);
-  return Math.min(budgetMs, Math.max(25000, totalTimeoutMs - 10000));
-}
-
-function getRemoteBenchmarkStreamIdleTimeoutMs(
-  workloadId: string,
-  providerProfile: AgentProviderProfile,
-  thinkingMode: AgentThinkingMode,
-  totalTimeoutMs: number,
-  providerKind: RemoteBenchmarkProviderKind
-) {
-  if (workloadId === "latency-smoke") {
-    if (providerKind === "claude-compatible") {
-      if (thinkingMode === "thinking") return 15000;
-      return providerProfile === "balanced" ? 12000 : 10000;
-    }
-    return 8000;
-  }
-  if (
-    providerKind === "claude-compatible" &&
-    thinkingMode === "standard" &&
-    (workloadId === "instruction-following-lite" || workloadId === "ifeval-starter")
-  ) {
-    return providerProfile === "balanced" ? 22000 : 18000;
-  }
-  if (workloadId === "instruction-following-lite" || workloadId === "ifeval-starter") {
-    return providerProfile === "tool-first" || thinkingMode === "thinking" ? 22000 : 18000;
-  }
-  if (workloadId === "bfcl-starter") {
-    if (providerKind === "claude-compatible") {
-      if (thinkingMode === "thinking") return 35000;
-      return providerProfile === "tool-first" ? 30000 : 24000;
-    }
-    return providerProfile === "tool-first" || thinkingMode === "thinking" ? 25000 : 18000;
-  }
-  let timeoutMs = Math.floor(totalTimeoutMs * 0.35);
-  if (providerKind === "claude-compatible") timeoutMs += 5000;
-  if (providerProfile === "tool-first") timeoutMs += 10000;
-  if (thinkingMode === "thinking") timeoutMs += 15000;
-  if (
-    workloadId === "grounded-kb-qa" ||
-    workloadId === "code-rag-repo-qa" ||
-    workloadId === "agent-flow-lite" ||
-    workloadId === "longbench-starter"
-  ) {
-    timeoutMs += 10000;
-  }
-  if (workloadId === "humaneval-starter" || workloadId === "mbppplus-starter") {
-    timeoutMs += 15000;
-  }
-  return Math.max(12000, Math.min(60000, timeoutMs));
 }
 
 async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number, externalSignal?: AbortSignal) {
@@ -760,11 +520,8 @@ function deriveComparisonSubsetTasks(tasks: PlannedSampleTask[]) {
 }
 
 function clampBenchmarkContextWindowForTarget(targetId: string, requestedContextWindow: number) {
-  if (
-    targetId === "local-qwen3-0.6b" ||
-    targetId === "local-qwen3-4b-4bit" ||
-    targetId === "local-qwen35-4b-4bit"
-  ) {
+  const target = listServerAgentTargets().find((item) => item.id === targetId);
+  if (target?.execution === "local") {
     return Math.min(normalizeContextWindow(requestedContextWindow, 8192), 32768);
   }
   return clampContextWindowForTarget(targetId, requestedContextWindow, {
@@ -1505,34 +1262,16 @@ async function runSingleBenchmarkSample(
     let attempt = 1;
     let lastWarning = "Unknown remote benchmark error.";
     const workloadId = options?.workloadId || "custom-prompt";
-    const remoteProviderKind = getRemoteBenchmarkProviderKind(target);
-    const remoteTimeoutMs = getRemoteBenchmarkTimeoutMs(
+    const remotePolicy = resolveRemoteBenchmarkPolicy({
       workloadId,
       providerProfile,
-      options?.thinkingMode || "standard"
-    );
-    const remoteFirstTokenTimeoutMs = getRemoteBenchmarkFirstTokenTimeoutMs(
-      workloadId,
-      providerProfile,
-      options?.thinkingMode || "standard",
-      remoteTimeoutMs,
-      remoteProviderKind
-    );
-    const remoteStreamIdleTimeoutMs = getRemoteBenchmarkStreamIdleTimeoutMs(
-      workloadId,
-      providerProfile,
-      options?.thinkingMode || "standard",
-      remoteTimeoutMs,
-      remoteProviderKind
-    );
-    const remoteRetryBudgetMs = getRemoteBenchmarkRetryBudgetMs(
-      workloadId,
-      providerProfile,
-      options?.thinkingMode || "standard",
-      remoteTimeoutMs,
-      remoteFirstTokenTimeoutMs,
-      remoteProviderKind
-    );
+      thinkingMode: options?.thinkingMode || "standard",
+      providerKind: getRemoteBenchmarkProviderKind(target)
+    });
+    const remoteTimeoutMs = remotePolicy.totalTimeoutMs;
+    const remoteFirstTokenTimeoutMs = remotePolicy.firstTokenTimeoutMs;
+    const remoteStreamIdleTimeoutMs = remotePolicy.streamIdleTimeoutMs;
+    const remoteRetryBudgetMs = remotePolicy.retryBudgetMs;
     const retryWindowStartedAt = Date.now();
 
     while (attempt <= REMOTE_BENCHMARK_MAX_ATTEMPTS) {
@@ -2080,7 +1819,7 @@ export async function POST(request: Request) {
     }
     const resolvedPlan = plan;
 
-    const benchmarkTargets = agentTargets;
+    const benchmarkTargets = listServerAgentTargets();
     const selectedTargets = (body.targetIds?.length
       ? benchmarkTargets.filter((target) => body.targetIds?.includes(target.id))
       : benchmarkTargets);

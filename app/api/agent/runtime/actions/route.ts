@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getAgentTarget } from "@/lib/agent/catalog";
+import { getServerAgentTarget } from "@/lib/agent/server-targets";
 import {
   ensureLocalGatewayAvailableDetailed,
   getLocalGatewaySupervisorInfo,
@@ -7,6 +7,7 @@ import {
   readLocalGatewayRecentLog,
   restartLocalGateway
 } from "@/lib/agent/local-gateway";
+import { readRuntimeProcessMetrics } from "@/lib/agent/runtime-process-metrics";
 import { resolveTarget } from "@/lib/agent/providers";
 import type { AgentRuntimeAction, AgentRuntimeActionResponse, AgentRuntimeStatus } from "@/lib/agent/types";
 
@@ -22,6 +23,7 @@ type RuntimeActionBody = {
 function deriveRuntimePhase(input: {
   available: boolean;
   busy?: boolean;
+  loadedAlias?: string | null;
   loadingAlias?: string | null;
   loadingError?: string | null;
   supervisorAlive?: boolean;
@@ -44,6 +46,12 @@ function deriveRuntimePhase(input: {
     return {
       phase: "busy" as const,
       phaseDetail: "The local runtime is serializing requests."
+    };
+  }
+  if (input.available && !input.loadedAlias) {
+    return {
+      phase: "unloaded" as const,
+      phaseDetail: "No local model is currently loaded. The gateway is idle and ready for a prewarm or chat request."
     };
   }
   if (input.available) {
@@ -72,10 +80,15 @@ function buildRuntimeStatus(
   message?: string
 ): AgentRuntimeStatus {
   const supervisor = getLocalGatewaySupervisorInfo();
+  const processMetrics = readRuntimeProcessMetrics(supervisor.gatewayPid ?? supervisor.supervisorPid);
   return {
     ...deriveRuntimePhase({
       available: Boolean(payload),
       busy: Boolean(payload?.busy),
+      loadedAlias:
+        typeof payload?.loaded_alias === "string" || payload?.loaded_alias === null
+          ? (payload.loaded_alias as string | null)
+          : null,
       loadingAlias:
         typeof payload?.loading_alias === "string" || payload?.loading_alias === null
           ? (payload.loading_alias as string | null)
@@ -92,6 +105,8 @@ function buildRuntimeStatus(
     busy: Boolean(payload?.busy),
     queueDepth: typeof payload?.queue_depth === "number" ? payload.queue_depth : 0,
     activeRequests: typeof payload?.active_requests === "number" ? payload.active_requests : 0,
+    gatewayCpuPct: processMetrics.gatewayCpuPct,
+    gatewayResidentMemoryMb: processMetrics.gatewayResidentMemoryMb,
     loadedAlias:
       typeof payload?.loaded_alias === "string" || payload?.loaded_alias === null
         ? (payload.loaded_alias as string | null)
@@ -130,7 +145,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "action must be release, restart, or read_log." }, { status: 400 });
     }
 
-    const target = getAgentTarget(body.targetId);
+    const target = getServerAgentTarget(body.targetId);
     if (!target) {
       return NextResponse.json({ error: `Unknown target: ${body.targetId}` }, { status: 404 });
     }

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { existsSync, readFileSync } from "fs";
 import path from "path";
-import { getAgentTarget } from "@/lib/agent/catalog";
+import { getServerAgentTarget } from "@/lib/agent/server-targets";
 import { cancelWorkspaceConfirmation, runWorkspaceTool } from "@/lib/agent/server-tools";
 import type { AgentToolDecisionRequest, AgentToolDecisionResponse } from "@/lib/agent/types";
 
@@ -51,7 +51,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "action must be approve or reject." }, { status: 400 });
     }
 
-    const target = getAgentTarget(body.targetId);
+    const target = getServerAgentTarget(body.targetId);
     if (!target) {
       return NextResponse.json({ error: `Unknown target: ${body.targetId}` }, { status: 404 });
     }

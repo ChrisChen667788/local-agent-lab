@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { agentTargets, getAgentTarget } from "@/lib/agent/catalog";
+import { getServerAgentTarget, listServerAgentTargets } from "@/lib/agent/server-targets";
 import { calculateTokenThroughputTps, percentile } from "@/lib/agent/metrics";
 import { collectDashboardDataWithFilters } from "@/lib/agent/admin-metrics";
 import { getObservabilityPaths, readBenchmarkLogs, readChatLogs } from "@/lib/agent/log-store";
@@ -22,7 +22,7 @@ function buildPercentiles(values: Array<number | null | undefined>) {
 }
 
 function safeResolveModelVersion(targetId: string, thinkingMode: "standard" | "thinking") {
-  const target = getAgentTarget(targetId);
+  const target = getServerAgentTarget(targetId);
   if (!target) return null;
 
   try {
@@ -98,7 +98,7 @@ export async function GET(request: Request) {
         ? Math.max(1024, Math.min(Number(contextWindowParam), 32768))
         : null;
 
-  const target = getAgentTarget(targetId);
+  const target = getServerAgentTarget(targetId);
   if (!target) {
     return NextResponse.json({ error: `Unknown target: ${targetId}` }, { status: 404 });
   }
@@ -126,11 +126,12 @@ export async function GET(request: Request) {
   const availableContextWindows = Array.from(
     new Set(matchingLogs.map((row) => row.contextWindow).filter((value): value is number => typeof value === "number"))
   ).sort((a, b) => a - b);
-  const filteredBenchmarkTargetIds = (benchmarkTargetIds.length ? benchmarkTargetIds : agentTargets.map((item) => item.id))
-    .filter((id) => agentTargets.some((item) => item.id === id));
+  const serverTargets = listServerAgentTargets();
+  const filteredBenchmarkTargetIds = (benchmarkTargetIds.length ? benchmarkTargetIds : serverTargets.map((item) => item.id))
+    .filter((id) => serverTargets.some((item) => item.id === id));
   const benchmarkTargetVersions = filteredBenchmarkTargetIds
     .map((id) => {
-      const targetEntry = getAgentTarget(id);
+      const targetEntry = getServerAgentTarget(id);
       if (!targetEntry) return null;
       const standardResolvedModel = safeResolveModelVersion(id, "standard") || targetEntry.modelDefault;
       const thinkingResolvedModel =
@@ -323,9 +324,9 @@ export async function GET(request: Request) {
     })
   }));
 
-  const availableProviders = Array.from(new Set(agentTargets.map((item) => item.providerLabel))).sort();
+  const availableProviders = Array.from(new Set(serverTargets.map((item) => item.providerLabel))).sort();
   const filteredCompareTargets = (compareTargetIds.length ? compareTargetIds : [target.id])
-    .map((id) => getAgentTarget(id))
+    .map((id) => getServerAgentTarget(id))
     .filter((item): item is NonNullable<typeof item> => Boolean(item))
     .filter((item) => (providerFilter === "all" ? true : item.providerLabel === providerFilter));
 

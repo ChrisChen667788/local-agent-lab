@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import crypto from "crypto";
 import { existsSync, readFileSync } from "fs";
 import path from "path";
-import { getAgentTarget } from "@/lib/agent/catalog";
+import { getServerAgentTarget } from "@/lib/agent/server-targets";
 import { appendConnectionCheckLog } from "@/lib/agent/log-store";
 import type { AgentConnectionCheckResponse, AgentConnectionCheckStage } from "@/lib/agent/types";
 
@@ -83,7 +83,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "targetId is required." }, { status: 400 });
   }
 
-  const target = getAgentTarget(targetId);
+  const target = getServerAgentTarget(targetId);
   if (!target) {
     return NextResponse.json({ error: `Unknown target: ${targetId}` }, { status: 404 });
   }
