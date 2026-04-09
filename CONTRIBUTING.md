@@ -23,7 +23,7 @@ Optional local model gateway:
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
-pip install mlx mlx-lm fastapi uvicorn
+pip install mlx mlx-lm
 python scripts/local_model_gateway_supervisor.py
 ```
 

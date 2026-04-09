@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import { buildCompareBenchmarkPrompt, buildCompareBenchmarkPromptDiff } from "@/lib/agent/compare-share";
 import type {
   AgentBenchmarkResponse,
   AgentCompareIntent,
@@ -40,8 +41,6 @@ type AgentCompareLabProps = {
   compareRuntimeByTargetId: Record<string, AgentRuntimeStatus>;
   compareProgressByTargetId: Record<string, AgentCompareLaneProgress>;
   compareBenchmarkUseOutputContract: boolean;
-  compareBenchmarkPromptPreview: string;
-  compareBenchmarkPromptDiffPreview: string;
   compareBenchmarkPreviewDiffOnly: boolean;
   compareRecoveryPendingTargetId: string;
   compareRecoveryConfirmTargetId: string;
@@ -244,8 +243,6 @@ export function AgentCompareLab({
   compareRuntimeByTargetId,
   compareProgressByTargetId,
   compareBenchmarkUseOutputContract,
-  compareBenchmarkPromptPreview,
-  compareBenchmarkPromptDiffPreview,
   compareBenchmarkPreviewDiffOnly,
   compareRecoveryPendingTargetId,
   compareRecoveryConfirmTargetId,
@@ -510,6 +507,28 @@ export function AgentCompareLab({
       providerProfile,
       thinkingMode
     ]
+  );
+
+  const compareBenchmarkPromptPreview = useMemo(
+    () =>
+      buildCompareBenchmarkPrompt({
+        input,
+        systemPrompt,
+        compareOutputShape,
+        compareBenchmarkUseOutputContract
+      }),
+    [compareBenchmarkUseOutputContract, compareOutputShape, input, systemPrompt]
+  );
+
+  const compareBenchmarkPromptDiffPreview = useMemo(
+    () =>
+      buildCompareBenchmarkPromptDiff({
+        input,
+        systemPrompt,
+        compareOutputShape,
+        compareBenchmarkUseOutputContract
+      }),
+    [compareBenchmarkUseOutputContract, compareOutputShape, input, systemPrompt]
   );
 
   const hasEnoughTargets = compareTargets.length >= 2;
