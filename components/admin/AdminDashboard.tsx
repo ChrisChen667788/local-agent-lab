@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { agentTargets as builtinAgentTargets } from "@/lib/agent/catalog";
 import {
   benchmarkDatasets,
@@ -25,6 +25,7 @@ import type {
 type MetricPercentiles = AgentMetricPercentiles;
 type BenchmarkHeatmapMetricKey = "first-token" | "total-latency" | "throughput" | "success-rate";
 type BenchmarkBatchScope = "full-suite" | "comparison-subset";
+type BenchmarkBatchProfilePreset = "full-compare" | "tool-thinking-focus";
 const KNOWLEDGE_IMPORT_HISTORY_KEY = "admin-knowledge-import-history-v1";
 const RUNTIME_SWITCH_HISTORY_STORAGE_KEY = "local-agent-runtime-switch-history-v1";
 
@@ -1132,6 +1133,8 @@ export function AdminDashboard() {
   const [benchmarkThinkingMode, setBenchmarkThinkingMode] = useState<"standard" | "thinking">("standard");
   const [benchmarkBatchProfiles, setBenchmarkBatchProfiles] = useState(false);
   const [benchmarkBatchScope, setBenchmarkBatchScope] = useState<BenchmarkBatchScope>("comparison-subset");
+  const [benchmarkBatchProfilePreset, setBenchmarkBatchProfilePreset] =
+    useState<BenchmarkBatchProfilePreset>("full-compare");
   const [benchmarkPromptMode, setBenchmarkPromptMode] = useState<"custom" | "prompt-set" | "dataset" | "suite">("custom");
   const [benchmarkPromptSetId, setBenchmarkPromptSetId] = useState("");
   const [benchmarkDatasetId, setBenchmarkDatasetId] = useState(benchmarkDatasets[0]?.id || "");
@@ -1163,6 +1166,34 @@ export function AdminDashboard() {
   const [runtimeMetricHistory, setRuntimeMetricHistory] = useState<Record<string, RuntimeMetricSample[]>>({});
   const [runtimeActionPending, setRuntimeActionPending] = useState<Record<string, RuntimeActionKind | "">>({});
   const [runtimeLogExcerpts, setRuntimeLogExcerpts] = useState<Record<string, string>>({});
+
+  const benchmarkBatchProfileModes = useMemo(() => {
+    if (benchmarkBatchProfilePreset === "tool-thinking-focus") {
+      return [
+        { providerProfile: "tool-first" as const, thinkingMode: "standard" as const },
+        { providerProfile: "tool-first" as const, thinkingMode: "thinking" as const }
+      ];
+    }
+    return [
+      { providerProfile: "speed" as const, thinkingMode: "standard" as const },
+      { providerProfile: "balanced" as const, thinkingMode: "standard" as const },
+      { providerProfile: "tool-first" as const, thinkingMode: "standard" as const },
+      { providerProfile: "tool-first" as const, thinkingMode: "thinking" as const }
+    ];
+  }, [benchmarkBatchProfilePreset]);
+
+  const applyDeepSeekFocusPreset = useCallback(() => {
+    setBenchmarkPromptMode("suite");
+    setBenchmarkSuiteId("milestone-formal");
+    setBenchmarkTargetIds(["deepseek-api"]);
+    setBenchmarkRuns(1);
+    setBenchmarkContextWindow(32768);
+    setBenchmarkBatchProfiles(true);
+    setBenchmarkBatchScope("comparison-subset");
+    setBenchmarkBatchProfilePreset("tool-thinking-focus");
+    setBenchmarkProviderProfile("tool-first");
+    setBenchmarkThinkingMode("thinking");
+  }, []);
   const [runtimeLogSummaries, setRuntimeLogSummaries] = useState<Record<string, AgentRuntimeLogSummary | null>>({});
   const [runtimeLogQueries, setRuntimeLogQueries] = useState<Record<string, string>>({});
   const [runtimeLogLimits, setRuntimeLogLimits] = useState<Record<string, number>>({});
@@ -3017,14 +3048,7 @@ export function AdminDashboard() {
     setBenchmarkBaselineMessage("");
     setBenchmarkResumeMessage("");
     try {
-      const profileModes = benchmarkBatchProfiles
-        ? [
-            { providerProfile: "speed", thinkingMode: "standard" },
-            { providerProfile: "balanced", thinkingMode: "standard" },
-            { providerProfile: "tool-first", thinkingMode: "standard" },
-            { providerProfile: "tool-first", thinkingMode: "thinking" }
-          ]
-        : undefined;
+      const profileModes = benchmarkBatchProfiles ? benchmarkBatchProfileModes : undefined;
       const response = await fetch("/api/admin/benchmark", {
         method: "POST",
         headers: {
@@ -4389,6 +4413,41 @@ export function AdminDashboard() {
                             </div>
                           ))}
                         </div>
+                        <div className="mt-3 rounded-2xl border border-amber-400/20 bg-amber-400/8 p-3">
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div className="max-w-2xl">
+                              <p className="text-xs uppercase tracking-[0.22em] text-amber-200">
+                                {locale.startsWith("en") ? "DeepSeek focus regression" : "DeepSeek 专项回归"}
+                              </p>
+                              <p className="mt-2 text-sm leading-6 text-slate-300">
+                                {locale.startsWith("en")
+                                  ? "DeepSeek is already fast in the formal remote subset, but tool-first and thinking remain the weaker lanes. This preset reruns only those weak lanes with the formal comparison subset so the review loop stays tight."
+                                  : "DeepSeek 在正式远端子集里的性能已经很快，但 tool-first 和 thinking 仍然是弱项。这个预设会只重跑弱项 lane，并沿用正式集 comparison-subset，方便持续压这条尾巴。"}
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={applyDeepSeekFocusPreset}
+                              className="rounded-full border border-amber-300/30 bg-amber-300/10 px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-amber-100 transition hover:bg-amber-300/20"
+                            >
+                              {locale.startsWith("en") ? "Apply DeepSeek preset" : "套用 DeepSeek 预设"}
+                            </button>
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-amber-100/90">
+                            <span className="rounded-full border border-amber-300/20 bg-black/20 px-2.5 py-1">
+                              suite · milestone-formal
+                            </span>
+                            <span className="rounded-full border border-amber-300/20 bg-black/20 px-2.5 py-1">
+                              target · deepseek-api
+                            </span>
+                            <span className="rounded-full border border-amber-300/20 bg-black/20 px-2.5 py-1">
+                              scope · comparison-subset
+                            </span>
+                            <span className="rounded-full border border-amber-300/20 bg-black/20 px-2.5 py-1">
+                              lanes · tool-first / thinking
+                            </span>
+                          </div>
+                        </div>
                       </div>
                     ) : null}
                   </div>
@@ -4517,6 +4576,30 @@ export function AdminDashboard() {
                       <option value="comparison-subset">{uiText.benchmarkBatchScopeSubset}</option>
                     </select>
                     <p className="mt-2 text-xs leading-5 text-slate-500">{uiText.benchmarkBatchScopeHint}</p>
+                    <p className="mb-2 mt-4 text-xs uppercase tracking-[0.22em] text-slate-500">
+                      {locale.startsWith("en") ? "Profile preset" : "Profile 预设"}
+                    </p>
+                    <select
+                      value={benchmarkBatchProfilePreset}
+                      onChange={(event) => setBenchmarkBatchProfilePreset(event.target.value as BenchmarkBatchProfilePreset)}
+                      className="w-full rounded-2xl border border-white/10 bg-black/25 px-3 py-3 text-sm text-slate-100 outline-none"
+                    >
+                      <option value="full-compare">
+                        {locale.startsWith("en") ? "Full compare (speed / balanced / tool-first / thinking)" : "完整对比（speed / balanced / tool-first / thinking）"}
+                      </option>
+                      <option value="tool-thinking-focus">
+                        {locale.startsWith("en") ? "Tool + thinking focus" : "Tool + thinking 专项"}
+                      </option>
+                    </select>
+                    <p className="mt-2 text-xs leading-5 text-slate-500">
+                      {benchmarkBatchProfilePreset === "tool-thinking-focus"
+                        ? locale.startsWith("en")
+                          ? "Runs only tool-first standard and tool-first thinking so weak remote lanes can iterate faster."
+                          : "只跑 tool-first standard 与 tool-first thinking，方便更快压远端弱项。"
+                        : locale.startsWith("en")
+                          ? "Runs the full remote comparison batch across all four benchmarked profile lanes."
+                          : "跑完整的远端 profile 对照批次，覆盖四条标准 lane。"}
+                    </p>
                   </div>
                 ) : null}
               </div>

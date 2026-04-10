@@ -5317,6 +5317,170 @@ export function AgentWorkbench() {
                   </button>
                 </div>
               </form>
+              <div className="border-t border-white/10 bg-[linear-gradient(180deg,rgba(15,23,42,0.28),rgba(2,6,23,0.16))] px-5 py-5">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">
+                      {locale.startsWith("en") ? "Secondary analysis cards" : "次级分析卡片"}
+                    </p>
+                    <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">
+                      {locale.startsWith("en")
+                        ? "Use the transcript and composer as the primary surface. The cards below keep prompt framing, launch hints, and provider checks nearby without stretching the workspace into a long single strip."
+                        : "把对话记录和输入区作为主内容面，下面这组卡片专门承接提示词框架、启动提示和 provider 自检，避免工作区继续被拉成长条单列。"}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2 text-[11px]">
+                    <span className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2.5 py-1 text-cyan-100">
+                      {locale.startsWith("en") ? "Primary: transcript + compose" : "主内容：记录 + 输入"}
+                    </span>
+                    <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-slate-300">
+                      {locale.startsWith("en") ? "Secondary: analysis cards" : "次级：分析卡片"}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(340px,0.8fr)] 2xl:grid-cols-[minmax(0,1.32fr)_minmax(420px,0.78fr)]">
+                  <div className="space-y-4">
+                    <div className="rounded-3xl border border-white/10 bg-black/25 px-4 py-4">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{dictionary.agent.promptFrame}</p>
+                          <p className="mt-1.5 text-sm leading-6 text-slate-300">
+                            {locale.startsWith("en")
+                              ? "Prompt framing stays beside the main workspace so you can refine agent behavior without burying the transcript."
+                              : "系统提示词直接放在主工作区旁边，边看输出边收口行为，不再把核心记录挤到侧栏里。"}
+                          </p>
+                        </div>
+                        <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">
+                          {locale.startsWith("en") ? "Live prompt frame" : "实时提示框架"}
+                        </span>
+                      </div>
+                      <textarea
+                        value={systemPrompt}
+                        onChange={(event) => setSystemPrompt(event.target.value)}
+                        rows={12}
+                        className="mt-3 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 font-mono text-xs leading-6 text-slate-200 outline-none transition focus:border-cyan-400/40"
+                      />
+                    </div>
+
+                    <div className="rounded-3xl border border-white/10 bg-black/25 px-4 py-4">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{dictionary.agent.launchHints}</p>
+                          <p className="mt-1.5 text-sm leading-6 text-slate-300">
+                            {locale.startsWith("en")
+                              ? "Keep deployment and fallback hints in a card grid instead of a long sidebar, so high-density sessions remain easier to scan."
+                              : "把部署与 fallback 提示放进卡片网格，而不是继续堆在长侧栏里，高信息密度时更容易扫读。"}
+                          </p>
+                        </div>
+                        <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">
+                          {selectedTarget.execution === "local" ? dictionary.common.local : dictionary.common.remote}
+                        </span>
+                      </div>
+                      <div className="mt-3 grid gap-3 2xl:grid-cols-2">
+                        {(selectedTarget.launchHints || [uiText.fallbackLaunchHint]).map((hint) => (
+                          <pre
+                            key={hint}
+                            className="overflow-x-auto whitespace-pre-wrap break-words rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 font-mono text-xs leading-6 text-slate-200"
+                          >
+                            {hint}
+                          </pre>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div className="rounded-3xl border border-white/10 bg-black/25 px-4 py-4">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{dictionary.agent.providerSelfCheck}</p>
+                          <p className="mt-1.5 text-sm leading-6 text-slate-300">
+                            {dictionary.agent.selfCheckDescription}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={!supportsConnectionCheck || connectionCheckPending || pending}
+                            onClick={handleConnectionCheck}
+                            className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
+                          >
+                            {connectionCheckPending ? dictionary.agent.checking : dictionary.agent.runCheck}
+                          </button>
+                          <a
+                            href={`/api/agent/check-history/export?targetId=${encodeURIComponent(selectedTargetId)}&format=markdown`}
+                            className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/10"
+                          >
+                            {dictionary.agent.exportMarkdown}
+                          </a>
+                          <a
+                            href={`/api/agent/check-history/export?targetId=${encodeURIComponent(selectedTargetId)}&format=json`}
+                            className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/10"
+                          >
+                            {dictionary.agent.exportJson}
+                          </a>
+                        </div>
+                      </div>
+
+                      {!supportsConnectionCheck ? (
+                        <p className="mt-3 text-sm leading-6 text-slate-400">{dictionary.agent.checkOnlyRemote}</p>
+                      ) : null}
+
+                      {connectionCheckError ? (
+                        <div className="mt-3 rounded-2xl border border-rose-400/30 bg-rose-400/10 px-3 py-3 text-sm text-rose-100">
+                          {connectionCheckError}
+                        </div>
+                      ) : null}
+
+                      <div className="mt-3 rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-3 text-xs leading-6 text-slate-300">
+                        <p>{dictionary.common.model}: {runtimeStatus?.resolvedModel || lastTurn?.resolvedModel || selectedTarget.modelDefault}</p>
+                        <p className="break-all">{dictionary.common.endpoint}: {lastTurn?.resolvedBaseUrl || selectedTarget.baseUrlDefault}</p>
+                        <p className="mt-2 text-slate-500">
+                          {dictionary.agent.historySavedAt}: <span className="text-slate-300">data/agent-observability</span>
+                        </p>
+                        {connectionCheck?.docsUrl ? (
+                          <a
+                            href={connectionCheck.docsUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="mt-2 inline-block text-cyan-300 underline decoration-cyan-300/40 underline-offset-4"
+                          >
+                            {dictionary.agent.openDocs}
+                          </a>
+                        ) : null}
+                      </div>
+
+                      {connectionCheck ? (
+                        <div className="mt-3 grid gap-2">
+                          {connectionCheck.stages.map((stage) => (
+                            <div key={stage.id} className="rounded-2xl border border-white/10 bg-black/20 px-3 py-2.5">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span
+                                    className={`rounded-full px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] ${getConnectionStageBadgeClass(stage.ok)}`}
+                                  >
+                                    {formatConnectionStageLabel(stage.id)}
+                                  </span>
+                                  {typeof stage.httpStatus === "number" ? (
+                                    <span className="rounded-full bg-white/[0.04] px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] text-slate-300">
+                                      http {stage.httpStatus}
+                                    </span>
+                                  ) : null}
+                                </div>
+                                <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
+                                  {stage.latencyMs} ms
+                                </span>
+                              </div>
+                              <p className="mt-1.5 text-[13px] leading-6 text-slate-300">{stage.summary}</p>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              </div>
                 </>
               ) : (
                 <AgentCompareLab
@@ -5389,11 +5553,15 @@ export function AgentWorkbench() {
               <div className="border-b border-white/10 px-5 py-3.5">
                 <p className="text-[11px] uppercase tracking-[0.2em] text-slate-500">{dictionary.nav.agent}</p>
                 <h3 className="mt-1.5 text-base font-semibold text-white">
-                  {dictionary.agent.localRuntime} / {dictionary.agent.promptFrame}
+                  {workbenchMode === "chat"
+                    ? `${dictionary.agent.localRuntime} / ${locale.startsWith("en") ? "Process rail" : "运行侧栏"}`
+                    : `${dictionary.agent.localRuntime} / ${dictionary.agent.promptFrame}`}
                 </h3>
               </div>
 
               <div className="space-y-4 px-5 py-4">
+                {workbenchMode === "compare" ? (
+                  <>
                 <div className="rounded-2xl border border-white/10 bg-black/25 px-4 py-3">
                   <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{dictionary.agent.resolvedEndpoint}</p>
                   <p className="mt-1.5 break-all text-[13px] leading-6 text-slate-200">
@@ -5511,6 +5679,8 @@ export function AgentWorkbench() {
                     </div>
                   ) : null}
                 </div>
+                  </>
+                ) : null}
 
                 <div className="rounded-2xl border border-white/10 bg-black/25 px-4 py-3">
                   <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{dictionary.agent.resolvedModel}</p>
@@ -5562,6 +5732,8 @@ export function AgentWorkbench() {
                   </div>
                 </div>
 
+                {workbenchMode === "compare" ? (
+                  <>
                 <div className="rounded-2xl border border-white/10 bg-black/25 px-4 py-3">
                   <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{dictionary.agent.promptFrame}</p>
                   <textarea
@@ -5587,6 +5759,8 @@ export function AgentWorkbench() {
                     )}
                   </div>
                 </div>
+                  </>
+                ) : null}
 
                 <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
                   <div className="flex items-center justify-between gap-3">
