@@ -3801,8 +3801,8 @@ export function AdminDashboard() {
   }, [benchmarkProgress, locale]);
 
   return (
-    <section className="min-h-[calc(100vh-4rem)] bg-[radial-gradient(circle_at_top,_rgba(14,165,233,0.14),_transparent_26%),linear-gradient(180deg,_#020617_0%,_#0f172a_100%)] px-4 py-6 text-slate-100 sm:px-6">
-      <div className="mx-auto flex max-w-7xl flex-col gap-4">
+    <section className="min-h-[calc(100vh-4rem)] bg-[radial-gradient(circle_at_top,_rgba(14,165,233,0.14),_transparent_26%),linear-gradient(180deg,_#020617_0%,_#0f172a_100%)] px-3 py-4 text-slate-100 sm:px-5 xl:px-6 2xl:px-8">
+      <div className="mx-auto flex w-full max-w-[1960px] flex-col gap-4">
         <header className="order-20 rounded-2xl border border-white/10 bg-slate-950/75 px-5 py-4 shadow-[0_20px_60px_rgba(2,6,23,0.45)]">
           <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
             <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:gap-4">

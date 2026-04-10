@@ -23,8 +23,8 @@ export function AdminPageShell() {
 
   if (!AdminDashboard) {
     return (
-      <main className="min-h-[calc(100vh-4rem)] bg-[radial-gradient(circle_at_top,_rgba(14,165,233,0.14),_transparent_26%),linear-gradient(180deg,_#020617_0%,_#0f172a_100%)] px-4 py-6 text-slate-100 sm:px-6">
-        <div className="mx-auto max-w-7xl space-y-4">
+      <main className="min-h-[calc(100vh-4rem)] bg-[radial-gradient(circle_at_top,_rgba(14,165,233,0.14),_transparent_26%),linear-gradient(180deg,_#020617_0%,_#0f172a_100%)] px-3 py-4 text-slate-100 sm:px-5 xl:px-6 2xl:px-8">
+        <div className="mx-auto w-full max-w-[1960px] space-y-4">
           <div className="rounded-3xl border border-white/10 bg-slate-950/70 p-4">
             <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_220px_220px_220px_220px]">
               <div className="space-y-4">

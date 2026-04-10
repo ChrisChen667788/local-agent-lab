@@ -21,7 +21,7 @@ export function AppNav({ version }: { version?: string }) {
 
   return (
     <nav className="sticky top-0 z-30 w-full overflow-x-auto border-b border-slate-200/70 bg-white/92 backdrop-blur">
-      <div className="mx-auto flex w-full max-w-[1600px] items-center justify-between gap-4 px-4 py-3 sm:px-6">
+      <div className="mx-auto flex w-full max-w-[1960px] items-center justify-between gap-4 px-3 py-3 sm:px-5 xl:px-7 2xl:px-8">
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-2 rounded-full bg-slate-100/90 p-1">
             {links.map((link) => {

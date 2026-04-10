@@ -559,7 +559,7 @@ export function AgentCompareLab({
   }, [baseResult, compareResult?.results, copy.schemaMatch, copy.schemaMismatch, copy.schemaUnavailable]);
 
   return (
-    <div className="h-[52vh] min-h-[360px] max-h-[72vh] overflow-y-auto bg-[linear-gradient(180deg,rgba(15,23,42,0.18),rgba(2,6,23,0.12))] sm:h-[58vh]">
+    <div className="h-[58vh] min-h-[420px] max-h-[76vh] overflow-y-auto bg-[linear-gradient(180deg,rgba(15,23,42,0.18),rgba(2,6,23,0.12))] sm:h-[62vh]">
       <div className="space-y-5 px-5 py-5">
         <section className="rounded-[28px] border border-cyan-400/15 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.16),transparent_36%),linear-gradient(135deg,rgba(15,23,42,0.85),rgba(2,6,23,0.92))] p-5 shadow-[0_30px_70px_rgba(2,6,23,0.35)]">
           <div className="flex flex-wrap items-start justify-between gap-4">
@@ -588,7 +588,7 @@ export function AgentCompareLab({
           ) : null}
         </section>
 
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1.18fr)_minmax(300px,0.82fr)]">
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,1.18fr)_minmax(360px,0.82fr)] 2xl:grid-cols-[minmax(0,1.34fr)_minmax(420px,0.8fr)]">
           <div className="space-y-5">
             <section className="rounded-3xl border border-white/10 bg-white/[0.03] p-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -600,7 +600,7 @@ export function AgentCompareLab({
                   {compareTargets.length}/{MAX_COMPARE_LANES}
                 </span>
               </div>
-              <div className="mt-4 grid gap-3 md:grid-cols-2">
+              <div className="mt-4 grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
                 {targets.map((target) => {
                   const checked = compareTargetIds.includes(target.id);
                   const pinned = target.id === selectedTargetId;
@@ -703,8 +703,8 @@ export function AgentCompareLab({
 
             <section className="rounded-3xl border border-white/10 bg-white/[0.03] p-4">
               <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{copy.promptFrame}</p>
-              <div className="mt-4 space-y-4">
-                <div>
+              <div className="mt-4 grid gap-4 2xl:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]">
+                <div className="min-w-0">
                   <label className="text-xs uppercase tracking-[0.18em] text-slate-500">{copy.promptInput}</label>
                   <textarea
                     value={input}
@@ -713,7 +713,7 @@ export function AgentCompareLab({
                     className="mt-2 min-h-[160px] w-full resize-y rounded-3xl border border-white/10 bg-black/25 px-4 py-4 font-mono text-sm leading-7 text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-cyan-400/40 focus:bg-black/35"
                   />
                 </div>
-                <div>
+                <div className="min-w-0">
                   <label className="text-xs uppercase tracking-[0.18em] text-slate-500">{copy.systemFrame}</label>
                   <textarea
                     value={systemPrompt}
@@ -728,7 +728,7 @@ export function AgentCompareLab({
             <section className="rounded-3xl border border-white/10 bg-white/[0.03] p-4">
               <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{copy.lockedControls}</p>
               <p className="mt-2 text-sm leading-6 text-slate-400">{copy.lockedControlsHint}</p>
-              <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
                 <label className="space-y-2">
                   <span className="text-xs uppercase tracking-[0.18em] text-slate-500">
                     {locale.startsWith("en") ? "Context window" : "上下文长度"}
@@ -810,7 +810,7 @@ export function AgentCompareLab({
                   {copy.needMoreTargets}
                 </div>
               ) : null}
-              <div className="mt-4 space-y-3">
+              <div className="mt-4 grid gap-3 2xl:grid-cols-2">
                 {compareTargets.map((target) => {
                   const runtime = compareRuntimeByTargetId[target.id];
                   const compareProgress = compareProgressByTargetId[target.id];
