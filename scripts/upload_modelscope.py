@@ -25,6 +25,13 @@ except Exception as exc:
     sys.exit(1)
 
 api = HubApi()
+_original_request = api.session.request
+
+def _request_with_timeout(method, url, **kwargs):
+    kwargs['timeout'] = 600
+    return _original_request(method, url, **kwargs)
+
+api.session.request = _request_with_timeout
 api.create_repo(
     repo_id=REPO_ID,
     token=TOKEN,
