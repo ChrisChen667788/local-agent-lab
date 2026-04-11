@@ -5851,11 +5851,6 @@ export function AgentWorkbench() {
 
                 <RailDetailsSection
                   title={dictionary.agent.resolvedModel}
-                  subtitle={
-                    locale.startsWith("en")
-                      ? "Resolved model names, endpoint wiring, and docs stay here instead of occupying the whole rail."
-                      : "把模型解析结果、endpoint 和文档入口折进这里，不再整列展开占满右侧。"
-                  }
                   badge={selectedTarget.execution === "local" ? dictionary.common.local : "remote"}
                   defaultOpen={true}
                 >

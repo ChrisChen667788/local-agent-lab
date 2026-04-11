@@ -383,19 +383,18 @@ export function AgentCompareLab({
       }
     : {
         title: "Compare Lab",
-        subtitle:
-          "在当前 /agent 工作台里直接做输出对比，继续复用你已经有的 target catalog、runtime guardrails 和回放链路，不另起产品面。",
+        subtitle: "",
         targets: "对比目标",
-        targetsHint: `固定当前目标，再额外加入最多 ${MAX_COMPARE_LANES - 1} 条 lane，方便做公平对比。`,
+        targetsHint: `固定当前目标，再额外加入最多 ${MAX_COMPARE_LANES - 1} 条 lane。`,
         recipe: "对比方案",
         outputShape: "输出形态",
         lockedControls: "锁定控制项",
-        lockedControlsHint: "这些参数会在每条 lane 上保持一致，避免把采样漂移误判成模型能力差异。",
+        lockedControlsHint: "",
         promptFrame: "提示词框架",
         promptInput: "任务提示词",
         systemFrame: "系统提示词",
         lanePreview: "对比 lane 预览",
-        lanePreviewHint: "在现有 /agent 工作台里直接跑真实 compare，同时保持现有框架和交互骨架不变。",
+        lanePreviewHint: "",
         fairnessFingerprint: "公平性指纹",
         currentTarget: "当前目标",
         local: "本地",
@@ -583,7 +582,9 @@ export function AgentCompareLab({
             <div className="max-w-3xl">
               <p className="text-[10px] uppercase tracking-[0.28em] text-cyan-200/80">/agent · compare</p>
               <h3 className="mt-3 text-2xl font-semibold text-white">{copy.title}</h3>
-              <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-300">{copy.subtitle}</p>
+              {copy.subtitle ? (
+                <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-300">{copy.subtitle}</p>
+              ) : null}
             </div>
             <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-right">
               <p className="text-[10px] uppercase tracking-[0.24em] text-slate-500">{copy.fairnessFingerprint}</p>
@@ -672,11 +673,6 @@ export function AgentCompareLab({
                   <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">
                     {locale.startsWith("en") ? "Compare composer" : "对比编排"}
                   </p>
-                  <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-                    {locale.startsWith("en")
-                      ? "Keep the compare contract, prompt frame, and runtime controls inside one compact board so wide screens stay readable under heavy context."
-                      : "把对比意图、输出契约、提示词框架和运行时锁定参数收在同一块工作面里，减少宽屏下的纵向堆叠。"}
-                  </p>
                 </div>
                 <div className="flex flex-wrap gap-2 text-[11px] text-slate-200">
                   <span className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-1.5">
@@ -697,9 +693,9 @@ export function AgentCompareLab({
                 </div>
               </div>
 
-              <div className="mt-4 grid gap-4 2xl:grid-cols-[minmax(260px,0.52fr)_minmax(0,1fr)]">
-                <div className="space-y-4">
-                  <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-1">
+              <div className="mt-4 space-y-4">
+                <div className="grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
+                  <div className="space-y-4">
                     <section className="rounded-3xl border border-white/10 bg-black/20 p-4">
                       <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{copy.recipe}</p>
                       <div className="mt-4 space-y-3">
@@ -727,7 +723,7 @@ export function AgentCompareLab({
 
                     <section className="rounded-3xl border border-white/10 bg-black/20 p-4">
                       <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{copy.outputShape}</p>
-                      <div className="mt-4 space-y-3">
+                      <div className="mt-4 grid gap-3 md:grid-cols-3 xl:grid-cols-1 2xl:grid-cols-3">
                         {Object.entries(OUTPUT_SHAPE_META).map(([shape, meta]) => {
                           const selected = compareOutputShape === shape;
                           const labelSet = meta[locale.startsWith("en") ? "en" : "zh"];
@@ -740,7 +736,7 @@ export function AgentCompareLab({
                                 selected
                                   ? "border-violet-400/25 bg-violet-400/10"
                                   : "border-white/10 bg-slate-950/70 hover:border-white/20 hover:bg-white/[0.05]"
-                              }`}
+                              } h-full`}
                             >
                               <p className="text-sm font-medium text-white">{labelSet.label}</p>
                               <p className="mt-1 text-xs leading-6 text-slate-400">{labelSet.description}</p>
@@ -752,114 +748,103 @@ export function AgentCompareLab({
                   </div>
 
                   <section className="rounded-3xl border border-white/10 bg-black/20 p-4">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div>
-                        <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{copy.lockedControls}</p>
-                        <p className="mt-2 text-sm leading-6 text-slate-400">{copy.lockedControlsHint}</p>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        <span className={`rounded-full border px-3 py-1.5 text-[11px] ${enableTools ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100" : "border-white/10 bg-white/[0.04] text-slate-300"}`}>
-                          {copy.tools}: {enableTools ? copy.on : copy.off}
-                        </span>
-                        <span className={`rounded-full border px-3 py-1.5 text-[11px] ${enableRetrieval ? "border-cyan-400/20 bg-cyan-400/10 text-cyan-100" : "border-white/10 bg-white/[0.04] text-slate-300"}`}>
-                          {copy.retrieval}: {enableRetrieval ? copy.on : copy.off}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                      <label className="space-y-2">
-                        <span className="text-xs uppercase tracking-[0.18em] text-slate-500">
-                          {locale.startsWith("en") ? "Context window" : "上下文长度"}
-                        </span>
-                        <select
-                          value={contextWindow}
-                          onChange={(event) => onContextWindowChange(Number(event.target.value))}
-                          className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 outline-none"
-                        >
-                          {contextWindowOptions.map((value) => (
-                            <option key={value} value={value}>
-                              {formatContextWindowLabel(value)}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="space-y-2">
-                        <span className="text-xs uppercase tracking-[0.18em] text-slate-500">
-                          {locale.startsWith("en") ? "Provider profile" : "Provider 配置"}
-                        </span>
-                        <select
-                          value={providerProfile}
-                          onChange={(event) => onProviderProfileChange(event.target.value as AgentProviderProfile)}
-                          className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 outline-none"
-                        >
-                          {providerProfileOptions.map((value) => (
-                            <option key={value} value={value}>
-                              {formatProviderProfile(locale, value)}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="space-y-2">
-                        <span className="text-xs uppercase tracking-[0.18em] text-slate-500">
-                          {locale.startsWith("en") ? "Thinking mode" : "思考模式"}
-                        </span>
-                        <select
-                          value={thinkingMode}
-                          onChange={(event) => onThinkingModeChange(event.target.value as AgentThinkingMode)}
-                          className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 outline-none"
-                        >
-                          {thinkingModeOptions.map((value) => (
-                            <option key={value} value={value}>
-                              {formatThinkingMode(locale, value)}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-                    <div className="mt-4 flex flex-wrap gap-5 text-sm text-slate-300">
-                      <label className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={enableTools}
-                          onChange={(event) => onEnableToolsChange(event.target.checked)}
-                          className="rounded border-white/20 bg-slate-950"
+                    <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{copy.promptFrame}</p>
+                    <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]">
+                      <div className="min-w-0">
+                        <label className="text-xs uppercase tracking-[0.18em] text-slate-500">{copy.promptInput}</label>
+                        <textarea
+                          value={input}
+                          onChange={(event) => onInputChange(event.target.value)}
+                          rows={8}
+                          className="mt-2 min-h-[180px] w-full resize-y rounded-3xl border border-white/10 bg-black/25 px-4 py-4 font-mono text-sm leading-7 text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-cyan-400/40 focus:bg-black/35"
                         />
-                        {copy.tools}
-                      </label>
-                      <label className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={enableRetrieval}
-                          onChange={(event) => onEnableRetrievalChange(event.target.checked)}
-                          className="rounded border-white/20 bg-slate-950"
+                      </div>
+                      <div className="min-w-0">
+                        <label className="text-xs uppercase tracking-[0.18em] text-slate-500">{copy.systemFrame}</label>
+                        <textarea
+                          value={systemPrompt}
+                          onChange={(event) => onSystemPromptChange(event.target.value)}
+                          rows={11}
+                          className="mt-2 w-full rounded-3xl border border-white/10 bg-slate-950/80 px-4 py-4 font-mono text-xs leading-6 text-slate-200 outline-none transition focus:border-cyan-400/40"
                         />
-                        {copy.retrieval}
-                      </label>
+                      </div>
                     </div>
                   </section>
                 </div>
 
                 <section className="rounded-3xl border border-white/10 bg-black/20 p-4">
-                  <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{copy.promptFrame}</p>
-                  <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]">
-                    <div className="min-w-0">
-                      <label className="text-xs uppercase tracking-[0.18em] text-slate-500">{copy.promptInput}</label>
-                      <textarea
-                        value={input}
-                        onChange={(event) => onInputChange(event.target.value)}
-                        rows={8}
-                        className="mt-2 min-h-[180px] w-full resize-y rounded-3xl border border-white/10 bg-black/25 px-4 py-4 font-mono text-sm leading-7 text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-cyan-400/40 focus:bg-black/35"
-                      />
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{copy.lockedControls}</p>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => onEnableToolsChange(!enableTools)}
+                        className={`rounded-full border px-3 py-1.5 text-[11px] transition ${
+                          enableTools ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100" : "border-white/10 bg-white/[0.04] text-slate-300"
+                        }`}
+                      >
+                        {copy.tools}: {enableTools ? copy.on : copy.off}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onEnableRetrievalChange(!enableRetrieval)}
+                        className={`rounded-full border px-3 py-1.5 text-[11px] transition ${
+                          enableRetrieval ? "border-cyan-400/20 bg-cyan-400/10 text-cyan-100" : "border-white/10 bg-white/[0.04] text-slate-300"
+                        }`}
+                      >
+                        {copy.retrieval}: {enableRetrieval ? copy.on : copy.off}
+                      </button>
                     </div>
-                    <div className="min-w-0">
-                      <label className="text-xs uppercase tracking-[0.18em] text-slate-500">{copy.systemFrame}</label>
-                      <textarea
-                        value={systemPrompt}
-                        onChange={(event) => onSystemPromptChange(event.target.value)}
-                        rows={11}
-                        className="mt-2 w-full rounded-3xl border border-white/10 bg-slate-950/80 px-4 py-4 font-mono text-xs leading-6 text-slate-200 outline-none transition focus:border-cyan-400/40"
-                      />
-                    </div>
+                  </div>
+                  <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                    <label className="space-y-2 rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-3">
+                      <span className="text-[11px] font-medium text-slate-400">
+                        {locale.startsWith("en") ? "Context" : "上下文"}
+                      </span>
+                      <select
+                        value={contextWindow}
+                        onChange={(event) => onContextWindowChange(Number(event.target.value))}
+                        className="w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-slate-100 outline-none"
+                      >
+                        {contextWindowOptions.map((value) => (
+                          <option key={value} value={value}>
+                            {formatContextWindowLabel(value)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="space-y-2 rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-3">
+                      <span className="text-[11px] font-medium text-slate-400">
+                        {locale.startsWith("en") ? "Profile" : "档位"}
+                      </span>
+                      <select
+                        value={providerProfile}
+                        onChange={(event) => onProviderProfileChange(event.target.value as AgentProviderProfile)}
+                        className="w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-slate-100 outline-none"
+                      >
+                        {providerProfileOptions.map((value) => (
+                          <option key={value} value={value}>
+                            {formatProviderProfile(locale, value)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="space-y-2 rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-3">
+                      <span className="text-[11px] font-medium text-slate-400">
+                        {locale.startsWith("en") ? "Thinking" : "思考"}
+                      </span>
+                      <select
+                        value={thinkingMode}
+                        onChange={(event) => onThinkingModeChange(event.target.value as AgentThinkingMode)}
+                        className="w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-slate-100 outline-none"
+                      >
+                        {thinkingModeOptions.map((value) => (
+                          <option key={value} value={value}>
+                            {formatThinkingMode(locale, value)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
                   </div>
                 </section>
               </div>
@@ -869,7 +854,9 @@ export function AgentCompareLab({
           <div className="space-y-5">
             <section className="rounded-3xl border border-white/10 bg-white/[0.03] p-4">
               <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{copy.lanePreview}</p>
-              <p className="mt-2 text-sm leading-6 text-slate-400">{copy.lanePreviewHint}</p>
+              {copy.lanePreviewHint ? (
+                <p className="mt-2 text-sm leading-6 text-slate-400">{copy.lanePreviewHint}</p>
+              ) : null}
               {!hasEnoughTargets ? (
                 <div className="mt-4 rounded-2xl border border-dashed border-amber-300/20 bg-amber-300/10 px-4 py-4 text-sm leading-6 text-amber-100">
                   {copy.needMoreTargets}

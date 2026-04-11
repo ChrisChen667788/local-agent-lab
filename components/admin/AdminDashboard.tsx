@@ -564,19 +564,20 @@ function RuntimeMetricSparkline({
     violet: "#a78bfa"
   };
   const stroke = strokeMap[tone];
+  const hasValues = values.length > 0;
   return (
-    <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-4 text-sm text-slate-300">
+    <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-3.5 py-3.5 text-sm text-slate-300">
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{title}</p>
-          <p className="mt-3 text-xl font-semibold text-white">{latest}</p>
+          <p className="mt-2 text-base font-semibold text-white">{latest}</p>
         </div>
         <span className="rounded-full bg-white/5 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-400">
-          {values.length ? `${values.length} pts` : "No data"}
+          {hasValues ? `${values.length} pts` : "No data"}
         </span>
       </div>
-      <div className="mt-3 h-16 rounded-2xl border border-white/10 bg-black/20 p-2.5">
-        {values.length ? (
+      <div className={`mt-3 rounded-2xl border border-white/10 bg-black/20 p-2.5 ${hasValues ? "h-14" : "h-10"}`}>
+        {hasValues ? (
           <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="h-full w-full">
             <polyline
               fill="none"
@@ -588,10 +589,10 @@ function RuntimeMetricSparkline({
             />
           </svg>
         ) : (
-          <div className="flex h-full items-center justify-center text-xs text-slate-500">--</div>
+          <div className="flex h-full items-center justify-center text-[11px] text-slate-500">待采样</div>
         )}
       </div>
-      <p className="mt-2 text-xs text-slate-400">{helper}</p>
+      <p className="mt-2 text-[11px] leading-5 text-slate-400">{helper}</p>
     </div>
   );
 }
@@ -6482,6 +6483,79 @@ export function AdminDashboard() {
               const recommendedContextBadge = formatRecommendedContextBadge(target.recommendedContextWindow);
               const lastSwitchMsForTarget = runtimeLastSwitchMs[target.id] ?? null;
               const lastSwitchAtForTarget = runtimeLastSwitchAt[target.id] ?? null;
+              const runtimeIsIdle = runtime?.phase === "unloaded";
+              const supervisorValue = runtime?.supervisorPid
+                ? String(runtime.supervisorPid)
+                : runtimeIsIdle
+                  ? locale.startsWith("en")
+                    ? "On-demand"
+                    : "按需"
+                  : "—";
+              const supervisorDetail = runtime?.supervisorPid
+                ? runtime?.supervisorAlive
+                  ? dictionary.common.ok
+                  : dictionary.common.failed
+                : runtimeIsIdle
+                  ? locale.startsWith("en")
+                    ? "Not required while idle"
+                    : "空载时无需常驻"
+                  : dictionary.common.unknown;
+              const gatewayValue = runtime?.gatewayPid ? String(runtime.gatewayPid) : "—";
+              const gatewayDetail = runtime?.gatewayAlive
+                ? runtimeIsIdle
+                  ? locale.startsWith("en")
+                    ? "Idle"
+                    : "空载"
+                  : dictionary.common.ok
+                : runtimeIsIdle
+                  ? locale.startsWith("en")
+                    ? "Cold"
+                    : "冷启动"
+                  : dictionary.common.failed;
+              const lastExitCodeValue =
+                typeof runtime?.lastExitCode === "number" ? String(runtime.lastExitCode) : "—";
+              const lastStartValue = runtime?.lastStartAt ? new Date(runtime.lastStartAt).toLocaleString() : "—";
+              const lastExitValue = runtime?.lastExitAt ? new Date(runtime.lastExitAt).toLocaleString() : "—";
+              const overviewCards = [
+                {
+                  label: uiText.runtimeSupervisor,
+                  value: supervisorValue,
+                  detail: supervisorDetail
+                },
+                {
+                  label: uiText.runtimeGateway,
+                  value: gatewayValue,
+                  detail: gatewayDetail
+                },
+                {
+                  label: uiText.runtimeRestartCount,
+                  value: String(runtime?.restartCount ?? 0),
+                  detail: locale.startsWith("en")
+                    ? "Gateway restarts observed"
+                    : "累计网关重启次数"
+                },
+                {
+                  label: uiText.runtimeLastExitCode,
+                  value: lastExitCodeValue,
+                  detail: locale.startsWith("en")
+                    ? "Latest process exit code"
+                    : "最近一次进程退出码"
+                },
+                {
+                  label: uiText.runtimeLastStart,
+                  value: lastStartValue,
+                  detail: locale.startsWith("en")
+                    ? "Last gateway start"
+                    : "最近一次网关启动"
+                },
+                {
+                  label: uiText.runtimeLastExit,
+                  value: lastExitValue,
+                  detail: locale.startsWith("en")
+                    ? "Last gateway stop"
+                    : "最近一次网关退出"
+                }
+              ];
               return (
                 <article key={target.id} className="rounded-3xl border border-white/10 bg-black/20 p-4">
                   <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
@@ -6566,33 +6640,14 @@ export function AdminDashboard() {
 
                   <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
                     <div className="space-y-4">
-                      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-2">
-                        <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-4 text-sm text-slate-300">
-                          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeSupervisor}</p>
-                          <p className="mt-3 text-xl font-semibold text-white">{runtime?.supervisorPid ?? dictionary.common.unknown}</p>
-                          <p className="mt-2 text-xs text-slate-400">{runtime?.supervisorAlive ? dictionary.common.ok : dictionary.common.failed}</p>
-                        </div>
-                        <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-4 text-sm text-slate-300">
-                          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeGateway}</p>
-                          <p className="mt-3 text-xl font-semibold text-white">{runtime?.gatewayPid ?? dictionary.common.unknown}</p>
-                          <p className="mt-2 text-xs text-slate-400">{runtime?.gatewayAlive ? dictionary.common.ok : dictionary.common.failed}</p>
-                        </div>
-                        <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-4 text-sm text-slate-300">
-                          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeRestartCount}</p>
-                          <p className="mt-3 text-xl font-semibold text-white">{runtime?.restartCount ?? 0}</p>
-                        </div>
-                        <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-4 text-sm text-slate-300">
-                          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeLastExitCode}</p>
-                          <p className="mt-3 text-xl font-semibold text-white">{runtime?.lastExitCode ?? dictionary.common.unknown}</p>
-                        </div>
-                        <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-4 text-sm text-slate-300">
-                          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeLastStart}</p>
-                          <p className="mt-3 text-base font-semibold text-white">{runtime?.lastStartAt ? new Date(runtime.lastStartAt).toLocaleString() : dictionary.common.unknown}</p>
-                        </div>
-                        <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-4 text-sm text-slate-300">
-                          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeLastExit}</p>
-                          <p className="mt-3 text-base font-semibold text-white">{runtime?.lastExitAt ? new Date(runtime.lastExitAt).toLocaleString() : dictionary.common.unknown}</p>
-                        </div>
+                      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                        {overviewCards.map((card) => (
+                          <div key={card.label} className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3.5 text-sm text-slate-300">
+                            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{card.label}</p>
+                            <p className="mt-2 text-lg font-semibold text-white">{card.value}</p>
+                            <p className="mt-2 text-xs leading-5 text-slate-400">{card.detail}</p>
+                          </div>
+                        ))}
                         <RuntimeMetricSparkline
                           title={locale.startsWith("en") ? "Gateway CPU" : "网关 CPU"}
                           latest={typeof runtime?.gatewayCpuPct === "number" ? `${runtime.gatewayCpuPct.toFixed(1)}%` : "--"}
