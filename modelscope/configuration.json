@@ -1,0 +1,14 @@
+{
+  "framework": "other",
+  "task": "text-generation",
+  "allow_remote": true,
+  "model": {
+    "name": "First LLM Studio",
+    "description": "Local-first LLM studio for Apple Silicon with MLX local runtimes, remote API comparison, benchmark ops, Compare Lab, replay, trace review, and runtime recovery.",
+    "language": [
+      "en",
+      "zh"
+    ],
+    "license": "MIT"
+  }
+}

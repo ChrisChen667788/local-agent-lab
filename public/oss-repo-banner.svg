@@ -17,7 +17,7 @@
 <circle cx="250" cy="160" r="160" fill="url(#orb1)"/>
 <rect x="110" y="88" width="430" height="52" rx="26" fill="rgba(255,255,255,0.74)"/>
 <text x="144" y="123" fill="#53627B" font-size="20" font-weight="700" letter-spacing="0.13em" font-family="SF Pro Display, Inter, Segoe UI, sans-serif">OPEN SOURCE · AGENT OPS</text>
-<text x="110" y="246" fill="#0F172A" font-size="74" font-weight="720" letter-spacing="-0.05em" font-family="SF Pro Display, Inter, Segoe UI, sans-serif">Local Agent Lab</text>
+<text x="110" y="246" fill="#0F172A" font-size="74" font-weight="720" letter-spacing="-0.05em" font-family="SF Pro Display, Inter, Segoe UI, sans-serif">First LLM Studio</text>
 <text x="110" y="314" fill="#475970" font-size="28" font-weight="560" letter-spacing="-0.03em" font-family="SF Pro Display, Inter, Segoe UI, sans-serif">MLX local runtimes, replay, trace, and fair 32K compare.</text>
 <g filter="url(#shadow)"><rect x="1010" y="124" width="356" height="196" rx="34" fill="#111A2B"/></g>
 <text x="1050" y="176" fill="#6FE6FF" font-size="20" font-weight="700" letter-spacing="0.13em" font-family="SF Pro Display, Inter, Segoe UI, sans-serif">WHY IT MATTERS</text>

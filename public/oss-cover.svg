@@ -25,7 +25,7 @@
   <text x="152" y="162" fill="#53627B" font-family="SF Pro Text, Inter, Arial, sans-serif" font-size="21" font-weight="700" letter-spacing="3.2">OPEN SOURCE · LOCAL-FIRST AGENT OPS</text>
 
   <rect x="120" y="212" width="614" height="520" rx="40" fill="url(#panel)"/>
-  <text x="164" y="286" fill="#93C5FD" font-family="SF Pro Text, Inter, Arial, sans-serif" font-size="22" font-weight="700" letter-spacing="3.4">LOCAL AGENT LAB</text>
+  <text x="164" y="286" fill="#93C5FD" font-family="SF Pro Text, Inter, Arial, sans-serif" font-size="22" font-weight="700" letter-spacing="3.4">FIRST LLM STUDIO</text>
   <text x="164" y="392" fill="white" font-family="SF Pro Display, Inter, Arial, sans-serif" font-size="80" font-weight="720" letter-spacing="-3.2">Operate models</text>
   <text x="164" y="478" fill="white" font-family="SF Pro Display, Inter, Arial, sans-serif" font-size="80" font-weight="720" letter-spacing="-3.2">with clarity.</text>
   <text x="164" y="584" fill="#D9E6FF" font-family="SF Pro Text, Inter, Arial, sans-serif" font-size="25" font-weight="560">Run MLX local runtimes, compare 32K lanes,</text>

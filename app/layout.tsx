@@ -8,22 +8,22 @@ import { LocaleProvider } from "@/components/layout/LocaleProvider";
 export const metadata: Metadata = {
   metadataBase: new URL("https://github.com/ChrisChen667788/local-agent-lab"),
   title: {
-    default: "Local Agent Lab",
-    template: "%s · Local Agent Lab"
+    default: "First LLM Studio",
+    template: "%s · First LLM Studio"
   },
   description:
-    "A local-first coding agent workbench for Apple Silicon with local MLX runtimes, remote APIs, benchmark ops, trace review, and replay tooling.",
+    "A local-first LLM studio for Apple Silicon with MLX local runtimes, remote APIs, benchmark operations, Compare Lab, replay, trace review, and runtime recovery.",
   openGraph: {
-    title: "Local Agent Lab",
+    title: "First LLM Studio",
     description:
-      "A local-first coding agent workbench for Apple Silicon with local MLX runtimes, remote APIs, benchmark ops, trace review, and replay tooling.",
+      "A local-first LLM studio for Apple Silicon with MLX local runtimes, remote APIs, benchmark operations, Compare Lab, replay, trace review, and runtime recovery.",
     images: ["/oss-cover.png"]
   },
   twitter: {
     card: "summary_large_image",
-    title: "Local Agent Lab",
+    title: "First LLM Studio",
     description:
-      "A local-first coding agent workbench for Apple Silicon with local MLX runtimes, remote APIs, benchmark ops, trace review, and replay tooling.",
+      "A local-first LLM studio for Apple Silicon with MLX local runtimes, remote APIs, benchmark operations, Compare Lab, replay, trace review, and runtime recovery.",
     images: ["/oss-cover.png"]
   }
 };
