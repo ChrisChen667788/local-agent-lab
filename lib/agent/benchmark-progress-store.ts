@@ -27,6 +27,7 @@ function writeProgress(progress: AgentBenchmarkProgress) {
 export function createBenchmarkProgress(input: {
   runId: string;
   benchmarkMode?: AgentBenchmarkMode;
+  runNote?: string;
   suiteId?: string;
   suiteLabel?: string;
   profileBatchScope?: AgentBenchmarkProfileBatchScope;
@@ -46,6 +47,7 @@ export function createBenchmarkProgress(input: {
     runId: input.runId,
     status: "pending",
     benchmarkMode: input.benchmarkMode,
+    runNote: input.runNote,
     suiteId: input.suiteId,
     suiteLabel: input.suiteLabel,
     profileBatchScope: input.profileBatchScope,

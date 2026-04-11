@@ -1,4 +1,4 @@
-# Local Agent Lab
+# First LLM Studio
 
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
@@ -7,104 +7,102 @@
 ![Apple Silicon](https://img.shields.io/badge/platform-Apple%20Silicon-0f172a)
 ![MLX](https://img.shields.io/badge/local%20runtime-MLX-06b6d4)
 
-![Local Agent Lab cover](./public/oss-cover.svg)
+![First LLM Studio cover](./docs/assets/github-hero.svg)
 
-Local Agent Lab 是一个面向 Apple Silicon 的本地优先 coding agent 工作台。它把下面这些通常分散在不同工具里的环节收在了一起：
+First LLM Studio 是一个面向 Apple Silicon 的本地优先 LLM 工作台。它把本地 MLX 运行时、远端 API 目标、benchmark 运维、Compare 对比、replay、trace review、runtime recovery 和模型观测统一到一个操作界面里。
 
-- 本地 MLX 模型运行
-- 远端 API 模型对比
-- benchmark 执行、历史、基线和进度恢复
-- replay、trace review、patch inspection
-- 本地网关 prewarm、release、restart 和日志排障
+## 这个项目为什么值得关注
 
-如果大多数工具只把“编辑”“聊天”“推理”“评测”里的某一个部分做好，这个项目的目标就是把这些环节放回同一个工作流。
+很多团队现在仍然把工作流拆在太多工具里：
 
-## 这个项目解决什么问题
+- 用本地模型 playground 做推理
+- 用聊天工具试 prompt
+- 用脚本或表格做 benchmark
+- 用 shell 脚本做本地网关恢复和排障
+- 本地模型和远端 API 还分属不同面板
 
-很多时候我们真正想回答的是：
+First LLM Studio 的目标，就是把这些环节重新收回同一个工作台，让我们比较的是“行为差异”，而不只是最后一句答案。
 
-- 哪个本地模型已经够用，能承担 repo-aware coding？
-- 一次 benchmark 回归，到底是质量退了，还是 runtime 链路不稳？
-- 模型真的答得更好，还是工具链偷偷降级了？
-- 本地和远端对比时，上下文预算到底是不是同一口径？
+## 对哪些用户有价值
 
-Local Agent Lab 的设计就是围绕这些问题展开的：
+### 1. Apple Silicon 本地 AI 开发者
 
-- `/agent` 用来交互式运行 agent
-- `/admin` 用来做 benchmark、runtime ops、历史回看和故障诊断
+- 在统一上下文预算下，对比 MLX 本地模型和托管 API
+- 直接查看 prewarm、release、restart、恢复动作和硬件开销
+- 判断哪个本地模型真的适合日常 coding workflow
 
-## 核心亮点
+### 2. Agent / 工具链团队
 
-- 面向 Apple Silicon 的 MLX 本地运行时
+- 在一个工作台里验证 tool calling、repo grounding、replay 和 patch 流程
+- 直接把 compare 结果送入 benchmark，不必切换产品
+- 把失败来源拆清楚：是模型质量、provider 行为，还是 runtime 不稳
+
+### 3. 评测和平台工程团队
+
+- 跑 formal、full 和 provider-focused benchmark 套件
+- 在 `/admin` 里查看 baseline、delta、run note 和失败分类
+- 让本地与远端 target 落在同一个可比较的 target catalog 里
+
+## 核心价值
+
 - 本地 / 远端统一 target catalog
-- 内置 repo 工具链：
-  - `list_files`
-  - `read_file`
-  - `execute_command`
-  - `write_file`
-  - `apply_patch`
-- replay、trace review、文件级 diff 检查
-- benchmark 历史、baseline delta、heatmap、进度恢复、失败分类
-- 知识库路径导入、扫描预览、最近路径快捷回填
-- 本地运行时操作面板：
-  - prewarm
-  - release model
-  - restart gateway
-  - gateway log inspection
-
-## 目前已经验证过的结果
-
-当前已经验证通过：
-
-- all-local `32K` formal benchmark
-- all-local `32K` milestone-full benchmark：`426 / 426 ok`
-- mixed local + remote `32K` compare：`426 / 426 ok`
-- benchmark progress 已能显示显式 prewarm 阶段与恢复动作
-
-当前本地 4B 默认策略：
-
-- `Local Qwen3.5 4B 4-bit` 是默认本地 4B 档
-- `Local Qwen3 4B 4-bit` 保留为对比项
-- `Local Qwen3 0.6B` 作为轻量本地档位
-
-## 截图
-
-![Landing page](./docs/assets/landing-page.png)
-![Agent workbench](./docs/assets/agent-workbench.png)
-![Admin dashboard](./docs/assets/admin-dashboard.png)
-
-## 主要界面
-
-### Agent workbench
-
-- 切换本地与远端模型
-- 运行带工具调用的 agent 对话
-- 查看 replay trace 和 patch review 卡片
-- 对比结构化输出
-
-### Admin dashboard
-
-- 启动 formal / full benchmark
-- 观察进度、恢复动作、失败类型
-- 查看本地 runtime 状态和 gateway 行为
-- 回看 benchmark 历史、baseline、delta 和 mixed compare 结果
+- 内置 Compare Lab，支持模型对模型审阅
+- formal / focused benchmark 运维与历史基线
+- replay、trace review、patch inspection，以及可分享的审阅导出
+- prewarm、release、restart、日志排查与 telemetry
+- 一键扫描新本地模型和已接入远端 API
 
 ## 当前支持的 target
 
 ### 本地
 
 - `Local Qwen3 0.6B`
-- `Local Qwen3.5 4B 4-bit`
 - `Local Qwen3 4B 4-bit`
+- `Local Qwen3.5 4B 4-bit`
+- `Local Gemma 3 4B It Qat 4-bit`
 
 ### 远端
 
 - `OpenAI Codex`
 - `OpenAI GPT-5.4`
 - `Claude API`
+- `DeepSeek API`
 - `Kimi API`
 - `GLM API`
 - `Qwen API`
+
+## 产品界面
+
+### `/agent`
+
+- 运行带工具循环的 LLM 会话
+- 在统一 prompt 和锁定控制项下对比多个 target
+- 查看 prompt frame、runtime 状态、replay 和可分享的 review 输出
+- 一键扫描新发现的本地模型和已配置远端 API
+
+### `/admin`
+
+- 启动 formal、full 和 provider-focused benchmark 套件
+- 查看 benchmark 进度、恢复动作、失败原因和 run note
+- 监控本地网关 CPU、内存、GPU、共享显存、能耗信号和存储压力
+- 对每个本地 target 执行 prewarm、release、restart 和日志检查
+
+## 它和普通 LLM 应用有什么不同
+
+First LLM Studio 不是另一个聊天壳。
+
+它更适合那些需要下面这些能力的人：
+
+- 真的要交付或评估本地优先 LLM 工作流
+- 需要在公平约束下对比本地和远端模型
+- 需要 debug 工具行为和 runtime 回归
+- 想把实验、benchmark 和运维收在一个面板里
+
+## 截图
+
+![Landing page](./docs/assets/landing-page.png)
+![Agent workbench](./docs/assets/agent-workbench.png)
+![Admin dashboard](./docs/assets/admin-dashboard.png)
 
 ## 快速开始
 
@@ -141,7 +139,7 @@ npm run dev
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
-pip install mlx mlx-lm fastapi uvicorn
+pip install mlx mlx-lm
 python scripts/local_model_gateway_supervisor.py
 ```
 
@@ -171,9 +169,9 @@ docs/                     release notes、launch notes、roadmap、项目文档
 public/                   对外资源和社媒封面图
 ```
 
-## 开源宣发素材包
+## 宣发素材
 
-仓库里已经附带一套可以直接拿去发帖和补 GitHub 首页的素材：
+仓库里已经附带一套可以直接复用的宣发包：
 
 - [docs/open-source-launch-kit.md](./docs/open-source-launch-kit.md)
 - [docs/open-source-growth-copy.md](./docs/open-source-growth-copy.md)
@@ -182,18 +180,6 @@ public/                   对外资源和社媒封面图
 - [public/oss-cover.png](./public/oss-cover.png)
 - [public/oss-social-square.svg](./public/oss-social-square.svg)
 - [public/oss-social-square.png](./public/oss-social-square.png)
-- [public/oss-feature-strip.svg](./public/oss-feature-strip.svg)
-
-里面包括：
-
-- GitHub About 文案
-- 仓库置顶和个人主页简介文案
-- release 宣发摘要
-- X / LinkedIn / Hacker News 发帖草稿
-- 中英文社媒发布帖合集
-- 建议使用的截图顺序
-- social preview 素材说明
-- 面向贡献者的 backlog 入口
 
 ## 安全和隐私
 
@@ -216,8 +202,4 @@ public/                   对外资源和社媒封面图
 - 当前版本：[`VERSION`](./VERSION)
 - Release notes：[`docs/releases`](./docs/releases)
 - 发布流程：[`docs/release-process.md`](./docs/release-process.md)
-- 最新 release：[v0.2.3](https://github.com/ChrisChen667788/local-agent-lab/releases/tag/v0.2.3)
-
-## License
-
-[MIT](./LICENSE)
+- 最新版本说明：[v0.3.0](./docs/releases/v0.3.0_2026-04-11.md)

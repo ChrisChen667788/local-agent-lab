@@ -1,8 +1,8 @@
 {
   "name": "local-agent-lab",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "private": true,
-  "description": "Local-first coding agent workbench for Apple Silicon with MLX runtimes, benchmark ops, and remote model comparisons.",
+  "description": "First LLM Studio: local-first LLM workbench for Apple Silicon with MLX runtimes, Compare Lab, benchmark ops, and remote model comparisons.",
   "license": "MIT",
   "homepage": "https://github.com/ChrisChen667788/local-agent-lab",
   "repository": {

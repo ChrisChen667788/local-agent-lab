@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { agentTargets } from "@/lib/agent/catalog";
+import { listServerAgentTargets } from "@/lib/agent/server-targets";
 import { resolveTarget } from "@/lib/agent/providers";
 import type {
   AgentRuntimePrewarmAllResponse,
@@ -11,7 +11,7 @@ export const runtime = "nodejs";
 
 export async function POST() {
   try {
-    const localTargets = agentTargets.filter((target) => target.execution === "local");
+    const localTargets = listServerAgentTargets().filter((target) => target.execution === "local");
     const results: AgentRuntimePrewarmResponse[] = [];
 
     for (const target of localTargets) {

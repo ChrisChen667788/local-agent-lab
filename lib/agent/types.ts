@@ -8,6 +8,20 @@ export type AgentThinkingMode = "standard" | "thinking";
 
 export type AgentCacheMode = "exact" | "semantic";
 
+export type AgentWorkbenchMode = "chat" | "compare";
+
+export type AgentCompareIntent =
+  | "model-vs-model"
+  | "preset-vs-preset"
+  | "template-vs-template"
+  | "before-vs-after";
+
+export type AgentCompareOutputShape = "freeform" | "bullet-list" | "strict-json";
+
+export type AgentCompareReviewSummaryTone = "issue" | "pr" | "chat";
+
+export type AgentCompareReviewSummaryDetail = "compact" | "strict-review" | "friendly-report";
+
 export type AgentBenchmarkMode = "prompt" | "dataset" | "suite";
 
 export type AgentKnowledgeDocument = {
@@ -209,6 +223,13 @@ export type AgentTarget = {
   memoryProfile: string;
   notes: string[];
   launchHints?: string[];
+  parameterScale?: string;
+  quantizationLabel?: string;
+  sourceKind?: "configured" | "huggingface-cache" | "lm-studio" | "custom-directory";
+  sourceLabel?: string;
+  sourcePath?: string;
+  sourceRepoId?: string;
+  recommendedContextWindow?: number | null;
 };
 
 export type AgentChatRequest = {
@@ -223,6 +244,7 @@ export type AgentChatRequest = {
   thinkingMode?: AgentThinkingMode;
   plannerEnabled?: boolean;
   memorySummary?: string;
+  disableLocalFallback?: boolean;
 };
 
 export type AgentUsage = {
@@ -256,6 +278,100 @@ export type AgentChatResponse = {
   memorySummary?: string;
 };
 
+export type AgentCompareRequest = {
+  requestId?: string;
+  targetIds: string[];
+  input: string;
+  messages: AgentMessage[];
+  systemPrompt?: string;
+  compareIntent?: AgentCompareIntent;
+  compareOutputShape?: AgentCompareOutputShape;
+  enableTools?: boolean;
+  enableRetrieval?: boolean;
+  contextWindow?: number;
+  providerProfile?: AgentProviderProfile;
+  thinkingMode?: AgentThinkingMode;
+  plannerEnabled?: boolean;
+  memorySummary?: string;
+};
+
+export type AgentCompareLaneResult = {
+  targetId: string;
+  targetLabel: string;
+  providerLabel: string;
+  execution: AgentExecution;
+  resolvedModel: string;
+  resolvedBaseUrl: string;
+  providerProfile?: AgentProviderProfile;
+  thinkingMode?: AgentThinkingMode;
+  contextWindow: number;
+  content: string;
+  warning?: string;
+  retrieval?: AgentRetrievalSummary;
+  verification?: AgentGroundedVerification;
+  toolRuns: AgentToolRun[];
+  usage?: AgentUsage;
+  latencyMs: number;
+  ok: boolean;
+};
+
+export type AgentCompareResponse = {
+  ok: boolean;
+  requestId: string;
+  runId: string;
+  generatedAt: string;
+  compareIntent: AgentCompareIntent;
+  compareOutputShape: AgentCompareOutputShape;
+  fairnessFingerprint: string;
+  warning?: string;
+  results: AgentCompareLaneResult[];
+};
+
+export type AgentCompareLaneProgressPhase =
+  | "queued"
+  | "prewarming"
+  | "loading"
+  | "recovering"
+  | "running"
+  | "completed"
+  | "failed";
+
+export type AgentCompareLaneProgress = {
+  targetId: string;
+  targetLabel: string;
+  execution: AgentExecution;
+  phase: AgentCompareLaneProgressPhase;
+  detail: string;
+  startedAt: string;
+  updatedAt: string;
+  loadingElapsedMs?: number | null;
+  recoveryThresholdMs?: number | null;
+  recoveryAction?: string;
+  recoveryTriggeredAt?: string | null;
+  recoveryTriggerElapsedMs?: number | null;
+  warning?: string;
+  timeline: AgentCompareLaneTimelineEntry[];
+};
+
+export type AgentCompareLaneTimelineEntry = {
+  at: string;
+  phase: AgentCompareLaneProgressPhase;
+  detail: string;
+  loadingElapsedMs?: number | null;
+  recoveryAction?: string;
+  recoveryTriggerElapsedMs?: number | null;
+  warning?: string;
+};
+
+export type AgentCompareProgress = {
+  requestId: string;
+  status: "pending" | "running" | "completed" | "failed";
+  startedAt: string;
+  updatedAt: string;
+  activeTargetId?: string;
+  lanes: AgentCompareLaneProgress[];
+};
+
 export type AgentToolDecisionRequest = {
   targetId: string;
   toolName: string;
@@ -273,7 +389,7 @@ export type AgentRuntimeStatus = {
   targetLabel: string;
   execution: AgentExecution;
   available: boolean;
-  phase?: "remote" | "ready" | "busy" | "loading" | "recovering" | "offline" | "error";
+  phase?: "remote" | "unloaded" | "ready" | "busy" | "loading" | "recovering" | "offline" | "error";
   phaseDetail?: string;
   resolvedModel?: string;
   resolvedBaseUrl?: string;
@@ -299,6 +415,13 @@ export type AgentRuntimeStatus = {
   lastExitAt?: string | null;
   lastExitCode?: number | null;
   lastEvent?: string | null;
+  gatewayCpuPct?: number | null;
+  gatewayResidentMemoryMb?: number | null;
+  gatewayGpuPct?: number | null;
+  gatewayGpuMemoryMb?: number | null;
+  gatewayEnergySignalPct?: number | null;
+  gatewayDiskUsedPct?: number | null;
+  modelStorageFootprintMb?: number | null;
   lastEnsureReason?: string | null;
   logFile?: string;
 };
@@ -409,6 +532,7 @@ export type AgentBenchmarkResponse = {
   generatedAt: string;
   benchmarkMode?: AgentBenchmarkMode;
   prompt: string;
+  runNote?: string;
   promptSetId?: string;
   promptSetLabel?: string;
   promptSetPromptCount?: number;
@@ -452,6 +576,7 @@ export type AgentBenchmarkProgress = {
   runId: string;
   status: "pending" | "running" | "completed" | "failed" | "stopped" | "abandoned";
   benchmarkMode?: AgentBenchmarkMode;
+  runNote?: string;
   suiteId?: string;
   suiteLabel?: string;
   profileBatchScope?: AgentBenchmarkProfileBatchScope;
@@ -574,4 +699,5 @@ export type ProviderReply = {
   toolRuns: AgentToolRun[];
   usage?: AgentUsage;
   warning?: string;
+  resolvedModel?: string;
 };

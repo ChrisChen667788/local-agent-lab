@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { agentTargets } from "@/lib/agent/catalog";
+import { agentTargets as builtinAgentTargets } from "@/lib/agent/catalog";
 import type {
   AgentChatResponse,
   AgentProviderProfile,
@@ -13,7 +13,9 @@ import type {
 const CONTEXT_OPTIONS = [4096, 8192, 16384, 32768];
 
 export function AgentRescueConsole() {
-  const localTargets = useMemo(() => agentTargets.filter((target) => target.execution === "local"), []);
+  const [availableTargets, setAvailableTargets] = useState(builtinAgentTargets);
+  const agentTargets = availableTargets;
+  const localTargets = useMemo(() => agentTargets.filter((target) => target.execution === "local"), [agentTargets]);
   const [targetId, setTargetId] = useState(localTargets[1]?.id || localTargets[0]?.id || agentTargets[0]?.id || "");
   const [input, setInput] = useState("请用一句中文解释什么是本地编码 Agent。");
   const [enableRetrieval, setEnableRetrieval] = useState(false);
@@ -23,6 +25,31 @@ export function AgentRescueConsole() {
   const [response, setResponse] = useState<AgentChatResponse | null>(null);
   const [error, setError] = useState("");
   const [prewarmMessage, setPrewarmMessage] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadAvailableTargets() {
+      try {
+        const response = await fetch("/api/agent/targets", { cache: "no-store" });
+        const payload = (await response.json()) as { targets?: typeof builtinAgentTargets };
+        if (!response.ok || cancelled || !Array.isArray(payload.targets) || !payload.targets.length) return;
+        setAvailableTargets(payload.targets);
+      } catch {
+        // keep builtin targets when sync fails
+      }
+    }
+
+    void loadAvailableTargets();
+    const timer = window.setInterval(() => {
+      void loadAvailableTargets();
+    }, 30000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   async function loadRuntime(currentTargetId = targetId) {
     try {
@@ -45,6 +72,10 @@ export function AgentRescueConsole() {
     if (!targetId) return;
     void loadRuntime(targetId);
   }, [targetId]);
+
+  useEffect(() => {
+    setTargetId((current) => (agentTargets.some((target) => target.id === current) ? current : localTargets[0]?.id || agentTargets[0]?.id || ""));
+  }, [agentTargets, localTargets]);
 
   async function handlePrewarm() {
     if (!targetId) return;

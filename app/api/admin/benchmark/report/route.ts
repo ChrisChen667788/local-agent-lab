@@ -276,6 +276,7 @@ function renderMarkdown(input: {
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
+  const requestedRunId = (searchParams.get("runId") || "").trim();
   const targetIds = parseTargetIds(searchParams);
   const benchmarkMode = parseBenchmarkMode(searchParams);
   const providerProfile = (searchParams.get("providerProfile") || "all").trim();
@@ -288,7 +289,8 @@ export async function GET(request: Request) {
   const contextWindow = parseContextWindow(searchParams);
   const { windowMinutes, sinceIso } = parseSinceIso(searchParams);
 
-  const filteredLogs = readBenchmarkLogs({ sinceIso, limit: 300 })
+  const sourceLogs = readBenchmarkLogs(requestedRunId ? { limit: 500 } : { sinceIso, limit: 300 });
+  let filteredLogs = sourceLogs
     .filter((entry) => matchesWorkload(entry, { benchmarkMode, promptSetId, datasetId, suiteId, profileBatchScope, prompt, contextWindow }))
     .map((entry) => ({
       ...entry,
@@ -296,9 +298,28 @@ export async function GET(request: Request) {
     }))
     .filter((entry) => entry.results.length > 0);
 
-  const latestSuccessful =
+  let latestSuccessful =
     [...filteredLogs].reverse().find((entry) => entry.results.some((result) => result.okRuns > 0)) || null;
-  const latest = latestSuccessful || filteredLogs[filteredLogs.length - 1] || null;
+  let latest = latestSuccessful || filteredLogs[filteredLogs.length - 1] || null;
+
+  if (requestedRunId) {
+    const exactRun = sourceLogs.find((entry) => entry.runId === requestedRunId) || null;
+    if (exactRun) {
+      const exactFiltered = {
+        ...exactRun,
+        results: filterResults(exactRun, { targetIds, providerProfile, thinkingMode })
+      };
+      if (exactFiltered.results.length > 0) {
+        latest = exactFiltered;
+        if (!filteredLogs.some((entry) => entry.runId === exactFiltered.runId)) {
+          filteredLogs = [...filteredLogs, exactFiltered].sort((left, right) =>
+            left.generatedAt.localeCompare(right.generatedAt)
+          );
+        }
+      }
+    }
+  }
+
   if (!latest) {
     return NextResponse.json({ error: "No matching benchmark history for this workload." }, { status: 404 });
   }
@@ -306,12 +327,12 @@ export async function GET(request: Request) {
   const baseline = selectBaseline(readBenchmarkBaselines({ limit: 500 }), {
     targetIds,
     benchmarkMode: latest.benchmarkMode || "prompt",
-    datasetId,
+    datasetId: latest.datasetId || datasetId,
     datasetSampleCount: latest.datasetSampleCount,
-    suiteId,
-    profileBatchScope,
-    promptSetId,
-    prompt,
+    suiteId: latest.suiteId || suiteId,
+    profileBatchScope: latest.profileBatchScope || profileBatchScope,
+    promptSetId: latest.promptSetId || promptSetId,
+    prompt: latest.prompt || prompt,
     contextWindow: latest.contextWindow
   });
   const deltas = compareToBaseline(latest, baseline);

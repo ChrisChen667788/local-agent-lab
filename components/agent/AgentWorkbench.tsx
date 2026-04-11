@@ -1,8 +1,29 @@
 "use client";
 
-import { FormEvent, KeyboardEvent as ReactKeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
-import { agentTargets, agentToolSpecs } from "@/lib/agent/catalog";
+import { FormEvent, KeyboardEvent as ReactKeyboardEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
+import { agentTargets as builtinAgentTargets, agentToolSpecs } from "@/lib/agent/catalog";
+import { useAgentCompareActions } from "@/components/agent/useAgentCompareActions";
+import {
+  buildStoredComparePreferences,
+  normalizeStoredComparePreferences
+} from "@/components/agent/comparePreferences";
+import {
+  buildFocusedFileExcerpt,
+  buildReplayComparison,
+  buildReplayComparisonSummaryText,
+  collectToolReviewItems,
+  parseToolOutput,
+  readArrayField,
+  readBooleanField,
+  readNewFileLineAnchorsFromDiff,
+  readStringField,
+  type FocusedFileExcerpt,
+  type ToolReviewItem
+} from "@/components/agent/compareReview";
+import { useAgentCompareLifecycle } from "@/components/agent/useAgentCompareLifecycle";
 import { useLocale } from "@/components/layout/LocaleProvider";
+import { useAgentCompareState } from "@/components/agent/useAgentCompareState";
 import {
   getDefaultSystemPromptForLocale,
   getLocalizedStarterPrompts,
@@ -12,7 +33,15 @@ import {
 import { clampContextWindowForTarget } from "@/lib/agent/metrics";
 import type {
   AgentCacheMode,
+  AgentBenchmarkResponse,
   AgentChatResponse,
+  AgentCompareIntent,
+  AgentCompareLaneProgress,
+  AgentCompareProgress,
+  AgentCompareOutputShape,
+  AgentCompareReviewSummaryDetail,
+  AgentCompareReviewSummaryTone,
+  AgentCompareResponse,
   AgentConnectionCheckResponse,
   AgentConnectionCheckStage,
   AgentGroundedVerification,
@@ -25,6 +54,7 @@ import type {
   AgentRuntimePrewarmResponse,
   AgentRuntimeStatus,
   AgentTarget,
+  AgentWorkbenchMode,
   AgentToolDecisionResponse,
   AgentToolRun
 } from "@/lib/agent/types";
@@ -67,6 +97,43 @@ type AgentTurn = {
   };
 };
 
+type AgentTargetsScanResponse = {
+  ok: boolean;
+  targets?: AgentTarget[];
+  remoteChecks?: Record<string, AgentConnectionCheckResponse>;
+  summary?: {
+    localNewTargetIds: string[];
+    localRemovedTargetIds: string[];
+    remoteConfiguredCount: number;
+    remoteHealthyCount: number;
+    remoteSkippedTargetIds: string[];
+  };
+  error?: string;
+};
+
+const AgentCompareLab = dynamic(
+  () => import("@/components/agent/AgentCompareLab").then((mod) => mod.AgentCompareLab),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="space-y-4 px-5 py-5">
+        <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-4">
+          <div className="h-4 w-32 rounded-full bg-cyan-400/10" />
+          <div className="mt-4 h-10 rounded-2xl bg-white/[0.05]" />
+          <div className="mt-3 h-10 rounded-2xl bg-white/[0.05]" />
+        </div>
+        <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-4">
+          <div className="h-4 w-40 rounded-full bg-white/[0.08]" />
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            <div className="h-28 rounded-2xl bg-black/20" />
+            <div className="h-28 rounded-2xl bg-black/20" />
+          </div>
+        </div>
+      </div>
+    )
+  }
+);
+
 type StoredAgentSession = {
   id: string;
   title: string;
@@ -84,28 +151,7 @@ type StoredAgentSession = {
   connectionChecksByTargetId: Record<string, AgentConnectionCheckResponse>;
 };
 
-type ParsedToolOutput = Record<string, unknown>;
-type ToolReviewItem = {
-  key: string;
-  toolName: string;
-  status: string;
-  affectedFiles: string[];
-  diffPreview: string;
-  contentPreview: string;
-  verificationEntries: Array<Record<string, unknown>>;
-  files: Array<{
-    path: string;
-    diffPreview: string;
-    contentPreview: string;
-    changed: boolean | null;
-    existedBefore: boolean | null;
-    existsAfter: boolean | null;
-  }>;
-  verified: boolean | null;
-  confirmationRequired: boolean;
-  confirmationUsed: boolean;
-  errorText: string;
-};
+const TRANSCRIPT_BOTTOM_THRESHOLD_PX = 96;
 
 type WorkspaceFileView = {
   path: string;
@@ -114,12 +160,6 @@ type WorkspaceFileView = {
   truncated?: boolean;
   loading: boolean;
   error?: string;
-};
-
-type FocusedFileExcerpt = {
-  startLine: number;
-  endLine: number;
-  content: string;
 };
 
 const RUNTIME_SWITCH_HISTORY_STORAGE_KEY = "local-agent-runtime-switch-history-v1";
@@ -183,6 +223,7 @@ type AgentStreamEvent =
 const CONTEXT_WINDOW_OPTIONS = [4096, 8192, 16384, 32768];
 const PROVIDER_PROFILE_OPTIONS: AgentProviderProfile[] = ["speed", "balanced", "tool-first"];
 const THINKING_MODE_OPTIONS: AgentThinkingMode[] = ["standard", "thinking"];
+const MAX_COMPARE_LANES = 4;
 const PREFERENCES_STORAGE_KEY = "agent-workbench:v1";
 const SESSIONS_STORAGE_KEY = "agent-workbench:sessions:v1";
 const MAX_STORED_SESSIONS = 12;
@@ -322,27 +363,7 @@ function flattenTurns(turns: AgentTurn[]): AgentMessage[] {
     ]);
 }
 
-function parseToolOutput(output: string): ParsedToolOutput | null {
-  try {
-    const parsed = JSON.parse(output) as unknown;
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as ParsedToolOutput)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function readStringField(source: ParsedToolOutput | null, key: string) {
-  const value = source?.[key];
-  return typeof value === "string" && value.trim() ? value : "";
-}
-
-function readBooleanField(source: ParsedToolOutput | null, key: string) {
-  return typeof source?.[key] === "boolean" ? Boolean(source[key]) : null;
-}
-
-function readVerificationField(source: ParsedToolOutput | null) {
+function readVerificationField(source: Record<string, unknown> | null) {
   const value = source?.verification;
   return Array.isArray(value) ? value : [];
 }
@@ -354,6 +375,11 @@ function describeRuntimePhase(runtime: AgentRuntimeStatus | null, locale: string
       return {
         label: locale.startsWith("en") ? "Remote" : "远端",
         className: "bg-violet-400/15 text-violet-200"
+      };
+    case "unloaded":
+      return {
+        label: locale.startsWith("en") ? "Unloaded" : "空载",
+        className: "bg-slate-400/15 text-slate-200"
       };
     case "ready":
       return {
@@ -394,6 +420,7 @@ function buildRuntimeStageItems(runtime: AgentRuntimeStatus | null, locale: stri
         offline: "Offline",
         recovering: "Recovering",
         loading: "Loading",
+        unloaded: "Unloaded",
         busy: "Busy",
         ready: "Ready"
       }
@@ -401,10 +428,11 @@ function buildRuntimeStageItems(runtime: AgentRuntimeStatus | null, locale: stri
         offline: "离线",
         recovering: "恢复中",
         loading: "加载中",
+        unloaded: "空载",
         busy: "处理中",
         ready: "已就绪"
       };
-  const steps: Array<keyof typeof labels> = ["offline", "recovering", "loading", "busy", "ready"];
+  const steps: Array<keyof typeof labels> = ["offline", "recovering", "loading", "unloaded", "busy", "ready"];
   const phase = runtime?.phase || "offline";
   const phaseIndex = steps.indexOf(phase as keyof typeof labels);
   return steps.map((step, index) => ({
@@ -435,7 +463,53 @@ function describeRuntimeAlias(alias: string | null | undefined, targets: AgentTa
   return matched ? `${matched.label}` : alias;
 }
 
-function readNumberField(source: ParsedToolOutput | null, key: string) {
+type RailDetailsSectionProps = {
+  title: string;
+  subtitle?: string;
+  badge?: string;
+  defaultOpen?: boolean;
+  children: ReactNode;
+};
+
+function RailDetailsSection({
+  title,
+  subtitle,
+  badge,
+  defaultOpen = false,
+  children
+}: RailDetailsSectionProps) {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+
+  return (
+    <details
+      open={isOpen}
+      onToggle={(event) => setIsOpen((event.currentTarget as HTMLDetailsElement).open)}
+      className="group rounded-2xl border border-white/10 bg-black/25 open:border-cyan-400/20 open:bg-white/[0.05]"
+    >
+      <summary className="flex cursor-pointer list-none items-start justify-between gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
+        <div className="min-w-0">
+          <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{title}</p>
+          {subtitle ? (
+            <p className="mt-1.5 text-[13px] leading-6 text-slate-300">{subtitle}</p>
+          ) : null}
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {badge ? (
+            <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] text-slate-300">
+              {badge}
+            </span>
+          ) : null}
+          <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] text-slate-400 transition group-open:-rotate-180">
+            ↓
+          </span>
+        </div>
+      </summary>
+      <div className="border-t border-white/10 px-4 py-3">{children}</div>
+    </details>
+  );
+}
+
+function readNumberField(source: Record<string, unknown> | null, key: string) {
   const value = source?.[key];
   return typeof value === "number" ? value : null;
 }
@@ -449,205 +523,6 @@ function formatCacheMode(mode: AgentCacheMode | undefined) {
     default:
       return "";
   }
-}
-
-function readArrayField(source: ParsedToolOutput | null, key: string) {
-  const value = source?.[key];
-  return Array.isArray(value) ? value : [];
-}
-
-function readObjectArrayField(source: ParsedToolOutput | null, key: string) {
-  const value = source?.[key];
-  if (!Array.isArray(value)) return [];
-  return value.filter((entry) => entry && typeof entry === "object") as Array<Record<string, unknown>>;
-}
-
-function splitDiffPreviewByFile(diffPreview: string) {
-  if (!diffPreview.trim()) return new Map<string, string>();
-  const sections = diffPreview.split(/^diff --git /m).filter(Boolean);
-  const chunks = new Map<string, string>();
-
-  sections.forEach((section) => {
-    const normalized = section.startsWith("a/")
-      ? `diff --git ${section}`
-      : `diff --git ${section}`;
-    const lines = normalized.split("\n");
-    const header = lines[0] || "";
-    const match = header.match(/^diff --git a\/(.+?) b\/(.+)$/);
-    const path = match?.[2] || match?.[1];
-    if (!path) return;
-    chunks.set(path, normalized.trim());
-  });
-
-  return chunks;
-}
-
-function readFirstNewFileLineFromDiff(diffPreview: string) {
-  if (!diffPreview.trim()) return null;
-  const match = diffPreview.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/m);
-  if (!match) return null;
-  const parsed = Number(match[1]);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-}
-
-function readNewFileLineAnchorsFromDiff(diffPreview: string) {
-  if (!diffPreview.trim()) return [];
-  const matches = [...diffPreview.matchAll(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/gm)];
-  return matches
-    .map((match) => Number(match[1]))
-    .filter((value, index, list) => Number.isFinite(value) && value > 0 && list.indexOf(value) === index);
-}
-
-function buildFocusedFileExcerpt(content: string, lineNumber: number, radius = 16): FocusedFileExcerpt {
-  const lines = content.split("\n");
-  const startLine = Math.max(1, lineNumber - radius);
-  const endLine = Math.min(lines.length, lineNumber + radius);
-  return {
-    startLine,
-    endLine,
-    content: lines
-      .slice(startLine - 1, endLine)
-      .map((line, index) => `${String(startLine + index).padStart(4, " ")} | ${line}`)
-      .join("\n")
-  };
-}
-
-function buildReplayComparison(turn: AgentTurn, locale: string) {
-  if (!turn.replaySource) return null;
-  const originalResponse = turn.replaySource.response.trim();
-  const replayResponse = turn.response.trim();
-  const sameTarget = turn.replaySource.targetId === turn.targetId;
-  const sameResponse = originalResponse === replayResponse;
-  const sameOpening =
-    !sameResponse &&
-    originalResponse.slice(0, 120) &&
-    originalResponse.slice(0, 120) === replayResponse.slice(0, 120);
-  const responseDelta = replayResponse.length - originalResponse.length;
-  const originalLines = originalResponse.split("\n").map((line) => line.trim());
-  const replayLines = replayResponse.split("\n").map((line) => line.trim());
-  const maxLines = Math.max(originalLines.length, replayLines.length);
-  const keyDiffs: string[] = [];
-  for (let index = 0; index < maxLines && keyDiffs.length < 3; index += 1) {
-    const originalLine = originalLines[index] || "";
-    const replayLine = replayLines[index] || "";
-    if (originalLine === replayLine) continue;
-    if (!originalLine && replayLine) {
-      keyDiffs.push(
-        locale.startsWith("en")
-          ? `Replay added: ${replayLine.slice(0, 80)}`
-          : `回放新增：${replayLine.slice(0, 80)}`
-      );
-      continue;
-    }
-    if (originalLine && !replayLine) {
-      keyDiffs.push(
-        locale.startsWith("en")
-          ? `Replay omitted: ${originalLine.slice(0, 80)}`
-          : `回放省略：${originalLine.slice(0, 80)}`
-      );
-      continue;
-    }
-    keyDiffs.push(
-      locale.startsWith("en")
-        ? `Changed "${originalLine.slice(0, 40)}" -> "${replayLine.slice(0, 40)}"`
-        : `已变化：“${originalLine.slice(0, 20)}” -> “${replayLine.slice(0, 20)}”`
-    );
-  }
-
-  return {
-    sourceLabel: `${turn.replaySource.targetLabel} · ${turn.replaySource.resolvedModel}`,
-    replayModeLabel: turn.replaySource.includeHistory
-      ? locale.startsWith("en")
-        ? "Context replay"
-        : "上下文回放"
-      : locale.startsWith("en")
-        ? "Clean replay"
-        : "干净回放",
-    targetModeLabel: turn.replaySource.targetMode === "original"
-      ? locale.startsWith("en")
-        ? "Original target"
-        : "保留原目标"
-      : locale.startsWith("en")
-        ? "Current target"
-        : "切换目标回放",
-    summary: sameResponse
-      ? locale.startsWith("en")
-        ? "Replay response matches the original turn."
-        : "回放结果与原轮响应一致。"
-      : sameOpening
-        ? locale.startsWith("en")
-          ? "Replay starts similarly but diverges later."
-          : "回放开头相近，但后续结果出现分歧。"
-        : locale.startsWith("en")
-          ? "Replay response differs noticeably from the original turn."
-          : "回放结果与原轮存在明显差异。",
-    responseDelta,
-    keyDiffs
-  };
-}
-
-function buildReplayComparisonSummaryText(
-  comparison: ReturnType<typeof buildReplayComparison>,
-  locale: string
-) {
-  if (!comparison) return "";
-  return [
-    locale.startsWith("en") ? "Replay compare" : "回放对比",
-    comparison.sourceLabel,
-    `${comparison.replayModeLabel} · ${comparison.targetModeLabel}`,
-    `${locale.startsWith("en") ? "Response delta" : "响应长度变化"}: ${comparison.responseDelta > 0 ? "+" : ""}${comparison.responseDelta}`,
-    comparison.summary,
-    ...comparison.keyDiffs.map((diff, index) =>
-      `${locale.startsWith("en") ? "Diff" : "差异"} ${index + 1}: ${diff}`
-    )
-  ].join("\n");
-}
-
-function collectToolReviewItems(turn: AgentTurn) {
-  return turn.toolRuns.flatMap((toolRun, index) => {
-    const parsed = parseToolOutput(toolRun.output);
-    const diffPreview = readStringField(parsed, "diffPreview");
-    const contentPreview = readStringField(parsed, "contentPreview");
-    const verificationEntries = readObjectArrayField(parsed, "verification");
-    const affectedFiles = readArrayField(parsed, "affectedFiles").filter(
-      (entry): entry is string => typeof entry === "string" && entry.trim().length > 0
-    );
-    const verified = readBooleanField(parsed, "verified");
-    const confirmationUsed = Boolean(readBooleanField(parsed, "confirmationUsed"));
-    const confirmationRequired = readStringField(parsed, "status") === "confirmation_required";
-    const errorText = readStringField(parsed, "error");
-    const diffByFile = splitDiffPreviewByFile(diffPreview);
-    const files = verificationEntries.map((entry) => ({
-      path: typeof entry.path === "string" ? entry.path : "",
-      diffPreview:
-        typeof entry.path === "string" && diffByFile.has(entry.path)
-          ? diffByFile.get(entry.path) || ""
-          : "",
-      contentPreview: typeof entry.contentPreview === "string" ? entry.contentPreview : "",
-      changed: typeof entry.changed === "boolean" ? entry.changed : null,
-      existedBefore: typeof entry.existedBefore === "boolean" ? entry.existedBefore : null,
-      existsAfter: typeof entry.existsAfter === "boolean" ? entry.existsAfter : null
-    })).filter((entry) => entry.path);
-
-    if (!diffPreview && !contentPreview && !verificationEntries.length && !affectedFiles.length) {
-      return [];
-    }
-
-    return [{
-      key: `${turn.id}:review:${index}`,
-      toolName: toolRun.name,
-      status: readStringField(parsed, "status") || "completed",
-      affectedFiles,
-      diffPreview,
-      contentPreview,
-      verificationEntries,
-      files,
-      verified,
-      confirmationRequired,
-      confirmationUsed,
-      errorText
-    }];
-  });
 }
 
 function formatConnectionStageLabel(stageId: AgentConnectionCheckStage["id"]) {
@@ -990,12 +865,59 @@ function getHealthBadge(check: AgentConnectionCheckResponse | null) {
 export function AgentWorkbench() {
   const { locale, dictionary } = useLocale();
   const starterPrompts = useMemo(() => getLocalizedStarterPrompts(locale), [locale]);
+  const [availableTargets, setAvailableTargets] = useState<AgentTarget[]>(builtinAgentTargets);
+  const agentTargets = availableTargets;
   const [sessionId, setSessionId] = useState(() => crypto.randomUUID());
   const [savedSessions, setSavedSessions] = useState<StoredAgentSession[]>([]);
   const [sessionSearch, setSessionSearch] = useState("");
   const [sessionTargetFilter, setSessionTargetFilter] = useState("all");
   const [sessionExportScope, setSessionExportScope] = useState<"visible" | "pinned">("visible");
   const [selectedTargetId, setSelectedTargetId] = useState("anthropic-claude");
+  const [workbenchMode, setWorkbenchMode] = useState<AgentWorkbenchMode>("chat");
+  const {
+    compareTargetIds,
+    compareIntent,
+    compareOutputShape,
+    comparePending,
+    compareError,
+    compareResult,
+    compareBaseTargetId,
+    compareReviewSummaryTone,
+    compareReviewSummaryDetail,
+    compareRequestId,
+    compareRuntimeByTargetId,
+    compareProgressByTargetId,
+    compareBenchmarkUseOutputContract,
+    compareBenchmarkPreviewDiffOnly,
+    compareRecoveryPendingTargetId,
+    compareRecoveryConfirmTargetId,
+    compareRecoveryCooldownByTargetId,
+    compareRecoveryNotice,
+    benchmarkPending,
+    benchmarkError,
+    benchmarkResult,
+    setCompareTargetIds,
+    setCompareIntent,
+    setCompareOutputShape,
+    setComparePending,
+    setCompareError,
+    setCompareResult,
+    setCompareBaseTargetId,
+    setCompareReviewSummaryTone,
+    setCompareReviewSummaryDetail,
+    setCompareRequestId,
+    setCompareRuntimeByTargetId,
+    setCompareProgressByTargetId,
+    setCompareBenchmarkUseOutputContract,
+    setCompareBenchmarkPreviewDiffOnly,
+    setCompareRecoveryPendingTargetId,
+    setCompareRecoveryConfirmTargetId,
+    setCompareRecoveryCooldownByTargetId,
+    setCompareRecoveryNotice,
+    setBenchmarkPending,
+    setBenchmarkError,
+    setBenchmarkResult
+  } = useAgentCompareState();
   const [turns, setTurns] = useState<AgentTurn[]>([]);
   const [input, setInput] = useState(() => getLocalizedStarterPrompts("zh-CN")[0]);
   const [systemPrompt, setSystemPrompt] = useState(() => getDefaultSystemPromptForLocale("zh-CN"));
@@ -1027,22 +949,68 @@ export function AgentWorkbench() {
     {}
   );
   const [copyState, setCopyState] = useState("");
+  const [transcriptPinnedToBottom, setTranscriptPinnedToBottom] = useState(true);
+  const [unseenTranscriptTurns, setUnseenTranscriptTurns] = useState(0);
   const [connectionChecksByTargetId, setConnectionChecksByTargetId] = useState<
     Record<string, AgentConnectionCheckResponse>
   >({});
   const [connectionCheckPending, setConnectionCheckPending] = useState(false);
   const [connectionCheckError, setConnectionCheckError] = useState("");
+  const [scanTargetsPending, setScanTargetsPending] = useState(false);
+  const [scanTargetsMessage, setScanTargetsMessage] = useState("");
+  const [scanTargetsMessageTone, setScanTargetsMessageTone] = useState<"success" | "error">("success");
   const [preferencesReady, setPreferencesReady] = useState(false);
   const [serverSessionSyncState, setServerSessionSyncState] = useState<"" | "syncing" | "synced" | "error">("");
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const lastObservedTurnCountRef = useRef(0);
   const runtimeRequestInFlightRef = useRef(false);
   const sessionSyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hydrateWorkbenchStateRef = useRef(false);
+
+  const loadAvailableTargets = useCallback(async () => {
+    try {
+      const response = await fetch("/api/agent/targets", { cache: "no-store" });
+      const payload = (await response.json()) as { targets?: AgentTarget[] };
+      if (!response.ok || !Array.isArray(payload.targets) || !payload.targets.length) return;
+      setAvailableTargets(payload.targets);
+    } catch {
+      // keep builtin targets when sync fails
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void loadAvailableTargets();
+    const timer = window.setInterval(() => {
+      if (!cancelled) {
+        void loadAvailableTargets();
+      }
+    }, 30000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [loadAvailableTargets]);
 
   const selectedTarget = useMemo(
     () => agentTargets.find((target) => target.id === selectedTargetId) || agentTargets[0],
-    [selectedTargetId]
+    [agentTargets, selectedTargetId]
   );
+  useEffect(() => {
+    if (!agentTargets.length) return;
+    if (!agentTargets.some((target) => target.id === selectedTargetId)) {
+      setSelectedTargetId(agentTargets[0].id);
+    }
+    setCompareTargetIds((current) => current.filter((targetId) => agentTargets.some((target) => target.id === targetId)));
+  }, [agentTargets, selectedTargetId, setCompareTargetIds]);
+  const compareLaneCount = useMemo(
+    () => agentTargets.filter((target) => compareTargetIds.includes(target.id)).length,
+    [agentTargets, compareTargetIds]
+  );
+  const validTargetIds = useMemo(() => agentTargets.map((target) => target.id), [agentTargets]);
   const runtimePhase = useMemo(() => describeRuntimePhase(runtimeStatus, locale), [runtimeStatus, locale]);
   const runtimeStageItems = useMemo(() => buildRuntimeStageItems(runtimeStatus, locale), [runtimeStatus, locale]);
   const loadedAliasForSelectedTarget =
@@ -1063,7 +1031,7 @@ export function AgentWorkbench() {
           label: agentTargets.find((target) => target.id === targetId)?.label || targetId
         }))
         .sort((a, b) => a.label.localeCompare(b.label)),
-    [savedSessions]
+    [agentTargets, savedSessions]
   );
 
   const historyMessages = useMemo(() => flattenTurns(turns), [turns]);
@@ -1106,7 +1074,7 @@ export function AgentWorkbench() {
       targetLabel: agentTargets.find((target) => target.id === targetId)?.label || targetId,
       sessions: sessionsInGroup
     }));
-  }, [filteredHistorySessions]);
+  }, [agentTargets, filteredHistorySessions]);
   const supportsConnectionCheck = selectedTarget.execution === "remote" && Boolean(selectedTarget.apiKeyEnv);
   const connectionCheck = connectionChecksByTargetId[selectedTargetId] || null;
   const previousLocaleRef = useRef(locale);
@@ -1891,7 +1859,8 @@ export function AgentWorkbench() {
     [sessionTargetFilter, sessionTargetOptions, uiText.allTargets]
   );
 
-  function restoreSession(session: StoredAgentSession) {
+  const restoreSession = useCallback((session: StoredAgentSession) => {
+    setTranscriptPinnedToBottom(true);
     setSessionId(session.id);
     setSelectedTargetId(
       agentTargets.some((target) => target.id === session.selectedTargetId)
@@ -1913,7 +1882,7 @@ export function AgentWorkbench() {
     setRuntimeLogExcerpt("");
     setToolDecisionBusyKey("");
     setToolDecisionStatusByToken({});
-  }
+  }, [agentTargets, locale]);
 
   function updateSessions(updater: (current: StoredAgentSession[]) => StoredAgentSession[]) {
     setSavedSessions((current) => {
@@ -1924,6 +1893,7 @@ export function AgentWorkbench() {
   }
 
   function startNewSession() {
+    setTranscriptPinnedToBottom(true);
     setSessionId(crypto.randomUUID());
     setTurns([]);
     setInput("");
@@ -2042,6 +2012,31 @@ export function AgentWorkbench() {
     setRuntimeLogExcerpt("");
   }, [selectedTargetId]);
 
+  useAgentCompareLifecycle({
+    agentTargets,
+    selectedTargetId,
+    compareTargetIds,
+    compareIntent,
+    compareOutputShape,
+    comparePending,
+    compareRequestId,
+    compareResult,
+    contextWindow,
+    enableRetrieval,
+    enableTools,
+    input,
+    providerProfile,
+    systemPrompt,
+    thinkingMode,
+    maxCompareLanes: MAX_COMPARE_LANES,
+    setCompareTargetIds,
+    setCompareError,
+    setBenchmarkError,
+    setCompareBaseTargetId,
+    setCompareRuntimeByTargetId,
+    setCompareProgressByTargetId
+  });
+
   useEffect(() => {
     const next = clampUiContextWindow(selectedTargetId, contextWindow, enableTools, enableRetrieval);
     if (next !== contextWindow) {
@@ -2061,6 +2056,8 @@ export function AgentWorkbench() {
   }, [locale, starterPrompts]);
 
   useEffect(() => {
+    if (hydrateWorkbenchStateRef.current) return;
+    hydrateWorkbenchStateRef.current = true;
     let cancelled = false;
 
     async function hydrateWorkbenchState() {
@@ -2095,6 +2092,15 @@ export function AgentWorkbench() {
         if (raw) {
           const parsed = JSON.parse(raw) as {
             selectedTargetId?: string;
+            workbenchMode?: AgentWorkbenchMode;
+            compareTargetIds?: string[];
+            compareBaseTargetId?: string;
+            compareReviewSummaryTone?: AgentCompareReviewSummaryTone;
+            compareReviewSummaryDetail?: AgentCompareReviewSummaryDetail;
+            compareBenchmarkUseOutputContract?: boolean;
+            compareBenchmarkPreviewDiffOnly?: boolean;
+            compareIntent?: AgentCompareIntent;
+            compareOutputShape?: AgentCompareOutputShape;
             enableTools?: boolean;
             enableRetrieval?: boolean;
             contextWindow?: number;
@@ -2106,6 +2112,34 @@ export function AgentWorkbench() {
             agentTargets.some((target) => target.id === parsed.selectedTargetId)
           ) {
             setSelectedTargetId(parsed.selectedTargetId);
+          }
+          if (parsed.workbenchMode === "chat" || parsed.workbenchMode === "compare") {
+            setWorkbenchMode(parsed.workbenchMode);
+          }
+          const storedComparePreferences = normalizeStoredComparePreferences(parsed, validTargetIds, MAX_COMPARE_LANES);
+          if (storedComparePreferences.compareTargetIds?.length) {
+            setCompareTargetIds(storedComparePreferences.compareTargetIds);
+          }
+          if (storedComparePreferences.compareBaseTargetId) {
+            setCompareBaseTargetId(storedComparePreferences.compareBaseTargetId);
+          }
+          if (storedComparePreferences.compareReviewSummaryTone) {
+            setCompareReviewSummaryTone(storedComparePreferences.compareReviewSummaryTone);
+          }
+          if (storedComparePreferences.compareReviewSummaryDetail) {
+            setCompareReviewSummaryDetail(storedComparePreferences.compareReviewSummaryDetail);
+          }
+          if (typeof storedComparePreferences.compareBenchmarkUseOutputContract === "boolean") {
+            setCompareBenchmarkUseOutputContract(storedComparePreferences.compareBenchmarkUseOutputContract);
+          }
+          if (typeof storedComparePreferences.compareBenchmarkPreviewDiffOnly === "boolean") {
+            setCompareBenchmarkPreviewDiffOnly(storedComparePreferences.compareBenchmarkPreviewDiffOnly);
+          }
+          if (storedComparePreferences.compareIntent) {
+            setCompareIntent(storedComparePreferences.compareIntent);
+          }
+          if (storedComparePreferences.compareOutputShape) {
+            setCompareOutputShape(storedComparePreferences.compareOutputShape);
           }
           if (typeof parsed.enableTools === "boolean") {
             setEnableTools(parsed.enableTools);
@@ -2172,7 +2206,20 @@ export function AgentWorkbench() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [
+    agentTargets,
+    locale,
+    restoreSession,
+    setCompareBaseTargetId,
+    setCompareBenchmarkPreviewDiffOnly,
+    setCompareBenchmarkUseOutputContract,
+    setCompareIntent,
+    setCompareOutputShape,
+    setCompareReviewSummaryDetail,
+    setCompareReviewSummaryTone,
+    setCompareTargetIds,
+    validTargetIds
+  ]);
 
   useEffect(() => {
     if (!preferencesReady) return;
@@ -2180,6 +2227,17 @@ export function AgentWorkbench() {
       PREFERENCES_STORAGE_KEY,
       JSON.stringify({
         selectedTargetId,
+        workbenchMode,
+        ...buildStoredComparePreferences({
+          compareTargetIds,
+          compareBaseTargetId,
+          compareReviewSummaryTone,
+          compareReviewSummaryDetail,
+          compareBenchmarkUseOutputContract,
+          compareBenchmarkPreviewDiffOnly,
+          compareIntent,
+          compareOutputShape
+        }),
         enableTools,
         enableRetrieval,
         contextWindow,
@@ -2187,7 +2245,24 @@ export function AgentWorkbench() {
         thinkingMode
       })
     );
-  }, [contextWindow, enableRetrieval, enableTools, preferencesReady, providerProfile, selectedTargetId, thinkingMode]);
+  }, [
+    compareIntent,
+    compareOutputShape,
+    compareBaseTargetId,
+    compareReviewSummaryTone,
+    compareReviewSummaryDetail,
+    compareBenchmarkUseOutputContract,
+    compareBenchmarkPreviewDiffOnly,
+    compareTargetIds,
+    contextWindow,
+    enableRetrieval,
+    enableTools,
+    preferencesReady,
+    providerProfile,
+    selectedTargetId,
+    thinkingMode,
+    workbenchMode
+  ]);
 
   useEffect(() => {
     if (!preferencesReady) return;
@@ -2285,10 +2360,64 @@ export function AgentWorkbench() {
     window.localStorage.setItem(RUNTIME_SWITCH_HISTORY_STORAGE_KEY, JSON.stringify(payload));
   }, [runtimeLastSwitchAtByTarget, runtimeLastSwitchMsByTarget]);
 
+  const scrollTranscriptToLatest = useCallback((behavior: ScrollBehavior = "auto") => {
+    const node = transcriptRef.current;
+    if (!node) return;
+    node.scrollTo({ top: node.scrollHeight, behavior });
+  }, []);
+
+  const handleJumpToLatestTranscript = useCallback(() => {
+    setTranscriptPinnedToBottom(true);
+    setUnseenTranscriptTurns(0);
+    scrollTranscriptToLatest("smooth");
+  }, [scrollTranscriptToLatest]);
+
+  const updateTranscriptPinnedState = useCallback(() => {
+    const node = transcriptRef.current;
+    if (!node) return;
+    const distanceFromBottom = node.scrollHeight - node.scrollTop - node.clientHeight;
+    setTranscriptPinnedToBottom(distanceFromBottom <= TRANSCRIPT_BOTTOM_THRESHOLD_PX);
+  }, []);
+
+  const handleTranscriptScroll = useCallback(() => {
+    updateTranscriptPinnedState();
+  }, [updateTranscriptPinnedState]);
+
   useEffect(() => {
-    if (!transcriptRef.current) return;
-    transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
-  }, [turns, pending, toolDecisionBusyKey]);
+    if (workbenchMode !== "chat") return;
+    if (!transcriptPinnedToBottom) return;
+    setUnseenTranscriptTurns(0);
+    const rafId = window.requestAnimationFrame(() => {
+      scrollTranscriptToLatest("auto");
+    });
+    return () => window.cancelAnimationFrame(rafId);
+  }, [turns, pending, toolDecisionBusyKey, transcriptPinnedToBottom, workbenchMode, scrollTranscriptToLatest]);
+
+  useEffect(() => {
+    if (workbenchMode !== "chat") return;
+    const rafId = window.requestAnimationFrame(() => {
+      scrollTranscriptToLatest("auto");
+      setTranscriptPinnedToBottom(true);
+      setUnseenTranscriptTurns(0);
+    });
+    return () => window.cancelAnimationFrame(rafId);
+  }, [sessionId, workbenchMode, scrollTranscriptToLatest]);
+
+  useEffect(() => {
+    if (workbenchMode !== "chat") {
+      lastObservedTurnCountRef.current = turns.length;
+      setUnseenTranscriptTurns(0);
+      return;
+    }
+    const previousTurnCount = lastObservedTurnCountRef.current;
+    if (!transcriptPinnedToBottom && turns.length > previousTurnCount) {
+      setUnseenTranscriptTurns((current) => current + (turns.length - previousTurnCount));
+    }
+    if (transcriptPinnedToBottom && unseenTranscriptTurns !== 0) {
+      setUnseenTranscriptTurns(0);
+    }
+    lastObservedTurnCountRef.current = turns.length;
+  }, [turns.length, transcriptPinnedToBottom, unseenTranscriptTurns, workbenchMode]);
 
   useEffect(() => {
     if (!copyState) return;
@@ -2296,47 +2425,124 @@ export function AgentWorkbench() {
     return () => window.clearTimeout(timer);
   }, [copyState]);
 
-  async function loadRuntimeStatus(currentTargetId = selectedTargetId, options?: { force?: boolean }) {
-    const target = agentTargets.find((item) => item.id === currentTargetId) || selectedTarget;
+  useEffect(() => {
+    if (!scanTargetsMessage) return;
+    const timer = window.setTimeout(() => setScanTargetsMessage(""), 5000);
+    return () => window.clearTimeout(timer);
+  }, [scanTargetsMessage]);
 
-    if (runtimeRequestInFlightRef.current && !options?.force) {
+  function handleToggleCompareTarget(targetId: string) {
+    if (targetId === selectedTargetId) {
       return;
     }
+    setCompareTargetIds((current) => {
+      const deduped = Array.from(new Set(current));
+      if (deduped.includes(targetId)) {
+        return deduped.filter((id) => id !== targetId);
+      }
+      if (deduped.length >= MAX_COMPARE_LANES) {
+        return deduped;
+      }
+      return [...deduped, targetId];
+    });
+  }
 
-    runtimeRequestInFlightRef.current = true;
+  const loadRuntimeStatus = useCallback(
+    async (currentTargetId = selectedTargetId, options?: { force?: boolean }) => {
+      const target = agentTargets.find((item) => item.id === currentTargetId) || selectedTarget;
 
-    try {
-      const query = new URLSearchParams({
-        targetId: currentTargetId,
-        thinkingMode
-      });
-      const response = await fetch(`/api/agent/runtime?${query.toString()}`, {
-        cache: "no-store"
-      });
-      const data = (await response.json()) as AgentRuntimeStatus & { error?: string };
-      if (!response.ok) {
+      if (runtimeRequestInFlightRef.current && !options?.force) {
+        return;
+      }
+
+      runtimeRequestInFlightRef.current = true;
+
+      try {
+        const query = new URLSearchParams({
+          targetId: currentTargetId,
+          thinkingMode
+        });
+        const response = await fetch(`/api/agent/runtime?${query.toString()}`, {
+          cache: "no-store"
+        });
+        const data = (await response.json()) as AgentRuntimeStatus & { error?: string };
+        if (!response.ok) {
+          setRuntimeStatus({
+            targetId: currentTargetId,
+            targetLabel: target.label,
+            execution: target.execution,
+            available: false,
+            message: data.error || uiText.runtimeFailed
+          });
+          return;
+        }
+        setRuntimeStatus(data);
+      } catch (runtimeError) {
         setRuntimeStatus({
           targetId: currentTargetId,
           targetLabel: target.label,
           execution: target.execution,
           available: false,
-          message: data.error || uiText.runtimeFailed
+          message: runtimeError instanceof Error ? runtimeError.message : uiText.runtimeFailed
         });
-        return;
+      } finally {
+        runtimeRequestInFlightRef.current = false;
       }
-      setRuntimeStatus(data);
-    } catch (runtimeError) {
-      setRuntimeStatus({
-        targetId: currentTargetId,
-        targetLabel: target.label,
-        execution: target.execution,
-        available: false,
-        message: runtimeError instanceof Error ? runtimeError.message : uiText.runtimeFailed
+    },
+    [agentTargets, selectedTarget, selectedTargetId, thinkingMode, uiText.runtimeFailed]
+  );
+
+  const handleScanTargets = useCallback(async () => {
+    if (scanTargetsPending) return;
+
+    setScanTargetsPending(true);
+    setScanTargetsMessage("");
+    setConnectionCheckError("");
+
+    try {
+      const response = await fetch("/api/agent/targets", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        cache: "no-store"
       });
+      const payload = (await response.json()) as AgentTargetsScanResponse;
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error || (locale.startsWith("en") ? "Scan failed." : "扫描失败。"));
+      }
+
+      if (Array.isArray(payload.targets) && payload.targets.length) {
+        setAvailableTargets(payload.targets);
+      }
+      if (payload.remoteChecks && typeof payload.remoteChecks === "object") {
+        setConnectionChecksByTargetId((current) => ({
+          ...current,
+          ...payload.remoteChecks
+        }));
+      }
+
+      const summary = payload.summary;
+      const localAdded = summary?.localNewTargetIds.length || 0;
+      const localRemoved = summary?.localRemovedTargetIds.length || 0;
+      const remoteHealthy = summary?.remoteHealthyCount || 0;
+      const remoteConfigured = summary?.remoteConfiguredCount || 0;
+      const remoteSkipped = summary?.remoteSkippedTargetIds.length || 0;
+
+      setScanTargetsMessageTone("success");
+      setScanTargetsMessage(
+        locale.startsWith("en")
+          ? `Scan complete. Local +${localAdded}${localRemoved ? ` / -${localRemoved}` : ""}; remote APIs healthy ${remoteHealthy}/${remoteConfigured}${remoteSkipped ? `, skipped ${remoteSkipped}` : ""}.`
+          : `扫描完成。本地新增 ${localAdded} 个${localRemoved ? `、移除 ${localRemoved} 个` : ""}；远端 API 健康 ${remoteHealthy}/${remoteConfigured}${remoteSkipped ? `，跳过 ${remoteSkipped} 个` : ""}。`
+      );
+      await loadRuntimeStatus(selectedTargetId, { force: true });
+    } catch (scanError) {
+      setScanTargetsMessageTone("error");
+      setScanTargetsMessage(scanError instanceof Error ? scanError.message : locale.startsWith("en") ? "Scan failed." : "扫描失败。");
     } finally {
-      runtimeRequestInFlightRef.current = false;
+      setScanTargetsPending(false);
     }
-  }
+  }, [loadRuntimeStatus, locale, scanTargetsPending, selectedTargetId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2355,7 +2561,7 @@ export function AgentWorkbench() {
       cancelled = true;
       if (timer) clearInterval(timer);
     };
-  }, [pending, selectedTarget.execution, selectedTarget.label, selectedTargetId, thinkingMode]);
+  }, [loadRuntimeStatus, pending, selectedTarget.execution, selectedTarget.label, selectedTargetId]);
 
   async function runPrompt(
     nextPrompt: string,
@@ -2380,6 +2586,7 @@ export function AgentWorkbench() {
     const requestMessages = flattenTurns(priorTurns);
     const turnId = `${Date.now()}`;
 
+    setTranscriptPinnedToBottom(true);
     setPending(true);
     setError("");
     setInput("");
@@ -2730,6 +2937,58 @@ export function AgentWorkbench() {
       setError(copyError instanceof Error ? copyError.message : uiText.copyFailed);
     }
   }
+
+  const {
+    handleRunCompare,
+    handleRerunCompareLane,
+    handleSendCompareToBenchmark,
+    requestRetryCompareLaneRecovery,
+    handleExportCompareMarkdown,
+    handleExportCompareLaneMarkdown,
+    handleCopyCompareMarkdown,
+    handleCopyCompareLaneMarkdown,
+    handleCopyCompareLaneReviewSummary,
+    handlePreviewCompareLaneMarkdown
+  } = useAgentCompareActions({
+    locale,
+    agentTargets,
+    compareTargetIds,
+    compareIntent,
+    compareOutputShape,
+    comparePending,
+    compareResult,
+    compareBaseTargetId,
+    compareRequestId,
+    compareProgressByTargetId,
+    compareBenchmarkUseOutputContract,
+    compareReviewSummaryTone,
+    compareReviewSummaryDetail,
+    compareRecoveryConfirmTargetId,
+    compareRecoveryCooldownByTargetId,
+    historyMessages,
+    input,
+    systemPrompt,
+    contextWindow,
+    enableTools,
+    enableRetrieval,
+    providerProfile,
+    thinkingMode,
+    setComparePending,
+    setCompareError,
+    setCompareResult,
+    setCompareBaseTargetId,
+    setCompareRequestId,
+    setCompareProgressByTargetId,
+    setCompareRuntimeByTargetId,
+    setCompareRecoveryPendingTargetId,
+    setCompareRecoveryConfirmTargetId,
+    setCompareRecoveryCooldownByTargetId,
+    setCompareRecoveryNotice,
+    setBenchmarkPending,
+    setBenchmarkError,
+    setBenchmarkResult,
+    copyText: handleCopy
+  });
 
   function handleStepWorkspaceFileAnchor(direction: -1 | 1) {
     setWorkspaceFileFocusState((current) => {
@@ -3119,23 +3378,50 @@ export function AgentWorkbench() {
   }
 
   return (
-    <section className="min-h-[calc(100vh-4rem)] bg-[radial-gradient(circle_at_top,_rgba(14,165,233,0.14),_transparent_26%),radial-gradient(circle_at_bottom_right,_rgba(249,115,22,0.14),_transparent_28%),linear-gradient(180deg,_#020617_0%,_#0f172a_100%)] px-4 py-6 text-slate-100 sm:px-6">
-      <div className="mx-auto grid max-w-7xl gap-4 lg:grid-cols-[300px_minmax(0,1fr)]">
-        <aside className="overflow-hidden rounded-[28px] border border-white/10 bg-slate-950/70 shadow-[0_30px_80px_rgba(2,6,23,0.55)] backdrop-blur">
+    <section className="min-h-[calc(100vh-4rem)] bg-[radial-gradient(circle_at_top,_rgba(14,165,233,0.14),_transparent_26%),radial-gradient(circle_at_bottom_right,_rgba(249,115,22,0.14),_transparent_28%),linear-gradient(180deg,_#020617_0%,_#0f172a_100%)] px-3 py-4 text-slate-100 sm:px-5 xl:px-6 2xl:px-8">
+      <div className="mx-auto grid w-full max-w-[1960px] gap-5 xl:grid-cols-[360px_minmax(0,1fr)] 2xl:grid-cols-[400px_minmax(0,1fr)]">
+        <aside className="overflow-hidden rounded-[28px] border border-white/10 bg-slate-950/70 shadow-[0_30px_80px_rgba(2,6,23,0.55)] backdrop-blur xl:sticky xl:top-[5.25rem] xl:max-h-[calc(100vh-6.5rem)]">
           <div className="border-b border-white/10 px-5 py-4">
             <p className="text-[11px] uppercase tracking-[0.28em] text-cyan-300">{dictionary.agent.shell}</p>
             <h1 className="mt-2 text-2xl font-semibold text-white">{dictionary.agent.title}</h1>
             <p className="mt-2 text-sm leading-6 text-slate-400">{dictionary.agent.subtitle}</p>
           </div>
 
-          <div className="space-y-5 px-4 py-4">
+          <div className="space-y-5 px-4 py-4 xl:max-h-[calc(100vh-12rem)] xl:overflow-y-auto">
             <section>
               <div className="mb-3 flex items-center justify-between">
                 <p className="text-xs uppercase tracking-[0.22em] text-slate-500">{dictionary.agent.targets}</p>
-                <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-slate-300">
-                  {agentTargets.length}
-                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void handleScanTargets()}
+                    disabled={scanTargetsPending}
+                    className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-1 text-[11px] font-semibold text-cyan-100 transition hover:bg-cyan-400/15 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {scanTargetsPending
+                      ? locale.startsWith("en")
+                        ? "Scanning..."
+                        : "扫描中..."
+                      : locale.startsWith("en")
+                        ? "Scan models / APIs"
+                        : "一键扫描新模型 / API"}
+                  </button>
+                  <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-slate-300">
+                    {agentTargets.length}
+                  </span>
+                </div>
               </div>
+              {scanTargetsMessage ? (
+                <div
+                  className={`mb-3 rounded-2xl border px-3 py-2 text-[11px] leading-5 ${
+                    scanTargetsMessageTone === "success"
+                      ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
+                      : "border-rose-400/20 bg-rose-400/10 text-rose-100"
+                  }`}
+                >
+                  {scanTargetsMessage}
+                </div>
+              ) : null}
               <div className="space-y-2">
                 {agentTargets.map((target) => {
                   const active = target.id === selectedTargetId;
@@ -3289,6 +3575,51 @@ export function AgentWorkbench() {
                   <p className="text-slate-500">{dictionary.agent.memory}</p>
                   <p className="mt-1 text-[13px] leading-6">{selectedTarget.memoryProfile}</p>
                 </div>
+                {selectedTarget.execution === "local" &&
+                (selectedTarget.parameterScale ||
+                  selectedTarget.quantizationLabel ||
+                  selectedTarget.sourceLabel ||
+                  selectedTarget.sourceRepoId ||
+                  selectedTarget.sourcePath ||
+                  typeof selectedTarget.recommendedContextWindow === "number") ? (
+                  <div className="rounded-2xl border border-white/10 bg-slate-950/60 px-3 py-3">
+                    <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
+                      {locale.startsWith("en") ? "Local model metadata" : "本地模型元数据"}
+                    </p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {selectedTarget.parameterScale ? (
+                        <span className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-cyan-100">
+                          {locale.startsWith("en") ? "Scale" : "参数规模"} · {selectedTarget.parameterScale}
+                        </span>
+                      ) : null}
+                      {selectedTarget.quantizationLabel ? (
+                        <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-emerald-100">
+                          {locale.startsWith("en") ? "Quant" : "量化"} · {selectedTarget.quantizationLabel}
+                        </span>
+                      ) : null}
+                      {typeof selectedTarget.recommendedContextWindow === "number" ? (
+                        <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-200">
+                          {locale.startsWith("en") ? "Rec context" : "建议上下文"} · {Math.round(selectedTarget.recommendedContextWindow / 1024)}K
+                        </span>
+                      ) : null}
+                      {selectedTarget.sourceLabel ? (
+                        <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">
+                          {selectedTarget.sourceLabel}
+                        </span>
+                      ) : null}
+                    </div>
+                    {selectedTarget.sourceRepoId ? (
+                      <p className="mt-3 break-all text-[12px] leading-6 text-slate-300">
+                        {locale.startsWith("en") ? "Repo id" : "模型仓库"}: {selectedTarget.sourceRepoId}
+                      </p>
+                    ) : null}
+                    {selectedTarget.sourcePath ? (
+                      <p className="mt-1 break-all text-[12px] leading-6 text-slate-400">
+                        {locale.startsWith("en") ? "Source path" : "来源路径"}: {selectedTarget.sourcePath}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
                 <div>
                   <p className="text-slate-500">{dictionary.agent.toolMode}</p>
                   <p className="mt-1 text-[13px] leading-6">
@@ -3436,67 +3767,71 @@ export function AgentWorkbench() {
                     </button>
                   </div>
                 </div>
-                {sessionGroups.length ? (
-                  sessionGroups.map((group) => (
-                    <div key={group.targetId} className="space-y-2">
-                      <p className="px-1 text-[11px] uppercase tracking-[0.22em] text-slate-500">
-                        {uiText.targetGroup} · {group.targetLabel}
-                      </p>
-                      {group.sessions.map((session) => (
-                        <div
-                          key={session.id}
-                          className="rounded-2xl border border-white/10 bg-black/20 px-3 py-3"
-                        >
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="min-w-0">
-                              <p className="truncate text-sm text-white">{session.title}</p>
-                              <p className="mt-2 text-xs text-slate-400">{new Date(session.updatedAt).toLocaleString()}</p>
+                <div className="max-h-[42vh] overflow-y-auto overscroll-contain pr-1">
+                  <div className="space-y-3">
+                    {sessionGroups.length ? (
+                      sessionGroups.map((group) => (
+                        <div key={group.targetId} className="space-y-2">
+                          <p className="px-1 text-[11px] uppercase tracking-[0.22em] text-slate-500">
+                            {uiText.targetGroup} · {group.targetLabel}
+                          </p>
+                          {group.sessions.map((session) => (
+                            <div
+                              key={session.id}
+                              className="rounded-2xl border border-white/10 bg-black/20 px-3 py-3"
+                            >
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="min-w-0">
+                                  <p className="truncate text-sm text-white">{session.title}</p>
+                                  <p className="mt-2 text-xs text-slate-400">{new Date(session.updatedAt).toLocaleString()}</p>
+                                </div>
+                                {session.pinned ? (
+                                  <span className="rounded-full bg-white/5 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">
+                                    {uiText.pinned}
+                                  </span>
+                                ) : null}
+                              </div>
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => restoreSession(session)}
+                                  className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1.5 text-[11px] font-semibold text-cyan-100 transition hover:bg-cyan-400/20"
+                                >
+                                  {uiText.restoreSession}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRenameSession(session.id)}
+                                  className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:bg-white/10"
+                                >
+                                  {uiText.renameSession}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleTogglePinSession(session.id)}
+                                  className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:bg-white/10"
+                                >
+                                  {session.pinned ? uiText.unpinSession : uiText.pinSession}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteSession(session.id)}
+                                  className="rounded-full border border-rose-400/30 bg-rose-400/10 px-3 py-1.5 text-[11px] font-semibold text-rose-100 transition hover:bg-rose-400/20"
+                                >
+                                  {uiText.deleteSession}
+                                </button>
+                              </div>
                             </div>
-                            {session.pinned ? (
-                              <span className="rounded-full bg-white/5 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">
-                                {uiText.pinned}
-                              </span>
-                            ) : null}
-                          </div>
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            <button
-                              type="button"
-                              onClick={() => restoreSession(session)}
-                              className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1.5 text-[11px] font-semibold text-cyan-100 transition hover:bg-cyan-400/20"
-                            >
-                              {uiText.restoreSession}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleRenameSession(session.id)}
-                              className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:bg-white/10"
-                            >
-                              {uiText.renameSession}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleTogglePinSession(session.id)}
-                              className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:bg-white/10"
-                            >
-                              {session.pinned ? uiText.unpinSession : uiText.pinSession}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteSession(session.id)}
-                              className="rounded-full border border-rose-400/30 bg-rose-400/10 px-3 py-1.5 text-[11px] font-semibold text-rose-100 transition hover:bg-rose-400/20"
-                            >
-                              {uiText.deleteSession}
-                            </button>
-                          </div>
+                          ))}
                         </div>
-                      ))}
-                    </div>
-                  ))
-                ) : (
-                  <p className="rounded-2xl border border-white/10 bg-black/20 px-3 py-3 text-sm text-slate-400">
-                    {uiText.noSessions}
-                  </p>
-                )}
+                      ))
+                    ) : (
+                      <p className="rounded-2xl border border-white/10 bg-black/20 px-3 py-3 text-sm text-slate-400">
+                        {uiText.noSessions}
+                      </p>
+                    )}
+                  </div>
+                </div>
               </div>
               <button
                 type="button"
@@ -3531,7 +3866,7 @@ export function AgentWorkbench() {
           </div>
         </aside>
 
-        <div className="overflow-hidden rounded-[28px] border border-white/10 bg-slate-950/75 shadow-[0_30px_80px_rgba(2,6,23,0.55)] backdrop-blur">
+        <div className="min-w-0 overflow-hidden rounded-[28px] border border-white/10 bg-slate-950/75 shadow-[0_30px_80px_rgba(2,6,23,0.55)] backdrop-blur">
           <header className="border-b border-white/10 px-5 py-4">
             <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
               <div>
@@ -3550,20 +3885,70 @@ export function AgentWorkbench() {
                 <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">{dictionary.agent.subtitle}</p>
               </div>
 
-              <div className="grid gap-2 sm:grid-cols-3 xl:min-w-[318px]">
-                <div className="rounded-[20px] border border-white/8 bg-white/[0.035] px-3 py-2.5">
+              <div className="space-y-2 xl:min-w-[318px]">
+                <div className="flex items-center justify-end">
+                  <div className="inline-flex rounded-full border border-white/10 bg-black/20 p-1">
+                    <button
+                      type="button"
+                      onClick={() => setWorkbenchMode("chat")}
+                      className={`rounded-full px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.18em] transition ${
+                        workbenchMode === "chat"
+                          ? "bg-cyan-400/15 text-cyan-100"
+                          : "text-slate-400 hover:text-slate-200"
+                      }`}
+                    >
+                      chat
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setWorkbenchMode("compare")}
+                      className={`rounded-full px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.18em] transition ${
+                        workbenchMode === "compare"
+                          ? "bg-cyan-400/15 text-cyan-100"
+                          : "text-slate-400 hover:text-slate-200"
+                      }`}
+                    >
+                      compare
+                    </button>
+                  </div>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-3 2xl:grid-cols-4">
+                  <div className="rounded-[20px] border border-white/8 bg-white/[0.035] px-3 py-2.5">
                   <p className="text-[10px] uppercase tracking-[0.22em] text-slate-500">{dictionary.agent.messages}</p>
                   <p className="mt-1.5 text-lg font-semibold text-white">{historyMessages.length}</p>
-                </div>
-                <div className="rounded-[20px] border border-white/8 bg-white/[0.035] px-3 py-2.5">
+                  </div>
+                  <div className="rounded-[20px] border border-white/8 bg-white/[0.035] px-3 py-2.5">
                   <p className="text-[10px] uppercase tracking-[0.22em] text-slate-500">{dictionary.agent.turns}</p>
                   <p className="mt-1.5 text-lg font-semibold text-white">{turns.length}</p>
-                </div>
-                <div className="rounded-[20px] border border-white/8 bg-white/[0.035] px-3 py-2.5">
-                  <p className="text-[10px] uppercase tracking-[0.22em] text-slate-500">{dictionary.agent.tools}</p>
-                  <p className="mt-1.5 text-lg font-semibold text-white">
-                    {turns.reduce((count, turn) => count + turn.toolRuns.length, 0)}
-                  </p>
+                  </div>
+                  <div className="rounded-[20px] border border-white/8 bg-white/[0.035] px-3 py-2.5">
+                    <p className="text-[10px] uppercase tracking-[0.22em] text-slate-500">
+                      {workbenchMode === "compare"
+                        ? locale.startsWith("en")
+                          ? "Lanes"
+                          : "对比 Lane"
+                        : dictionary.agent.tools}
+                    </p>
+                    <p className="mt-1.5 text-lg font-semibold text-white">
+                      {workbenchMode === "compare"
+                        ? compareLaneCount
+                        : turns.reduce((count, turn) => count + turn.toolRuns.length, 0)}
+                    </p>
+                  </div>
+                  <div className="rounded-[20px] border border-white/8 bg-white/[0.035] px-3 py-2.5">
+                    <p className="text-[10px] uppercase tracking-[0.22em] text-slate-500">
+                      {locale.startsWith("en") ? "Target mix" : "目标形态"}
+                    </p>
+                    <p className="mt-1.5 text-sm font-semibold text-white">
+                      {selectedTarget.execution === "local"
+                        ? locale.startsWith("en")
+                          ? "Local-first"
+                          : "本地优先"
+                        : locale.startsWith("en")
+                          ? "Remote API"
+                          : "远端 API"}
+                    </p>
+                  </div>
                 </div>
               </div>
             </div>
@@ -3571,6 +3956,9 @@ export function AgentWorkbench() {
 
           <div className="border-b border-white/10 bg-black/20 px-5 py-2.5">
             <div className="flex flex-wrap items-center gap-1.5">
+              <span className="rounded-full border border-white/8 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-300">
+                {locale.startsWith("en") ? "Mode" : "模式"}: {workbenchMode === "chat" ? "Chat" : "Compare"}
+              </span>
               <span className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2.5 py-1 text-[11px] text-cyan-100">
                 {uiText.selectedTargetLabel}: {selectedTarget.label}
               </span>
@@ -3589,6 +3977,11 @@ export function AgentWorkbench() {
               <span className="rounded-full border border-white/8 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-300">
                 {uiText.loadedAlias}: {loadedAliasForSelectedTarget || "—"}
               </span>
+              {workbenchMode === "compare" ? (
+                <span className="rounded-full border border-violet-400/20 bg-violet-400/10 px-2.5 py-1 text-[11px] text-violet-100">
+                  {locale.startsWith("en") ? "Compare lanes" : "对比 Lane"}: {compareLaneCount}
+                </span>
+              ) : null}
               {gatewayLoadedOtherAlias ? (
                 <span className="rounded-full border border-white/8 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-300">
                   {uiText.runtimeCurrentLoaded}: {describeRuntimeAlias(gatewayLoadedOtherAlias, agentTargets)}
@@ -3643,26 +4036,46 @@ export function AgentWorkbench() {
             </div>
           </div>
 
-          <div className="grid gap-0 xl:grid-cols-[minmax(0,1fr)_320px]">
+          <div className="grid gap-0 xl:grid-cols-[minmax(0,1.28fr)_400px] 2xl:grid-cols-[minmax(0,1.48fr)_480px]">
             <div className="border-b border-white/10 xl:border-b-0 xl:border-r xl:border-white/10">
               <div className="border-b border-white/10 bg-black/20 px-5 py-2.5">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  {starterPrompts.map((prompt) => (
-                    <button
-                      key={prompt}
-                      type="button"
-                      onClick={() => setInput(prompt)}
-                      className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-300 transition hover:border-cyan-400/30 hover:bg-cyan-400/10 hover:text-white"
-                    >
-                      {prompt}
-                    </button>
-                  ))}
-                </div>
+                {workbenchMode === "chat" ? (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {starterPrompts.map((prompt) => (
+                      <button
+                        key={prompt}
+                        type="button"
+                        onClick={() => setInput(prompt)}
+                        className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-300 transition hover:border-cyan-400/30 hover:bg-cyan-400/10 hover:text-white"
+                      >
+                        {prompt}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-300">
+                    <span className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2.5 py-1 text-cyan-100">
+                      {locale.startsWith("en") ? "Compare keeps the current shell" : "Compare 直接嵌进当前工作台"}
+                    </span>
+                    <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1">
+                      {locale.startsWith("en") ? "Reuse target catalog" : "复用 target catalog"}
+                    </span>
+                    <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1">
+                      {locale.startsWith("en") ? "Same runtime guardrails" : "复用 runtime guardrails"}
+                    </span>
+                    <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1">
+                      {locale.startsWith("en") ? "API + execution next slice" : "下一步接 compare run API"}
+                    </span>
+                  </div>
+                )}
               </div>
 
+              {workbenchMode === "chat" ? (
+                <>
               <div
                 ref={transcriptRef}
-                className="h-[52vh] min-h-[360px] max-h-[72vh] resize-y overflow-y-auto bg-[linear-gradient(180deg,rgba(15,23,42,0.18),rgba(2,6,23,0.12))] px-5 py-5 font-mono text-[13px] leading-7 sm:h-[58vh]"
+                onScroll={handleTranscriptScroll}
+                className="h-[58vh] min-h-[420px] max-h-[76vh] overflow-y-auto overscroll-contain bg-[linear-gradient(180deg,rgba(15,23,42,0.18),rgba(2,6,23,0.12))] px-5 py-5 font-mono text-[13px] leading-7 sm:h-[62vh]"
               >
                 {turns.length === 0 ? (
                   <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.03] px-4 py-5 text-sm leading-7 text-slate-400">
@@ -4845,6 +5258,40 @@ export function AgentWorkbench() {
                 )}
               </div>
 
+              {!transcriptPinnedToBottom ? (
+                <div className="border-t border-cyan-400/15 bg-slate-950/80 px-5 py-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-cyan-400/15 bg-cyan-400/[0.06] px-3 py-3">
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-cyan-200">
+                        {locale.startsWith("en") ? "Reading history" : "正在查看历史"}
+                      </p>
+                      <p className="mt-1 text-xs leading-6 text-slate-300">
+                        {pending
+                          ? locale.startsWith("en")
+                            ? "Live output is still streaming below. We paused auto-follow so you can keep reading."
+                            : "底部仍有新内容在继续生成。为了不打断阅读，自动跟随已暂停。"
+                          : unseenTranscriptTurns > 0
+                            ? locale.startsWith("en")
+                              ? `${unseenTranscriptTurns} new turn${unseenTranscriptTurns > 1 ? "s" : ""} arrived while you were reading earlier messages.`
+                              : `你查看较早消息时，已有 ${unseenTranscriptTurns} 条新轮次到达。`
+                            : locale.startsWith("en")
+                              ? "Auto-follow is paused until you jump back to the latest turn."
+                              : "自动跟随已暂停，回到最新内容后会恢复。"}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleJumpToLatestTranscript}
+                      className="shrink-0 rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.18em] text-cyan-100 transition hover:bg-cyan-400/20"
+                    >
+                      {locale.startsWith("en")
+                        ? `Jump to latest${unseenTranscriptTurns > 0 ? ` (${unseenTranscriptTurns})` : ""}`
+                        : `回到最新${unseenTranscriptTurns > 0 ? ` (${unseenTranscriptTurns})` : ""}`}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
               <form onSubmit={handleSubmit} className="border-t border-white/10 bg-slate-950/90 px-5 py-4">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                   <div className="flex flex-wrap items-center gap-3">
@@ -5020,138 +5467,394 @@ export function AgentWorkbench() {
                   </button>
                 </div>
               </form>
-            </div>
-
-            <aside className="bg-white/[0.03]">
-              <div className="border-b border-white/10 px-5 py-3.5">
-                <p className="text-[11px] uppercase tracking-[0.2em] text-slate-500">{dictionary.nav.agent}</p>
-                <h3 className="mt-1.5 text-base font-semibold text-white">
-                  {dictionary.agent.localRuntime} / {dictionary.agent.promptFrame}
-                </h3>
-              </div>
-
-              <div className="space-y-4 px-5 py-4">
-                <div className="rounded-2xl border border-white/10 bg-black/25 px-4 py-3">
-                  <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{dictionary.agent.resolvedEndpoint}</p>
-                  <p className="mt-1.5 break-all text-[13px] leading-6 text-slate-200">
-                    {lastTurn?.resolvedBaseUrl || selectedTarget.baseUrlDefault}
-                  </p>
+              <div className="border-t border-white/10 bg-[linear-gradient(180deg,rgba(15,23,42,0.28),rgba(2,6,23,0.16))] px-5 py-5">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">
+                      {locale.startsWith("en") ? "Secondary analysis cards" : "次级分析卡片"}
+                    </p>
+                    <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">
+                      {locale.startsWith("en")
+                        ? "Use the transcript and composer as the primary surface. The cards below keep prompt framing, launch hints, and provider checks nearby without stretching the workspace into a long single strip."
+                        : "把对话记录和输入区作为主内容面，下面这组卡片专门承接提示词框架、启动提示和 provider 自检，避免工作区继续被拉成长条单列。"}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2 text-[11px]">
+                    <span className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2.5 py-1 text-cyan-100">
+                      {locale.startsWith("en") ? "Primary: transcript + compose" : "主内容：记录 + 输入"}
+                    </span>
+                    <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-slate-300">
+                      {locale.startsWith("en") ? "Secondary: analysis cards" : "次级：分析卡片"}
+                    </span>
+                  </div>
                 </div>
 
-                <div className="rounded-2xl border border-white/10 bg-black/25 px-4 py-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{dictionary.agent.providerSelfCheck}</p>
-                      <p className="mt-1.5 text-[13px] leading-6 text-slate-300">
-                        {dictionary.agent.selfCheckDescription}
-                      </p>
+                <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(340px,0.8fr)] 2xl:grid-cols-[minmax(0,1.32fr)_minmax(420px,0.78fr)]">
+                  <div className="space-y-4">
+                    <div className="rounded-3xl border border-white/10 bg-black/25 px-4 py-4">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{dictionary.agent.promptFrame}</p>
+                          <p className="mt-1.5 text-sm leading-6 text-slate-300">
+                            {locale.startsWith("en")
+                              ? "Prompt framing stays beside the main workspace so you can refine agent behavior without burying the transcript."
+                              : "系统提示词直接放在主工作区旁边，边看输出边收口行为，不再把核心记录挤到侧栏里。"}
+                          </p>
+                        </div>
+                        <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">
+                          {locale.startsWith("en") ? "Live prompt frame" : "实时提示框架"}
+                        </span>
+                      </div>
+                      <textarea
+                        value={systemPrompt}
+                        onChange={(event) => setSystemPrompt(event.target.value)}
+                        rows={12}
+                        className="mt-3 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 font-mono text-xs leading-6 text-slate-200 outline-none transition focus:border-cyan-400/40"
+                      />
                     </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        disabled={!supportsConnectionCheck || connectionCheckPending || pending}
-                        onClick={handleConnectionCheck}
-                        className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
-                      >
-                        {connectionCheckPending ? dictionary.agent.checking : dictionary.agent.runCheck}
-                      </button>
-                      <a
-                        href={`/api/agent/check-history/export?targetId=${encodeURIComponent(selectedTargetId)}&format=markdown`}
-                        className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/10"
-                      >
-                        {dictionary.agent.exportMarkdown}
-                      </a>
-                      <a
-                        href={`/api/agent/check-history/export?targetId=${encodeURIComponent(selectedTargetId)}&format=json`}
-                        className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/10"
-                      >
-                        {dictionary.agent.exportJson}
-                      </a>
+
+                    <div className="rounded-3xl border border-white/10 bg-black/25 px-4 py-4">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{dictionary.agent.launchHints}</p>
+                          <p className="mt-1.5 text-sm leading-6 text-slate-300">
+                            {locale.startsWith("en")
+                              ? "Keep deployment and fallback hints in a card grid instead of a long sidebar, so high-density sessions remain easier to scan."
+                              : "把部署与 fallback 提示放进卡片网格，而不是继续堆在长侧栏里，高信息密度时更容易扫读。"}
+                          </p>
+                        </div>
+                        <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">
+                          {selectedTarget.execution === "local" ? dictionary.common.local : dictionary.common.remote}
+                        </span>
+                      </div>
+                      <div className="mt-3 grid gap-3 2xl:grid-cols-2">
+                        {(selectedTarget.launchHints || [uiText.fallbackLaunchHint]).map((hint) => (
+                          <pre
+                            key={hint}
+                            className="overflow-x-auto whitespace-pre-wrap break-words rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 font-mono text-xs leading-6 text-slate-200"
+                          >
+                            {hint}
+                          </pre>
+                        ))}
+                      </div>
                     </div>
                   </div>
 
-                  {!supportsConnectionCheck ? (
-                    <p className="mt-3 text-sm leading-6 text-slate-400">
-                      {dictionary.agent.checkOnlyRemote}
-                    </p>
-                  ) : null}
-
-                  {connectionCheckError ? (
-                    <div className="mt-3 rounded-2xl border border-rose-400/30 bg-rose-400/10 px-3 py-3 text-sm text-rose-100">
-                      {connectionCheckError}
-                    </div>
-                  ) : null}
-
-                  {connectionCheck ? (
-                    <div className="mt-3.5 space-y-2.5">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span
-                          className={`rounded-full px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] ${
-                            connectionCheck.ok
-                              ? "bg-emerald-400/15 text-emerald-200"
-                              : "bg-amber-400/15 text-amber-200"
-                          }`}
-                        >
-                          {connectionCheck.ok ? dictionary.agent.allChecksPassed : dictionary.agent.checkAttention}
-                        </span>
-                        <span className="rounded-full bg-white/[0.04] px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] text-slate-300">
-                          {new Date(connectionCheck.checkedAt).toLocaleTimeString()}
-                        </span>
+                  <div className="space-y-4">
+                    <div className="rounded-3xl border border-white/10 bg-black/25 px-4 py-4">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{dictionary.agent.providerSelfCheck}</p>
+                          <p className="mt-1.5 text-sm leading-6 text-slate-300">
+                            {dictionary.agent.selfCheckDescription}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={!supportsConnectionCheck || connectionCheckPending || pending}
+                            onClick={handleConnectionCheck}
+                            className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
+                          >
+                            {connectionCheckPending ? dictionary.agent.checking : dictionary.agent.runCheck}
+                          </button>
+                          <a
+                            href={`/api/agent/check-history/export?targetId=${encodeURIComponent(selectedTargetId)}&format=markdown`}
+                            className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/10"
+                          >
+                            {dictionary.agent.exportMarkdown}
+                          </a>
+                          <a
+                            href={`/api/agent/check-history/export?targetId=${encodeURIComponent(selectedTargetId)}&format=json`}
+                            className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/10"
+                          >
+                            {dictionary.agent.exportJson}
+                          </a>
+                        </div>
                       </div>
 
-                      <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-2.5 text-xs leading-6 text-slate-300">
-                        <p>{dictionary.common.model}: {connectionCheck.resolvedModel}</p>
-                        <p className="break-all">{dictionary.common.endpoint}: {connectionCheck.resolvedBaseUrl}</p>
-                        {connectionCheck.docsUrl ? (
+                      {!supportsConnectionCheck ? (
+                        <p className="mt-3 text-sm leading-6 text-slate-400">{dictionary.agent.checkOnlyRemote}</p>
+                      ) : null}
+
+                      {connectionCheckError ? (
+                        <div className="mt-3 rounded-2xl border border-rose-400/30 bg-rose-400/10 px-3 py-3 text-sm text-rose-100">
+                          {connectionCheckError}
+                        </div>
+                      ) : null}
+
+                      <div className="mt-3 rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-3 text-xs leading-6 text-slate-300">
+                        <p>{dictionary.common.model}: {runtimeStatus?.resolvedModel || lastTurn?.resolvedModel || selectedTarget.modelDefault}</p>
+                        <p className="break-all">{dictionary.common.endpoint}: {lastTurn?.resolvedBaseUrl || selectedTarget.baseUrlDefault}</p>
+                        <p className="mt-2 text-slate-500">
+                          {dictionary.agent.historySavedAt}: <span className="text-slate-300">data/agent-observability</span>
+                        </p>
+                        {connectionCheck?.docsUrl ? (
                           <a
                             href={connectionCheck.docsUrl}
                             target="_blank"
                             rel="noreferrer"
-                            className="mt-1 inline-block text-cyan-300 underline decoration-cyan-300/40 underline-offset-4"
+                            className="mt-2 inline-block text-cyan-300 underline decoration-cyan-300/40 underline-offset-4"
                           >
                             {dictionary.agent.openDocs}
                           </a>
                         ) : null}
-                        <p className="mt-2 text-slate-500">
-                          {dictionary.agent.historySavedAt}: <span className="text-slate-300">data/agent-observability</span>
-                        </p>
                       </div>
 
-                      {connectionCheck.stages.map((stage) => (
-                        <div
-                          key={stage.id}
-                          className="rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-2.5"
-                        >
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span
-                                className={`rounded-full px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] ${getConnectionStageBadgeClass(stage.ok)}`}
-                              >
-                                {formatConnectionStageLabel(stage.id)}
-                              </span>
-                              <span className="rounded-full bg-white/[0.04] px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] text-slate-300">
-                                {stage.ok ? dictionary.common.ok : dictionary.common.failed}
-                              </span>
-                              {typeof stage.httpStatus === "number" ? (
-                                <span className="rounded-full bg-white/[0.04] px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] text-slate-300">
-                                  http {stage.httpStatus}
+                      {connectionCheck ? (
+                        <div className="mt-3 grid gap-2">
+                          {connectionCheck.stages.map((stage) => (
+                            <div key={stage.id} className="rounded-2xl border border-white/10 bg-black/20 px-3 py-2.5">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span
+                                    className={`rounded-full px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] ${getConnectionStageBadgeClass(stage.ok)}`}
+                                  >
+                                    {formatConnectionStageLabel(stage.id)}
+                                  </span>
+                                  {typeof stage.httpStatus === "number" ? (
+                                    <span className="rounded-full bg-white/[0.04] px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] text-slate-300">
+                                      http {stage.httpStatus}
+                                    </span>
+                                  ) : null}
+                                </div>
+                                <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
+                                  {stage.latencyMs} ms
                                 </span>
-                              ) : null}
+                              </div>
+                              <p className="mt-1.5 text-[13px] leading-6 text-slate-300">{stage.summary}</p>
                             </div>
-                            <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
-                              {stage.latencyMs} ms
-                            </span>
-                          </div>
-                          <p className="mt-1.5 text-[13px] leading-6 text-slate-300">{stage.summary}</p>
+                          ))}
                         </div>
-                      ))}
+                      ) : null}
                     </div>
+                  </div>
+                </div>
+              </div>
+                </>
+              ) : (
+                <AgentCompareLab
+                  locale={locale}
+                  targets={agentTargets}
+                  selectedTargetId={selectedTargetId}
+                  compareTargetIds={compareTargetIds}
+                  compareIntent={compareIntent}
+                  compareOutputShape={compareOutputShape}
+                  input={input}
+                  systemPrompt={systemPrompt}
+                  enableTools={enableTools}
+                  enableRetrieval={enableRetrieval}
+                  contextWindow={contextWindow}
+                  providerProfile={providerProfile}
+                  thinkingMode={thinkingMode}
+                  pending={pending}
+                  comparePending={comparePending}
+                  compareError={compareError}
+                  compareResult={compareResult}
+                  compareBaseTargetId={compareBaseTargetId}
+                  compareReviewSummaryTone={compareReviewSummaryTone}
+                  compareReviewSummaryDetail={compareReviewSummaryDetail}
+                  compareRuntimeByTargetId={compareRuntimeByTargetId}
+                  compareProgressByTargetId={compareProgressByTargetId}
+                  compareBenchmarkUseOutputContract={compareBenchmarkUseOutputContract}
+                  compareBenchmarkPreviewDiffOnly={compareBenchmarkPreviewDiffOnly}
+                  compareRecoveryPendingTargetId={compareRecoveryPendingTargetId}
+                  compareRecoveryConfirmTargetId={compareRecoveryConfirmTargetId}
+                  compareRecoveryCooldownByTargetId={compareRecoveryCooldownByTargetId}
+                  compareRecoveryNotice={compareRecoveryNotice}
+                  benchmarkPending={benchmarkPending}
+                  benchmarkError={benchmarkError}
+                  benchmarkResult={benchmarkResult}
+                  contextWindowOptions={CONTEXT_WINDOW_OPTIONS}
+                  providerProfileOptions={PROVIDER_PROFILE_OPTIONS}
+                  thinkingModeOptions={THINKING_MODE_OPTIONS}
+                  onToggleCompareTarget={handleToggleCompareTarget}
+                  onCompareIntentChange={setCompareIntent}
+                  onCompareOutputShapeChange={setCompareOutputShape}
+                  onInputChange={setInput}
+                  onSystemPromptChange={setSystemPrompt}
+                  onEnableToolsChange={setEnableTools}
+                  onEnableRetrievalChange={setEnableRetrieval}
+                  onContextWindowChange={setContextWindow}
+                  onProviderProfileChange={setProviderProfile}
+                  onThinkingModeChange={setThinkingMode}
+                  onRunCompare={handleRunCompare}
+                  onRerunLane={handleRerunCompareLane}
+                  onSetBaseLane={setCompareBaseTargetId}
+                  onCompareReviewSummaryToneChange={setCompareReviewSummaryTone}
+                  onCompareReviewSummaryDetailChange={setCompareReviewSummaryDetail}
+                  onSendToBenchmark={handleSendCompareToBenchmark}
+                  onExportMarkdown={handleExportCompareMarkdown}
+                  onCompareBenchmarkUseOutputContractChange={setCompareBenchmarkUseOutputContract}
+                  onCompareBenchmarkPreviewDiffOnlyChange={setCompareBenchmarkPreviewDiffOnly}
+                  onRetryLocalRecovery={requestRetryCompareLaneRecovery}
+                  onExportLaneMarkdown={handleExportCompareLaneMarkdown}
+                  onCopyMarkdown={handleCopyCompareMarkdown}
+                  onCopyLaneMarkdown={handleCopyCompareLaneMarkdown}
+                  onCopyLaneReviewSummary={handleCopyCompareLaneReviewSummary}
+                  onPreviewLaneMarkdown={handlePreviewCompareLaneMarkdown}
+                  onCopy={handleCopy}
+                  copyState={copyState}
+                />
+              )}
+            </div>
+
+            <aside className="bg-white/[0.03] 2xl:max-h-[calc(100vh-15rem)] 2xl:overflow-y-auto">
+              <div className="border-b border-white/10 px-5 py-3.5">
+                <p className="text-[11px] uppercase tracking-[0.2em] text-slate-500">{dictionary.nav.agent}</p>
+                <h3 className="mt-1.5 text-base font-semibold text-white">
+                  {dictionary.agent.localRuntime} / {locale.startsWith("en") ? "Status rail" : "状态侧栏"}
+                </h3>
+                <p className="mt-2 text-sm leading-6 text-slate-400">
+                  {locale.startsWith("en")
+                    ? "Keep the right rail high-signal: a compact status strip first, then expand model, process, and compare details only when needed."
+                    : "右侧只保留高信号状态条；模型、进程和 compare 细节按需展开，避免一整列长条同权堆叠。"}
+                </p>
+              </div>
+
+              <div className="space-y-3 px-5 py-4">
+                <div className="rounded-3xl border border-white/10 bg-[linear-gradient(180deg,rgba(12,18,35,0.96),rgba(4,8,22,0.9))] px-4 py-4 shadow-[0_24px_80px_-44px_rgba(34,211,238,0.35)]">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
+                        {selectedTarget.execution === "local"
+                          ? dictionary.agent.localRuntime
+                          : locale.startsWith("en")
+                            ? "Remote target"
+                            : "远端目标"}
+                      </p>
+                      <p className="mt-1.5 text-sm leading-6 text-slate-200">
+                        {selectedTarget.execution === "local"
+                          ? (runtimeStatus?.phaseDetail ||
+                            (runtimeStatus?.available
+                              ? runtimeStatus.busy
+                                ? uiText.runtimeSerializing
+                                : uiText.runtimeReady
+                              : runtimeStatus?.message || uiText.runtimeUnavailable))
+                          : `${runtimeStatus?.resolvedModel || lastTurn?.resolvedModel || selectedTarget.modelDefault} · ${selectedTarget.label}`}
+                      </p>
+                    </div>
+                    <span
+                      className={`rounded-full px-2.5 py-1 text-[10px] uppercase tracking-[0.22em] ${
+                        selectedTarget.execution === "local"
+                          ? runtimePhase.className
+                          : "bg-violet-400/15 text-violet-200"
+                      }`}
+                    >
+                      {selectedTarget.execution === "local"
+                        ? runtimePhase.label
+                        : locale.startsWith("en")
+                          ? "Remote"
+                          : "远端"}
+                    </span>
+                  </div>
+
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {typeof runtimeStatus?.queueDepth === "number" ? (
+                      <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.22em] text-slate-300">
+                        {uiText.queueLabel} {runtimeStatus.queueDepth}
+                      </span>
+                    ) : null}
+                    {typeof runtimeStatus?.activeRequests === "number" ? (
+                      <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.22em] text-slate-300">
+                        {uiText.activeLabel} {runtimeStatus.activeRequests}
+                      </span>
+                    ) : null}
+                    {loadedAliasForSelectedTarget ? (
+                      <span className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.22em] text-cyan-200">
+                        {describeRuntimeAlias(loadedAliasForSelectedTarget, agentTargets)}
+                      </span>
+                    ) : null}
+                    {gatewayLoadedOtherAlias ? (
+                      <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.22em] text-slate-300">
+                        {uiText.runtimeCurrentLoaded} {describeRuntimeAlias(gatewayLoadedOtherAlias, agentTargets)}
+                      </span>
+                    ) : null}
+                    {runtimeStatus?.loadingAlias ? (
+                      <span className="rounded-full border border-amber-400/20 bg-amber-400/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.22em] text-amber-200">
+                        {uiText.runtimeSwitchingNow}: {describeRuntimeAlias(runtimeStatus.loadingAlias, agentTargets)}
+                      </span>
+                    ) : null}
+                    {selectedTarget.execution === "remote" ? (
+                      <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.22em] text-slate-300">
+                        {lastTurn?.resolvedBaseUrl || selectedTarget.baseUrlDefault}
+                      </span>
+                    ) : null}
+                  </div>
+
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    <div className="rounded-2xl border border-white/10 bg-black/20 px-3 py-2.5">
+                      <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{dictionary.common.model}</p>
+                      <p className="mt-1 break-all text-[13px] leading-6 text-slate-200">
+                        {runtimeStatus?.resolvedModel || lastTurn?.resolvedModel || selectedTarget.modelDefault}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border border-white/10 bg-black/20 px-3 py-2.5">
+                      <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
+                        {selectedTarget.execution === "local" ? uiText.runtimeLastSwitchLoad : dictionary.common.endpoint}
+                      </p>
+                      <p className="mt-1 break-all text-[13px] leading-6 text-slate-200">
+                        {selectedTarget.execution === "local"
+                          ? formatRuntimeDuration(selectedTargetLastSwitchMs)
+                          : lastTurn?.resolvedBaseUrl || selectedTarget.baseUrlDefault}
+                      </p>
+                    </div>
+                  </div>
+
+                  {selectedTarget.execution === "local" ? (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        disabled={prewarmAllPending || prewarmPending || pending || Boolean(runtimeActionPending)}
+                        onClick={handlePrewarmAll}
+                        className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
+                      >
+                        {prewarmAllPending ? uiText.prewarmingAll : uiText.prewarmAllModels}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={prewarmAllPending || prewarmPending || pending || Boolean(runtimeActionPending)}
+                        onClick={handlePrewarm}
+                        className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1.5 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-400/20 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
+                      >
+                        {prewarmPending ? uiText.prewarming : uiText.prewarmModel}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={prewarmAllPending || prewarmPending || pending || Boolean(runtimeActionPending)}
+                        onClick={() => void handleRuntimeAction("release")}
+                        className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
+                      >
+                        {runtimeActionPending === "release" ? uiText.releasingModel : uiText.releaseModel}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={prewarmAllPending || prewarmPending || pending || Boolean(runtimeActionPending)}
+                        onClick={() => void handleRuntimeAction("restart")}
+                        className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
+                      >
+                        {runtimeActionPending === "restart" ? uiText.restartingGateway : uiText.restartGateway}
+                      </button>
+                    </div>
+                  ) : null}
+
+                  {runtimeStatus?.loadingError ? (
+                    <div className="mt-3 rounded-2xl border border-rose-400/20 bg-rose-400/10 px-3 py-2 text-xs leading-6 text-rose-100">
+                      {uiText.runtimeLoadingError}: {runtimeStatus.loadingError}
+                    </div>
+                  ) : null}
+
+                  {prewarmMessage ? (
+                    <p className="mt-3 text-xs leading-6 text-cyan-200">{prewarmMessage}</p>
                   ) : null}
                 </div>
 
-                <div className="rounded-2xl border border-white/10 bg-black/25 px-4 py-3">
-                  <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{dictionary.agent.resolvedModel}</p>
-                  <div className="mt-2.5 space-y-2.5 text-sm text-slate-300">
+                <RailDetailsSection
+                  title={dictionary.agent.resolvedModel}
+                  badge={selectedTarget.execution === "local" ? dictionary.common.local : "remote"}
+                  defaultOpen={true}
+                >
+                  <div className="space-y-3 text-sm text-slate-300">
                     <div>
                       <p className="text-slate-500">{dictionary.common.model}</p>
                       <p className="mt-1 break-all text-[13px] leading-6 text-slate-200">
@@ -5159,7 +5862,7 @@ export function AgentWorkbench() {
                       </p>
                     </div>
                     {selectedTarget.execution === "remote" ? (
-                      <>
+                      <div className="grid gap-3 sm:grid-cols-2">
                         <div>
                           <p className="text-slate-500">{uiText.thinkingModeStandard}</p>
                           <p className="mt-1 break-all text-[13px] leading-6 text-slate-200">
@@ -5172,7 +5875,7 @@ export function AgentWorkbench() {
                             {runtimeStatus?.thinkingResolvedModel || selectedTarget.thinkingModelDefault || selectedTarget.modelDefault}
                           </p>
                         </div>
-                      </>
+                      </div>
                     ) : null}
                     <div>
                       <p className="text-slate-500">{dictionary.common.endpoint}</p>
@@ -5197,213 +5900,282 @@ export function AgentWorkbench() {
                       <p className="mt-1 text-xs leading-6 text-slate-400">data/agent-observability</p>
                     </div>
                   </div>
-                </div>
+                </RailDetailsSection>
 
-                <div className="rounded-2xl border border-white/10 bg-black/25 px-4 py-3">
-                  <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{dictionary.agent.promptFrame}</p>
-                  <textarea
-                    value={systemPrompt}
-                    onChange={(event) => setSystemPrompt(event.target.value)}
-                    rows={14}
-                    className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 font-mono text-xs leading-6 text-slate-200 outline-none transition focus:border-cyan-400/40"
-                  />
-                </div>
-
-                <div className="rounded-2xl border border-white/10 bg-black/25 px-4 py-3">
-                  <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{dictionary.agent.launchHints}</p>
-                  <div className="mt-2 space-y-2">
-                    {(selectedTarget.launchHints || [uiText.fallbackLaunchHint]).map(
-                      (hint) => (
-                        <pre
-                          key={hint}
-                          className="overflow-x-auto whitespace-pre-wrap break-words rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-2 font-mono text-xs leading-6 text-slate-200"
-                        >
-                          {hint}
-                        </pre>
-                      )
-                    )}
-                  </div>
-                </div>
-
-                <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{dictionary.agent.localRuntime}</p>
-                    {selectedTarget.execution === "local" ? (
-                      <span className={`rounded-full px-2 py-[3px] text-[10px] uppercase tracking-[0.2em] ${runtimePhase.className}`}>
-                        {runtimePhase.label}
-                      </span>
-                    ) : null}
-                  </div>
-                  {runtimeStatus ? (
-                    <div className="mt-3 space-y-3 text-sm text-slate-200">
-                      <div className="flex flex-wrap items-center gap-2">
-                        {typeof runtimeStatus.queueDepth === "number" ? (
-                          <span className="rounded-full bg-white/[0.04] px-2 py-[3px] text-[10px] uppercase tracking-[0.2em] text-slate-300">
-                            {uiText.queueLabel} {runtimeStatus.queueDepth}
-                          </span>
-                        ) : null}
-                        {typeof runtimeStatus.activeRequests === "number" ? (
-                          <span className="rounded-full bg-white/[0.04] px-2 py-[3px] text-[10px] uppercase tracking-[0.2em] text-slate-300">
-                            {uiText.activeLabel} {runtimeStatus.activeRequests}
-                          </span>
-                        ) : null}
-                        {loadedAliasForSelectedTarget ? (
-                          <span className="rounded-full bg-cyan-400/10 px-2 py-[3px] text-[10px] uppercase tracking-[0.2em] text-cyan-300">
-                            {describeRuntimeAlias(loadedAliasForSelectedTarget, agentTargets)}
-                          </span>
-                        ) : null}
-                        {gatewayLoadedOtherAlias ? (
-                          <span className="rounded-full bg-white/[0.04] px-2 py-[3px] text-[10px] uppercase tracking-[0.2em] text-slate-300">
-                            {uiText.runtimeCurrentLoaded} {describeRuntimeAlias(gatewayLoadedOtherAlias, agentTargets)}
-                          </span>
-                        ) : null}
-                        {runtimeStatus.loadingAlias ? (
-                          <span className="rounded-full bg-amber-400/10 px-2 py-[3px] text-[10px] uppercase tracking-[0.2em] text-amber-200">
-                            {uiText.runtimeSwitchingNow}: {describeRuntimeAlias(runtimeStatus.loadingAlias, agentTargets)}
-                          </span>
-                        ) : null}
-                      </div>
-                      <div>
-                        <p className="text-slate-500">{uiText.runtimeMessage}</p>
-                        <p className="mt-1 leading-6">
-                          {runtimeStatus.phaseDetail || runtimeStatus.message || dictionary.common.unknown}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-slate-500">{locale.startsWith("en") ? "Runtime stage" : "运行阶段"}</p>
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          {runtimeStageItems.map((step) => (
-                            <span
-                              key={`runtime-stage:${step.key}`}
-                              className={`rounded-full border px-2 py-[3px] text-[10px] uppercase tracking-[0.2em] ${
-                                step.active
-                                  ? "border-cyan-400/20 bg-cyan-400/10 text-cyan-200"
-                                  : step.completed
-                                    ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-200"
-                                    : "border-white/10 bg-white/[0.04] text-slate-400"
-                              }`}
-                            >
-                              {step.label}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                      <div className="grid gap-3 sm:grid-cols-2">
+                {selectedTarget.execution === "local" ? (
+                  <RailDetailsSection
+                    title={dictionary.agent.localRuntime}
+                    subtitle={
+                      locale.startsWith("en")
+                        ? "Expand for process ids, runtime stage, switch history, load errors, and the current log excerpt."
+                        : "展开后看进程号、运行阶段、切换历史、加载错误和当前日志摘录。"
+                    }
+                    badge={runtimePhase.label}
+                  >
+                    {runtimeStatus ? (
+                      <div className="space-y-3 text-sm text-slate-200">
                         <div>
-                          <p className="text-slate-500">{uiText.supervisor}</p>
-                          <p className="mt-1 break-all text-white">
-                            {runtimeStatus.supervisorPid ?? dictionary.common.unknown} ·{" "}
-                            {runtimeStatus.supervisorAlive ? dictionary.common.ok : dictionary.common.failed}
-                          </p>
+                          <p className="text-slate-500">{locale.startsWith("en") ? "Runtime stage" : "运行阶段"}</p>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {runtimeStageItems.map((step) => (
+                              <span
+                                key={`runtime-stage:${step.key}`}
+                                className={`rounded-full border px-2 py-[3px] text-[10px] uppercase tracking-[0.2em] ${
+                                  step.active
+                                    ? "border-cyan-400/20 bg-cyan-400/10 text-cyan-200"
+                                    : step.completed
+                                      ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-200"
+                                      : "border-white/10 bg-white/[0.04] text-slate-400"
+                                }`}
+                              >
+                                {step.label}
+                              </span>
+                            ))}
+                          </div>
                         </div>
-                        <div>
-                          <p className="text-slate-500">{uiText.gatewayProcess}</p>
-                          <p className="mt-1 break-all text-white">
-                            {runtimeStatus.gatewayPid ?? dictionary.common.unknown} ·{" "}
-                            {runtimeStatus.gatewayAlive ? dictionary.common.ok : dictionary.common.failed}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        <div>
-                          <p className="text-slate-500">{uiText.runtimeCurrentLoaded}</p>
-                          <p className="mt-1 break-all text-white">
-                            {describeRuntimeAlias(runtimeStatus.loadedAlias, agentTargets)}
-                          </p>
-                        </div>
-                        <div>
-                          <p className="text-slate-500">{uiText.runtimeLastSwitchLoad}</p>
-                          <p className="mt-1 break-all text-white">{formatRuntimeDuration(selectedTargetLastSwitchMs)}</p>
-                        </div>
-                        <div>
-                          <p className="text-slate-500">{uiText.runtimeLastSwitchAt}</p>
-                          <p className="mt-1 break-all text-white">
-                            {formatRuntimeTimestamp(selectedTargetLastSwitchAt, locale)}
-                          </p>
-                        </div>
-                      </div>
-                      {(runtimeStatus.loadingAlias || runtimeStatus.loadingError) ? (
                         <div className="grid gap-3 sm:grid-cols-2">
-                          {runtimeStatus.loadingAlias ? (
-                            <div>
-                              <p className="text-slate-500">{uiText.runtimeSwitchingNow}</p>
-                              <p className="mt-1 break-all text-white">
-                                {describeRuntimeAlias(runtimeStatus.loadingAlias, agentTargets)}
-                                {typeof runtimeStatus.loadingElapsedMs === "number"
-                                  ? ` · ${uiText.runtimeLoadingElapsed} ${Math.max(1, Math.round(runtimeStatus.loadingElapsedMs / 1000))}s`
-                                  : ""}
+                          <div>
+                            <p className="text-slate-500">{uiText.supervisor}</p>
+                            <p className="mt-1 break-all text-white">
+                              {runtimeStatus.supervisorPid ?? dictionary.common.unknown} ·{" "}
+                              {runtimeStatus.supervisorAlive ? dictionary.common.ok : dictionary.common.failed}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-slate-500">{uiText.gatewayProcess}</p>
+                            <p className="mt-1 break-all text-white">
+                              {runtimeStatus.gatewayPid ?? dictionary.common.unknown} ·{" "}
+                              {runtimeStatus.gatewayAlive ? dictionary.common.ok : dictionary.common.failed}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-slate-500">{uiText.runtimeCurrentLoaded}</p>
+                            <p className="mt-1 break-all text-white">
+                              {describeRuntimeAlias(runtimeStatus.loadedAlias, agentTargets)}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-slate-500">{uiText.runtimeLastSwitchLoad}</p>
+                            <p className="mt-1 break-all text-white">{formatRuntimeDuration(selectedTargetLastSwitchMs)}</p>
+                          </div>
+                          <div className="sm:col-span-2">
+                            <p className="text-slate-500">{uiText.runtimeLastSwitchAt}</p>
+                            <p className="mt-1 break-all text-white">
+                              {formatRuntimeTimestamp(selectedTargetLastSwitchAt, locale)}
+                            </p>
+                          </div>
+                        </div>
+                        {(runtimeStatus.loadingAlias || runtimeStatus.loadingError) ? (
+                          <div className="grid gap-3 sm:grid-cols-2">
+                            {runtimeStatus.loadingAlias ? (
+                              <div>
+                                <p className="text-slate-500">{uiText.runtimeSwitchingNow}</p>
+                                <p className="mt-1 break-all text-white">
+                                  {describeRuntimeAlias(runtimeStatus.loadingAlias, agentTargets)}
+                                  {typeof runtimeStatus.loadingElapsedMs === "number"
+                                    ? ` · ${uiText.runtimeLoadingElapsed} ${Math.max(1, Math.round(runtimeStatus.loadingElapsedMs / 1000))}s`
+                                    : ""}
+                                </p>
+                              </div>
+                            ) : null}
+                            {runtimeStatus.loadingError ? (
+                              <div>
+                                <p className="text-slate-500">{uiText.runtimeLoadingError}</p>
+                                <p className="mt-1 break-all text-rose-200">{runtimeStatus.loadingError}</p>
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
+                        {runtimeLogExcerpt ? (
+                          <div>
+                            <div className="flex items-center justify-between gap-3">
+                              <p className="text-slate-500">{uiText.logExcerpt}</p>
+                              <button
+                                type="button"
+                                disabled={prewarmAllPending || prewarmPending || pending || Boolean(runtimeActionPending)}
+                                onClick={() => void handleRuntimeAction("read_log")}
+                                className="rounded-full border border-white/10 bg-transparent px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
+                              >
+                                {runtimeActionPending === "read_log" ? uiText.loadingRuntimeLog : uiText.viewRuntimeLog}
+                              </button>
+                            </div>
+                            <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 font-mono text-xs leading-6 text-slate-300">
+                              {runtimeLogExcerpt}
+                            </pre>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={prewarmAllPending || prewarmPending || pending || Boolean(runtimeActionPending)}
+                            onClick={() => void handleRuntimeAction("read_log")}
+                            className="rounded-full border border-white/10 bg-transparent px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
+                          >
+                            {runtimeActionPending === "read_log" ? uiText.loadingRuntimeLog : uiText.viewRuntimeLog}
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="text-sm leading-6 text-slate-400">{dictionary.agent.checking}</p>
+                    )}
+                  </RailDetailsSection>
+                ) : null}
+
+                {workbenchMode === "compare" ? (
+                  <>
+                    <RailDetailsSection
+                      title={dictionary.agent.promptFrame}
+                      subtitle={
+                        locale.startsWith("en")
+                          ? "Only expand when you need to adjust the compare prompt frame from the side."
+                          : "需要从侧边改 compare 提示框架时再展开，不让它默认常驻占位。"
+                      }
+                    >
+                      <textarea
+                        value={systemPrompt}
+                        onChange={(event) => setSystemPrompt(event.target.value)}
+                        rows={12}
+                        className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 font-mono text-xs leading-6 text-slate-200 outline-none transition focus:border-cyan-400/40"
+                      />
+                    </RailDetailsSection>
+
+                    <RailDetailsSection
+                      title={dictionary.agent.launchHints}
+                      subtitle={
+                        locale.startsWith("en")
+                          ? "Deployment and fallback hints stay tucked away until you need operational context."
+                          : "部署与 fallback 提示折叠收纳，需要运维上下文时再展开。"
+                      }
+                      badge={selectedTarget.execution === "local" ? dictionary.common.local : "remote"}
+                    >
+                      <div className="space-y-2">
+                        {(selectedTarget.launchHints || [uiText.fallbackLaunchHint]).map((hint) => (
+                          <pre
+                            key={hint}
+                            className="overflow-x-auto whitespace-pre-wrap break-words rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-2 font-mono text-xs leading-6 text-slate-200"
+                          >
+                            {hint}
+                          </pre>
+                        ))}
+                      </div>
+                    </RailDetailsSection>
+
+                    <RailDetailsSection
+                      title={dictionary.agent.providerSelfCheck}
+                      subtitle={
+                        locale.startsWith("en")
+                          ? "Run connection checks and inspect stage-by-stage latency without keeping the whole report visible."
+                          : "把连接自检和分阶段耗时折叠起来，需要时再展开查看，不让整份报告一直占据右栏。"
+                      }
+                      badge={
+                        connectionCheck
+                          ? connectionCheck.ok
+                            ? dictionary.common.ok
+                            : dictionary.common.failed
+                          : locale.startsWith("en")
+                            ? "Idle"
+                            : "未运行"
+                      }
+                    >
+                      <div className="space-y-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={!supportsConnectionCheck || connectionCheckPending || pending}
+                            onClick={handleConnectionCheck}
+                            className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
+                          >
+                            {connectionCheckPending ? dictionary.agent.checking : dictionary.agent.runCheck}
+                          </button>
+                          <a
+                            href={`/api/agent/check-history/export?targetId=${encodeURIComponent(selectedTargetId)}&format=markdown`}
+                            className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/10"
+                          >
+                            {dictionary.agent.exportMarkdown}
+                          </a>
+                          <a
+                            href={`/api/agent/check-history/export?targetId=${encodeURIComponent(selectedTargetId)}&format=json`}
+                            className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/10"
+                          >
+                            {dictionary.agent.exportJson}
+                          </a>
+                        </div>
+
+                        {!supportsConnectionCheck ? (
+                          <p className="text-sm leading-6 text-slate-400">{dictionary.agent.checkOnlyRemote}</p>
+                        ) : null}
+
+                        {connectionCheckError ? (
+                          <div className="rounded-2xl border border-rose-400/30 bg-rose-400/10 px-3 py-3 text-sm text-rose-100">
+                            {connectionCheckError}
+                          </div>
+                        ) : null}
+
+                        {connectionCheck ? (
+                          <div className="space-y-2.5">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span
+                                className={`rounded-full px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] ${
+                                  connectionCheck.ok
+                                    ? "bg-emerald-400/15 text-emerald-200"
+                                    : "bg-amber-400/15 text-amber-200"
+                                }`}
+                              >
+                                {connectionCheck.ok ? dictionary.agent.allChecksPassed : dictionary.agent.checkAttention}
+                              </span>
+                              <span className="rounded-full bg-white/[0.04] px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] text-slate-300">
+                                {new Date(connectionCheck.checkedAt).toLocaleTimeString()}
+                              </span>
+                            </div>
+
+                            <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-2.5 text-xs leading-6 text-slate-300">
+                              <p>{dictionary.common.model}: {connectionCheck.resolvedModel}</p>
+                              <p className="break-all">{dictionary.common.endpoint}: {connectionCheck.resolvedBaseUrl}</p>
+                              {connectionCheck.docsUrl ? (
+                                <a
+                                  href={connectionCheck.docsUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="mt-1 inline-block text-cyan-300 underline decoration-cyan-300/40 underline-offset-4"
+                                >
+                                  {dictionary.agent.openDocs}
+                                </a>
+                              ) : null}
+                              <p className="mt-2 text-slate-500">
+                                {dictionary.agent.historySavedAt}: <span className="text-slate-300">data/agent-observability</span>
                               </p>
                             </div>
-                          ) : null}
-                          {runtimeStatus.loadingError ? (
-                            <div>
-                              <p className="text-slate-500">{uiText.runtimeLoadingError}</p>
-                              <p className="mt-1 break-all text-rose-200">{runtimeStatus.loadingError}</p>
-                            </div>
-                          ) : null}
-                        </div>
-                      ) : null}
-                      {prewarmMessage ? (
-                        <div>
-                          <p className="text-slate-500">{uiText.runtimeActions}</p>
-                          <p className="mt-1 leading-6 text-cyan-200">{prewarmMessage}</p>
-                        </div>
-                      ) : null}
-                      {runtimeLogExcerpt ? (
-                        <div>
-                          <p className="text-slate-500">{uiText.logExcerpt}</p>
-                          <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 font-mono text-xs leading-6 text-slate-300">
-                            {runtimeLogExcerpt}
-                          </pre>
-                        </div>
-                      ) : null}
-                      <div className="flex flex-wrap gap-2 border-t border-white/10 pt-3">
-                        <button
-                          type="button"
-                          disabled={prewarmAllPending || prewarmPending || pending || Boolean(runtimeActionPending)}
-                          onClick={handlePrewarmAll}
-                          className="rounded-full border border-white/10 bg-transparent px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
-                        >
-                          {prewarmAllPending ? uiText.prewarmingAll : uiText.prewarmAllModels}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={prewarmAllPending || prewarmPending || pending || Boolean(runtimeActionPending)}
-                          onClick={handlePrewarm}
-                          className="rounded-full border border-white/10 bg-transparent px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
-                        >
-                          {prewarmPending ? uiText.prewarming : uiText.prewarmModel}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={prewarmAllPending || prewarmPending || pending || Boolean(runtimeActionPending)}
-                          onClick={() => void handleRuntimeAction("release")}
-                          className="rounded-full border border-white/10 bg-transparent px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
-                        >
-                          {runtimeActionPending === "release" ? uiText.releasingModel : uiText.releaseModel}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={prewarmAllPending || prewarmPending || pending || Boolean(runtimeActionPending)}
-                          onClick={() => void handleRuntimeAction("restart")}
-                          className="rounded-full border border-white/10 bg-transparent px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
-                        >
-                          {runtimeActionPending === "restart" ? uiText.restartingGateway : uiText.restartGateway}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={prewarmAllPending || prewarmPending || pending || Boolean(runtimeActionPending)}
-                          onClick={() => void handleRuntimeAction("read_log")}
-                          className="rounded-full border border-white/10 bg-transparent px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
-                        >
-                          {runtimeActionPending === "read_log" ? uiText.loadingRuntimeLog : uiText.viewRuntimeLog}
-                        </button>
+
+                            {connectionCheck.stages.map((stage) => (
+                              <div
+                                key={stage.id}
+                                className="rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-2.5"
+                              >
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span
+                                      className={`rounded-full px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] ${getConnectionStageBadgeClass(stage.ok)}`}
+                                    >
+                                      {formatConnectionStageLabel(stage.id)}
+                                    </span>
+                                    {typeof stage.httpStatus === "number" ? (
+                                      <span className="rounded-full bg-white/[0.04] px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] text-slate-300">
+                                        http {stage.httpStatus}
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                  <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
+                                    {stage.latencyMs} ms
+                                  </span>
+                                </div>
+                                <p className="mt-1.5 text-[13px] leading-6 text-slate-300">{stage.summary}</p>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
                       </div>
-                    </div>
-                  ) : (
-                    <p className="mt-3 text-sm leading-6 text-slate-400">{dictionary.agent.checking}</p>
-                  )}
-                </div>
+                    </RailDetailsSection>
+                  </>
+                ) : null}
               </div>
             </aside>
           </div>

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getAgentTarget } from "@/lib/agent/catalog";
+import { getServerAgentTarget } from "@/lib/agent/server-targets";
 import { resolveTarget } from "@/lib/agent/providers";
 import type { AgentRuntimePrewarmResponse } from "@/lib/agent/types";
 import { prewarmLocalTargetWithRecovery } from "../prewarm-utils";
@@ -13,7 +13,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "targetId is required." }, { status: 400 });
     }
 
-    const target = getAgentTarget(body.targetId);
+    const target = getServerAgentTarget(body.targetId);
     if (!target) {
       return NextResponse.json({ error: `Unknown target: ${body.targetId}` }, { status: 404 });
     }

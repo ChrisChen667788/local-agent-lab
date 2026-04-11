@@ -15,7 +15,13 @@ export const agentTargets: AgentTarget[] = [
     baseUrlDefault: "http://127.0.0.1:4000/v1",
     supportsTools: true,
     recommendedContext: "4K-8K",
+    recommendedContextWindow: 8192,
     memoryProfile: "Lowest pressure. Best fit for your normal workday state.",
+    parameterScale: "0.6B",
+    quantizationLabel: "6-bit MLX",
+    sourceKind: "configured",
+    sourceLabel: "Configured gateway target",
+    sourceRepoId: "Qwen/Qwen3-0.6B-MLX-6bit",
     notes: [
       "Use this when PyCharm, WeChat, Safari tabs, and background apps are still open.",
       "Good for planning, summary, and small file reasoning.",
@@ -23,7 +29,7 @@ export const agentTargets: AgentTarget[] = [
     ],
     launchHints: [
       "python3.12 -m venv .venv && source .venv/bin/activate",
-      "pip install mlx mlx-lm fastapi uvicorn",
+      "pip install mlx mlx-lm",
       "python scripts/local_model_gateway_supervisor.py"
     ]
   },
@@ -41,7 +47,13 @@ export const agentTargets: AgentTarget[] = [
     baseUrlDefault: "http://127.0.0.1:4000/v1",
     supportsTools: true,
     recommendedContext: "8K-16K",
+    recommendedContextWindow: 16384,
     memoryProfile: "Primary 4B slot. Use it with a cleaner desktop session and avoid keeping multiple 4B models hot.",
+    parameterScale: "4B",
+    quantizationLabel: "4-bit",
+    sourceKind: "configured",
+    sourceLabel: "Configured gateway target",
+    sourceRepoId: "mlx-community/Qwen3.5-4B-4bit",
     notes: [
       "This target maps to mlx-community/Qwen3.5-4B-4bit in the Python gateway.",
       "Standard mode now forces enable_thinking=false so formal benchmark runs stay in a direct-answer shape.",
@@ -66,7 +78,13 @@ export const agentTargets: AgentTarget[] = [
     baseUrlDefault: "http://127.0.0.1:4000/v1",
     supportsTools: true,
     recommendedContext: "8K-16K",
+    recommendedContextWindow: 16384,
     memoryProfile: "Legacy 4B comparison slot. Use it only when you need an apples-to-apples check against Qwen3.5 4B.",
+    parameterScale: "4B",
+    quantizationLabel: "4-bit",
+    sourceKind: "configured",
+    sourceLabel: "Configured gateway target",
+    sourceRepoId: "mlx-community/Qwen3-4B-Instruct-2507-4bit",
     notes: [
       "This target maps to mlx-community/Qwen3-4B-Instruct-2507-4bit in the Python gateway.",
       "Keep it as a comparison target while we validate Qwen3.5 4B in real usage and formal benchmarks.",
@@ -145,6 +163,30 @@ export const agentTargets: AgentTarget[] = [
       "Configure this target with your own Claude-compatible endpoint before use.",
       "This target is pinned to the strongest Claude variant currently configured in your environment.",
       "For some compatible gateways, OpenAI-style chat completions is more reliable than a separate Messages API when tools are enabled."
+    ]
+  },
+  {
+    id: "deepseek-api",
+    label: "DeepSeek API",
+    providerLabel: "DeepSeek",
+    transport: "openai-compatible",
+    execution: "remote",
+    description:
+      "DeepSeek flagship remote target wired through the official OpenAI-compatible endpoint. Standard mode uses deepseek-chat, while thinking mode keeps the same chat model and enables DeepSeek's official thinking parameter for tool and structured-output compatibility.",
+    modelEnv: "DEEPSEEK_MODEL",
+    modelDefault: "deepseek-chat",
+    thinkingModelEnv: "DEEPSEEK_THINKING_MODEL",
+    thinkingModelDefault: "deepseek-chat",
+    baseUrlEnv: "DEEPSEEK_BASE_URL",
+    baseUrlDefault: "https://api.deepseek.com/v1",
+    apiKeyEnv: "DEEPSEEK_API_KEY",
+    supportsTools: true,
+    recommendedContext: "128K server-side",
+    memoryProfile: "Offloaded to DeepSeek.",
+    notes: [
+      "Pinned to DeepSeek's current flagship chat alias, with thinking mode enabled through the official thinking parameter.",
+      "Tool calling stays on the same OpenAI-compatible route, so compare / benchmark / connection check can reuse the shared provider stack.",
+      "Thinking mode now prefers the chat + thinking path, which matches DeepSeek's current tool-calling examples and keeps structured-output workloads more stable."
     ]
   },
   {

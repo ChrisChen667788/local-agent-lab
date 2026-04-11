@@ -1,4 +1,4 @@
-# Local Agent Lab
+# First LLM Studio
 
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
@@ -7,101 +7,102 @@
 ![Apple Silicon](https://img.shields.io/badge/platform-Apple%20Silicon-0f172a)
 ![MLX](https://img.shields.io/badge/local%20runtime-MLX-06b6d4)
 
-![Local Agent Lab hero](./docs/assets/github-hero.svg)
+![First LLM Studio hero](./docs/assets/github-hero.svg)
 
-Local Agent Lab is a local-first coding agent workbench for Apple Silicon. It gives us one place to:
+First LLM Studio is a local-first LLM workbench for Apple Silicon. It brings local MLX runtimes, remote API targets, benchmark operations, compare workflows, replay, trace review, runtime recovery, and model observability into one operating surface.
 
-- run local MLX models and remote APIs side by side
-- benchmark coding and retrieval workflows with reproducible runs
-- inspect replay traces, patch reviews, tool calls, and runtime recovery
-- operate local gateways, model prewarm, and failure diagnostics without leaving the app
+## Why this project matters
 
-If most projects make you choose between an IDE agent, a local model playground, and a benchmark dashboard, this project is the attempt to keep those loops together.
+Most teams still split this workflow across too many disconnected tools:
 
-## Why people will care
+- a local model playground for inference
+- a chat app for prompt iteration
+- a benchmark script or spreadsheet for evals
+- shell scripts for gateway recovery and runtime debugging
+- separate dashboards for remote APIs versus local models
 
-Most open tools do one slice well:
+First LLM Studio is built to keep those loops together so we can compare behavior, not just answers.
 
-- coding agents focus on edit loops
-- local model tools focus on inference
-- eval tools focus on scores
-- chat apps focus on conversation
+## Who it helps
 
-Local Agent Lab is opinionated about keeping those surfaces in one workflow:
+### 1. Local AI builders on Apple Silicon
 
-- `/agent` is where we run and inspect the agent
-- `/admin` is where we benchmark, compare, prewarm, and debug
+- compare MLX local models against hosted APIs under aligned context budgets
+- inspect runtime cost, prewarm, release, and recovery without leaving the app
+- decide which local model is actually usable for daily coding workflows
 
-That matters when we want to answer questions like:
+### 2. Agent and tooling teams
 
-- Which local model is actually good enough for repo-aware coding?
-- Is a benchmark regression caused by quality, latency, or runtime instability?
-- Did the model answer well, or did the tool chain silently fall back?
-- Can local and remote targets be compared under the same context budget?
+- validate tool-calling, repo-grounded reasoning, replay, and patch flows in one workbench
+- turn compare runs into benchmark handoff without switching products
+- inspect where failures come from: model quality, provider behavior, or runtime instability
 
-## What stands out
+### 3. Evaluation and platform engineers
 
-- Local MLX runtime support for Apple Silicon
+- run formal and focused benchmark suites with repeatable profiles
+- review baselines, deltas, run notes, and failure classification in `/admin`
+- keep local and remote targets inside one comparable target catalog
+
+## Core value
+
 - Unified local + remote target catalog
-- Built-in repo tools for file listing, file reads, command execution, patching, and gated writes
-- Replay, trace review, and file-level diff inspection
-- Benchmark history, baseline deltas, heatmaps, progress recovery, and failure classification
-- Knowledge import with path scanning, preview, and recent-path shortcuts
-- Runtime ops for model prewarm, release, restart, and gateway log inspection
-
-## Proof, not just positioning
-
-Current validated runtime profile:
-
-- all-local `32K` formal benchmark: passed
-- all-local `32K` milestone-full benchmark: `426 / 426 ok`
-- mixed local + remote `32K` compare: `426 / 426 ok`
-- local benchmark progress now exposes explicit prewarm states and recovery actions
-
-Current default local 4B posture:
-
-- `Local Qwen3.5 4B 4-bit` is the default local 4B profile
-- `Local Qwen3 4B 4-bit` remains as a comparison target
-- `Local Qwen3 0.6B` remains the lightweight local lane
-
-## Screenshots
-
-![Landing page](./docs/assets/landing-page.png)
-![Agent workbench](./docs/assets/agent-workbench.png)
-![Admin dashboard](./docs/assets/admin-dashboard.png)
-
-## Core surfaces
-
-### Agent workbench
-
-- switch local and remote models
-- run tool-enabled conversations
-- inspect replay traces and patch review cards
-- compare structured outputs across targets
-
-### Admin dashboard
-
-- start formal and full benchmark suites
-- monitor progress, recovery actions, and failure reasons live
-- inspect local runtime state and gateway behavior
-- review benchmark history, baselines, deltas, and mixed compare runs
+- Built-in Compare Lab for model-vs-model review
+- Formal / focused benchmark operations with history and baselines
+- Replay, trace review, patch inspection, and exportable review notes
+- Runtime operations for prewarm, release, restart, log inspection, and telemetry
+- Dynamic local model discovery plus remote provider health scanning
 
 ## Current targets
 
 ### Local
 
 - `Local Qwen3 0.6B`
-- `Local Qwen3.5 4B 4-bit`
 - `Local Qwen3 4B 4-bit`
+- `Local Qwen3.5 4B 4-bit`
+- `Local Gemma 3 4B It Qat 4-bit`
 
 ### Remote
 
 - `OpenAI Codex`
 - `OpenAI GPT-5.4`
 - `Claude API`
+- `DeepSeek API`
 - `Kimi API`
 - `GLM API`
 - `Qwen API`
+
+## Product surfaces
+
+### `/agent`
+
+- run tool-enabled LLM sessions
+- compare multiple targets under the same prompt and locked controls
+- inspect prompt frame, runtime state, replay, and shareable review output
+- scan newly discovered local models and configured remote APIs in one click
+
+### `/admin`
+
+- launch formal, full, and provider-focused benchmark suites
+- inspect benchmark progress, recovery actions, failure causes, and run notes
+- monitor local gateway CPU, memory, GPU, shared GPU memory, energy signal, and storage pressure
+- manage prewarm, release, restart, and runtime log inspection per local target
+
+## Why it is different from a generic LLM app
+
+First LLM Studio is not trying to be another chat shell.
+
+It is designed for people who need to:
+
+- ship or evaluate local-first LLM workflows
+- compare local and remote models under fair constraints
+- debug tool behavior and runtime regressions
+- keep experimentation, benchmark, and operations in one place
+
+## Screenshots
+
+![Landing page](./docs/assets/landing-page.png)
+![Agent workbench](./docs/assets/agent-workbench.png)
+![Admin dashboard](./docs/assets/admin-dashboard.png)
 
 ## Quick start
 
@@ -138,7 +139,7 @@ Default routes:
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
-pip install mlx mlx-lm fastapi uvicorn
+pip install mlx mlx-lm
 python scripts/local_model_gateway_supervisor.py
 ```
 
@@ -168,33 +169,17 @@ docs/                     Release notes, launch notes, roadmap, project docs
 public/                   Public assets and social cover art
 ```
 
-## Open-source launch kit
+## Launch assets
 
-We also keep a ready-to-use launch pack in the repo:
+The repository already includes a reusable launch kit:
 
 - [docs/open-source-launch-kit.md](./docs/open-source-launch-kit.md)
 - [docs/open-source-growth-copy.md](./docs/open-source-growth-copy.md)
 - [docs/open-source-backlog.md](./docs/open-source-backlog.md)
-- [docs/assets/github-hero.svg](./docs/assets/github-hero.svg)
-- [docs/assets/github-hero.png](./docs/assets/github-hero.png)
 - [public/oss-cover.svg](./public/oss-cover.svg)
 - [public/oss-cover.png](./public/oss-cover.png)
-- [public/oss-repo-banner.svg](./public/oss-repo-banner.svg)
-- [public/oss-repo-banner.png](./public/oss-repo-banner.png)
 - [public/oss-social-square.svg](./public/oss-social-square.svg)
 - [public/oss-social-square.png](./public/oss-social-square.png)
-- [public/oss-feature-strip.svg](./public/oss-feature-strip.svg)
-
-This includes:
-
-- GitHub About copy
-- pinned repo and profile copy
-- release summary copy
-- X / LinkedIn / Hacker News launch drafts
-- bilingual social launch post variants
-- suggested screenshot order
-- social-preview asset references
-- contributor-facing growth backlog
 
 ## Security and privacy
 
@@ -217,8 +202,4 @@ Issues and PRs are welcome.
 - Current version: [`VERSION`](./VERSION)
 - Release notes: [`docs/releases`](./docs/releases)
 - Release process: [`docs/release-process.md`](./docs/release-process.md)
-- Latest release: [v0.2.3](https://github.com/ChrisChen667788/local-agent-lab/releases/tag/v0.2.3)
-
-## License
-
-[MIT](./LICENSE)
+- Latest release note: [v0.3.0](./docs/releases/v0.3.0_2026-04-11.md)

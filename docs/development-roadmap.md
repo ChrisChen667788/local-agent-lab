@@ -1,6 +1,6 @@
 # Agent Lab Development Roadmap
 
-Last updated: 2026-03-28
+Last updated: 2026-04-08
 
 ## Version snapshot
 
@@ -60,6 +60,23 @@ Last updated: 2026-03-28
 - provider 调用已补单次自动恢复策略
 - `/agent` 与 `/admin` 已改成动态加载重型 client 模块，首屏不再被大 bundle 阻塞
 - 已新增 `scripts/dev-server.sh`，并改用 `screen` 稳定托管本地前端服务
+
+## Latest planning additions
+
+2026-04-08 新增了一条更明确的后续产品线，用来在**现有项目框架内**把“benchmark + runtime ops”继续推进到更完整的本地模型实验能力。
+
+新规划文档：
+
+- [`docs/v0.3.0-local-model-lab-plan.md`](./v0.3.0-local-model-lab-plan.md)
+
+这条线新增了四个明确方向：
+
+1. 每模型默认推理参数（Per-target defaults）
+2. 本地模型空闲定时卸载 / retention policy
+3. Inference Compare Lab（面向结构化输出、采样参数和 prompt 模板的可重复对比）
+4. 面向 Apple Silicon 的本地 LoRA / QLoRA 微调工作流规划
+
+这些能力默认进入 `v0.3.x` 讨论范围，不回塞到 `v0.2.x` 的小步稳定节奏里，也不意味着另起一个新项目。
 
 ## Current focus
 

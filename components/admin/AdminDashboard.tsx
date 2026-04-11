@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { agentTargets } from "@/lib/agent/catalog";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { agentTargets as builtinAgentTargets } from "@/lib/agent/catalog";
 import {
   benchmarkDatasets,
   benchmarkMilestoneSuites
@@ -25,6 +25,7 @@ import type {
 type MetricPercentiles = AgentMetricPercentiles;
 type BenchmarkHeatmapMetricKey = "first-token" | "total-latency" | "throughput" | "success-rate";
 type BenchmarkBatchScope = "full-suite" | "comparison-subset";
+type BenchmarkBatchProfilePreset = "full-compare" | "tool-thinking-focus";
 const KNOWLEDGE_IMPORT_HISTORY_KEY = "admin-knowledge-import-history-v1";
 const RUNTIME_SWITCH_HISTORY_STORAGE_KEY = "local-agent-runtime-switch-history-v1";
 
@@ -32,6 +33,123 @@ type RuntimeSwitchHistoryEntry = {
   loadMs: number | null;
   switchedAt: string | null;
 };
+
+type RuntimeMetricSample = {
+  timestamp: string;
+  gatewayCpuPct: number | null;
+  gatewayResidentMemoryMb: number | null;
+  gatewayGpuPct: number | null;
+  gatewayGpuMemoryMb: number | null;
+  gatewayEnergySignalPct: number | null;
+  gatewayDiskUsedPct: number | null;
+  modelStorageFootprintMb: number | null;
+};
+
+const MAX_RUNTIME_METRIC_SAMPLES = 24;
+
+type BenchmarkCoverageHelpRow = {
+  id: string;
+  labelZh: string;
+  labelEn: string;
+  workloads: string[];
+  publicCoverage: boolean;
+  internalCoverage: boolean;
+  nextPublicBenchmarkZh: string;
+  nextPublicBenchmarkEn: string;
+};
+
+const BENCHMARK_COVERAGE_HELP_ROWS: BenchmarkCoverageHelpRow[] = [
+  {
+    id: "latency-throughput",
+    labelZh: "性能 / 首字延时 / 总耗时 / 吞吐",
+    labelEn: "Latency / total time / throughput",
+    workloads: ["latency-smoke"],
+    publicCoverage: false,
+    internalCoverage: true,
+    nextPublicBenchmarkZh: "先继续沿用内部 serving 回归协议，不急着补公开集。",
+    nextPublicBenchmarkEn: "Keep this as an internal serving regression lane before adding a public benchmark."
+  },
+  {
+    id: "instruction-following",
+    labelZh: "指令遵循 / 格式遵循",
+    labelEn: "Instruction following / format discipline",
+    workloads: ["instruction-following-lite", "ifeval-starter"],
+    publicCoverage: true,
+    internalCoverage: true,
+    nextPublicBenchmarkZh: "IFEval 已托底，优先级不高。",
+    nextPublicBenchmarkEn: "Already backed by IFEval, so this is not an urgent gap."
+  },
+  {
+    id: "chinese-knowledge",
+    labelZh: "中文知识 / 中文专业能力",
+    labelEn: "Chinese knowledge / domain understanding",
+    workloads: ["ceval-cs-starter", "cmmlu-cs-starter"],
+    publicCoverage: true,
+    internalCoverage: false,
+    nextPublicBenchmarkZh: "后续更适合扩 sample，不必先换集。",
+    nextPublicBenchmarkEn: "Expand sample coverage later rather than swapping benchmarks first."
+  },
+  {
+    id: "tool-calling",
+    labelZh: "工具调用 / 参数格式",
+    labelEn: "Tool calling / argument format",
+    workloads: ["bfcl-starter"],
+    publicCoverage: true,
+    internalCoverage: true,
+    nextPublicBenchmarkZh: "后续可补更复杂 multi-step tool benchmark。",
+    nextPublicBenchmarkEn: "A more complex multi-step tool benchmark would be the natural next step."
+  },
+  {
+    id: "long-context",
+    labelZh: "长上下文材料问答",
+    labelEn: "Long-context grounded QA",
+    workloads: ["longbench-starter"],
+    publicCoverage: true,
+    internalCoverage: false,
+    nextPublicBenchmarkZh: "如后续偏 repo-long-context，再补专项集。",
+    nextPublicBenchmarkEn: "Add a repo-long-context benchmark later if that becomes a core lane."
+  },
+  {
+    id: "grounded-rag",
+    labelZh: "Grounded QA / RAG 引用 / 低置信度处理",
+    labelEn: "Grounded QA / citation / low-confidence fallback",
+    workloads: ["grounded-kb-qa"],
+    publicCoverage: false,
+    internalCoverage: true,
+    nextPublicBenchmarkZh: "下一步最值得补：CRAG / RAGBench。",
+    nextPublicBenchmarkEn: "Best next addition: CRAG or RAGBench."
+  },
+  {
+    id: "repo-qa",
+    labelZh: "仓库级代码检索问答 / Repo QA",
+    labelEn: "Repo-grounded code QA",
+    workloads: ["code-rag-repo-qa"],
+    publicCoverage: false,
+    internalCoverage: true,
+    nextPublicBenchmarkZh: "下一步最值得补：RepoBench。",
+    nextPublicBenchmarkEn: "Best next addition: RepoBench."
+  },
+  {
+    id: "agent-workflow",
+    labelZh: "Agent 规划 / 记忆 / 恢复 / 状态持久化",
+    labelEn: "Agent planning / memory / recovery / state",
+    workloads: ["agent-flow-lite"],
+    publicCoverage: false,
+    internalCoverage: true,
+    nextPublicBenchmarkZh: "下一步最值得补：τ-bench / ToolSandbox。",
+    nextPublicBenchmarkEn: "Best next addition: τ-bench or ToolSandbox."
+  },
+  {
+    id: "codegen",
+    labelZh: "代码生成",
+    labelEn: "Code generation",
+    workloads: ["humaneval-starter", "mbppplus-starter"],
+    publicCoverage: true,
+    internalCoverage: false,
+    nextPublicBenchmarkZh: "如果以后强调真实仓库修复，再补 SWE-bench Lite。",
+    nextPublicBenchmarkEn: "Add SWE-bench Lite later if repo repair becomes a headline capability."
+  }
+];
 
 function formatTargetModelVersion(modelDefault: string, thinkingModelDefault?: string) {
   if (thinkingModelDefault && thinkingModelDefault !== modelDefault) {
@@ -64,6 +182,17 @@ function buildExecutionSections<T extends { execution?: "local" | "remote" }>(
     sections.push({ execution: "remote", label: labels.remote, rows: remote });
   }
   return sections;
+}
+
+function summarizeBenchmarkRunNote(value: string, maxLength = 220) {
+  const normalized = value
+    .split("\n")
+    .map((line) => line.replace(/^[#>\-\*\d\.\s]+/, "").trim())
+    .filter(Boolean)
+    .slice(0, 3)
+    .join(" · ");
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 }
 
 type DashboardResponse = {
@@ -100,6 +229,7 @@ type DashboardResponse = {
     id: string;
     generatedAt: string;
     prompt: string;
+    runNote?: string;
     benchmarkMode?: "prompt" | "dataset" | "suite";
     profileBatchScope?: "full-suite" | "comparison-subset";
     promptSetId?: string;
@@ -397,6 +527,11 @@ function formatDurationShort(value?: number | null) {
   return `${seconds}s`;
 }
 
+function formatRecommendedContextBadge(value?: number | null) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
+  return `${Math.round(value / 1024)}K`;
+}
+
 function buildPolyline(values: number[]) {
   if (!values.length) return "";
   const max = Math.max(...values, 1);
@@ -407,6 +542,59 @@ function buildPolyline(values: number[]) {
       return `${x},${y}`;
     })
     .join(" ");
+}
+
+function RuntimeMetricSparkline({
+  title,
+  latest,
+  values,
+  tone,
+  helper
+}: {
+  title: string;
+  latest: string;
+  values: number[];
+  tone: "cyan" | "emerald" | "amber" | "violet";
+  helper: string;
+}) {
+  const strokeMap = {
+    cyan: "#22d3ee",
+    emerald: "#34d399",
+    amber: "#f59e0b",
+    violet: "#a78bfa"
+  };
+  const stroke = strokeMap[tone];
+  const hasValues = values.length > 0;
+  return (
+    <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-3.5 py-3.5 text-sm text-slate-300">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{title}</p>
+          <p className="mt-2 text-base font-semibold text-white">{latest}</p>
+        </div>
+        <span className="rounded-full bg-white/5 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-400">
+          {hasValues ? `${values.length} pts` : "No data"}
+        </span>
+      </div>
+      <div className={`mt-3 rounded-2xl border border-white/10 bg-black/20 p-2.5 ${hasValues ? "h-14" : "h-10"}`}>
+        {hasValues ? (
+          <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="h-full w-full">
+            <polyline
+              fill="none"
+              stroke={stroke}
+              strokeWidth="3"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+              points={buildPolyline(values)}
+            />
+          </svg>
+        ) : (
+          <div className="flex h-full items-center justify-center text-[11px] text-slate-500">待采样</div>
+        )}
+      </div>
+      <p className="mt-2 text-[11px] leading-5 text-slate-400">{helper}</p>
+    </div>
+  );
 }
 
 function MetricCard({
@@ -557,6 +745,18 @@ function hasSuccessfulBenchmarkMetrics(row: { okRuns: number }) {
 
 function formatBenchmarkMetric(value: number, success: boolean, digits: number, suffix = "") {
   return success ? `${value.toFixed(digits)}${suffix}` : "--";
+}
+
+function formatBenchmarkTrendLegendMetric(
+  value: number | null | undefined,
+  kind: "first-token" | "total-latency" | "throughput",
+  tokensPerSecondLabel: string
+) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "--";
+  if (kind === "throughput") {
+    return `${value.toFixed(2)} ${tokensPerSecondLabel}`;
+  }
+  return `${value.toFixed(1)} ms`;
 }
 
 function buildHeatmapCellClass(value: number, min: number, max: number) {
@@ -821,6 +1021,11 @@ function describeRuntimePhase(runtime: AgentRuntimeStatus | null, locale: string
         label: locale.startsWith("en") ? "Remote" : "远端",
         className: "border-violet-400/20 bg-violet-400/10 text-violet-100"
       };
+    case "unloaded":
+      return {
+        label: locale.startsWith("en") ? "Unloaded" : "空载",
+        className: "border-white/10 bg-white/5 text-slate-200"
+      };
     case "ready":
       return {
         label: locale.startsWith("en") ? "Ready" : "已就绪",
@@ -889,8 +1094,10 @@ function buildDeltaClass(value: number | null | undefined, preferLower: boolean)
 
 export function AdminDashboard() {
   const { dictionary, locale } = useLocale();
-  const benchmarkTargets = useMemo(() => agentTargets, []);
-  const localTargets = useMemo(() => agentTargets.filter((target) => target.execution === "local"), []);
+  const [availableTargets, setAvailableTargets] = useState<AgentTarget[]>(builtinAgentTargets);
+  const agentTargets = availableTargets;
+  const benchmarkTargets = useMemo(() => agentTargets, [agentTargets]);
+  const localTargets = useMemo(() => agentTargets.filter((target) => target.execution === "local"), [agentTargets]);
   const [promptSets, setPromptSets] = useState<PromptSetRecord[]>([]);
   const [promptSetsPending, setPromptSetsPending] = useState(false);
   const [promptSetMessage, setPromptSetMessage] = useState("");
@@ -938,6 +1145,8 @@ export function AdminDashboard() {
   const [benchmarkThinkingMode, setBenchmarkThinkingMode] = useState<"standard" | "thinking">("standard");
   const [benchmarkBatchProfiles, setBenchmarkBatchProfiles] = useState(false);
   const [benchmarkBatchScope, setBenchmarkBatchScope] = useState<BenchmarkBatchScope>("comparison-subset");
+  const [benchmarkBatchProfilePreset, setBenchmarkBatchProfilePreset] =
+    useState<BenchmarkBatchProfilePreset>("full-compare");
   const [benchmarkPromptMode, setBenchmarkPromptMode] = useState<"custom" | "prompt-set" | "dataset" | "suite">("custom");
   const [benchmarkPromptSetId, setBenchmarkPromptSetId] = useState("");
   const [benchmarkDatasetId, setBenchmarkDatasetId] = useState(benchmarkDatasets[0]?.id || "");
@@ -966,8 +1175,37 @@ export function AdminDashboard() {
   const [benchmarkBaselinePending, setBenchmarkBaselinePending] = useState(false);
   const [benchmarkBaselineMessage, setBenchmarkBaselineMessage] = useState("");
   const [runtimeStatuses, setRuntimeStatuses] = useState<Record<string, AgentRuntimeStatus | null>>({});
+  const [runtimeMetricHistory, setRuntimeMetricHistory] = useState<Record<string, RuntimeMetricSample[]>>({});
   const [runtimeActionPending, setRuntimeActionPending] = useState<Record<string, RuntimeActionKind | "">>({});
   const [runtimeLogExcerpts, setRuntimeLogExcerpts] = useState<Record<string, string>>({});
+
+  const benchmarkBatchProfileModes = useMemo(() => {
+    if (benchmarkBatchProfilePreset === "tool-thinking-focus") {
+      return [
+        { providerProfile: "tool-first" as const, thinkingMode: "standard" as const },
+        { providerProfile: "tool-first" as const, thinkingMode: "thinking" as const }
+      ];
+    }
+    return [
+      { providerProfile: "speed" as const, thinkingMode: "standard" as const },
+      { providerProfile: "balanced" as const, thinkingMode: "standard" as const },
+      { providerProfile: "tool-first" as const, thinkingMode: "standard" as const },
+      { providerProfile: "tool-first" as const, thinkingMode: "thinking" as const }
+    ];
+  }, [benchmarkBatchProfilePreset]);
+
+  const applyDeepSeekFocusPreset = useCallback(() => {
+    setBenchmarkPromptMode("suite");
+    setBenchmarkSuiteId("milestone-formal");
+    setBenchmarkTargetIds(["deepseek-api"]);
+    setBenchmarkRuns(1);
+    setBenchmarkContextWindow(32768);
+    setBenchmarkBatchProfiles(true);
+    setBenchmarkBatchScope("comparison-subset");
+    setBenchmarkBatchProfilePreset("tool-thinking-focus");
+    setBenchmarkProviderProfile("tool-first");
+    setBenchmarkThinkingMode("thinking");
+  }, []);
   const [runtimeLogSummaries, setRuntimeLogSummaries] = useState<Record<string, AgentRuntimeLogSummary | null>>({});
   const [runtimeLogQueries, setRuntimeLogQueries] = useState<Record<string, string>>({});
   const [runtimeLogLimits, setRuntimeLogLimits] = useState<Record<string, number>>({});
@@ -976,13 +1214,79 @@ export function AdminDashboard() {
   const [runtimeLastSwitchAt, setRuntimeLastSwitchAt] = useState<Record<string, string | null>>({});
   const [prewarmAllPending, setPrewarmAllPending] = useState(false);
   const [prewarmAllMessage, setPrewarmAllMessage] = useState("");
+  const [benchmarkCopyState, setBenchmarkCopyState] = useState<{ key: string; tone: "success" | "error" } | null>(null);
   const knowledgeImportInputRef = useRef<HTMLInputElement | null>(null);
   const knowledgeHighlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const benchmarkCopyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [windowMinutes, setWindowMinutes] = useState(60);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const [data, setData] = useState<DashboardResponse | null>(null);
+
+  function recordRuntimeMetricSample(targetId: string, status: AgentRuntimeStatus) {
+    const sample: RuntimeMetricSample = {
+      timestamp: new Date().toISOString(),
+      gatewayCpuPct: typeof status.gatewayCpuPct === "number" ? status.gatewayCpuPct : null,
+      gatewayResidentMemoryMb:
+        typeof status.gatewayResidentMemoryMb === "number" ? status.gatewayResidentMemoryMb : null,
+      gatewayGpuPct: typeof status.gatewayGpuPct === "number" ? status.gatewayGpuPct : null,
+      gatewayGpuMemoryMb: typeof status.gatewayGpuMemoryMb === "number" ? status.gatewayGpuMemoryMb : null,
+      gatewayEnergySignalPct:
+        typeof status.gatewayEnergySignalPct === "number" ? status.gatewayEnergySignalPct : null,
+      gatewayDiskUsedPct: typeof status.gatewayDiskUsedPct === "number" ? status.gatewayDiskUsedPct : null,
+      modelStorageFootprintMb:
+        typeof status.modelStorageFootprintMb === "number" ? status.modelStorageFootprintMb : null
+    };
+    setRuntimeMetricHistory((current) => {
+      const nextSamples = [...(current[targetId] || []), sample].slice(-MAX_RUNTIME_METRIC_SAMPLES);
+      return {
+        ...current,
+        [targetId]: nextSamples
+      };
+    });
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadAvailableTargets() {
+      try {
+        const response = await fetch("/api/agent/targets", { cache: "no-store" });
+        const payload = (await response.json()) as { targets?: AgentTarget[] };
+        if (!response.ok || cancelled || !Array.isArray(payload.targets) || !payload.targets.length) return;
+        setAvailableTargets(payload.targets);
+      } catch {
+        // keep builtin targets when sync fails
+      }
+    }
+
+    void loadAvailableTargets();
+    const timer = window.setInterval(() => {
+      void loadAvailableTargets();
+    }, 30000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!agentTargets.length) return;
+    if (!agentTargets.some((target) => target.id === selectedTargetId)) {
+      setSelectedTargetId(agentTargets[0].id);
+    }
+    setCompareTargetIds((current) => {
+      const valid = current.filter((targetId) => agentTargets.some((target) => target.id === targetId));
+      return valid.length ? valid : [agentTargets[0].id];
+    });
+    setBenchmarkTargetIds((current) => {
+      const valid = current.filter((targetId) => agentTargets.some((target) => target.id === targetId));
+      return valid.length ? valid : getDefaultBenchmarkTargetIds(localTargets.map((target) => target.id));
+    });
+  }, [agentTargets, localTargets, selectedTargetId]);
+
   const uiText = useMemo(() => {
     switch (locale) {
       case "zh-TW":
@@ -1815,6 +2119,51 @@ export function AdminDashboard() {
   }, [locale]);
 
   useEffect(() => {
+    return () => {
+      if (benchmarkCopyTimeoutRef.current) {
+        clearTimeout(benchmarkCopyTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  async function handleCopyBenchmarkRunNote(value: string, key: string) {
+    const fallbackCopy = (text: string) => {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "absolute";
+      textarea.style.left = "-9999px";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+    };
+
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+      } else {
+        fallbackCopy(value);
+      }
+      setBenchmarkCopyState({ key, tone: "success" });
+    } catch {
+      try {
+        fallbackCopy(value);
+        setBenchmarkCopyState({ key, tone: "success" });
+      } catch {
+        setBenchmarkCopyState({ key, tone: "error" });
+      }
+    }
+
+    if (benchmarkCopyTimeoutRef.current) {
+      clearTimeout(benchmarkCopyTimeoutRef.current);
+    }
+    benchmarkCopyTimeoutRef.current = setTimeout(() => {
+      setBenchmarkCopyState((current) => (current?.key === key ? null : current));
+    }, 2200);
+  }
+
+  useEffect(() => {
     setCompareTargetIds((current) => (current.includes(selectedTargetId) ? current : [...current, selectedTargetId]));
   }, [selectedTargetId]);
 
@@ -2387,6 +2736,7 @@ export function AdminDashboard() {
         ...current,
         [targetId]: payload
       }));
+      recordRuntimeMetricSample(targetId, payload);
       if (payload.message) {
         setRuntimeMessages((current) => ({
           ...current,
@@ -2717,14 +3067,7 @@ export function AdminDashboard() {
     setBenchmarkBaselineMessage("");
     setBenchmarkResumeMessage("");
     try {
-      const profileModes = benchmarkBatchProfiles
-        ? [
-            { providerProfile: "speed", thinkingMode: "standard" },
-            { providerProfile: "balanced", thinkingMode: "standard" },
-            { providerProfile: "tool-first", thinkingMode: "standard" },
-            { providerProfile: "tool-first", thinkingMode: "thinking" }
-          ]
-        : undefined;
+      const profileModes = benchmarkBatchProfiles ? benchmarkBatchProfileModes : undefined;
       const response = await fetch("/api/admin/benchmark", {
         method: "POST",
         headers: {
@@ -2954,6 +3297,10 @@ export function AdminDashboard() {
       providerProfile: benchmarkProviderProfile,
       thinkingMode: benchmarkThinkingMode
     });
+    const exportRunId = benchmarkData?.runId || benchmarkProgress?.runId || benchmarkRunId;
+    if (exportRunId) {
+      query.set("runId", exportRunId);
+    }
     if (benchmarkPromptMode === "prompt-set" && benchmarkPromptSetId) {
       query.set("promptSetId", benchmarkPromptSetId);
     } else if (benchmarkPromptMode === "dataset" && benchmarkDatasetId) {
@@ -3055,6 +3402,14 @@ export function AdminDashboard() {
     });
     window.localStorage.setItem(RUNTIME_SWITCH_HISTORY_STORAGE_KEY, JSON.stringify(payload));
   }, [runtimeLastSwitchAt, runtimeLastSwitchMs]);
+
+  useEffect(() => {
+    setRuntimeMetricHistory((current) => {
+      const allowedTargetIds = new Set(localTargets.map((target) => target.id));
+      const nextEntries = Object.entries(current).filter(([targetId]) => allowedTargetIds.has(targetId));
+      return nextEntries.length === Object.keys(current).length ? current : Object.fromEntries(nextEntries);
+    });
+  }, [localTargets]);
 
   useEffect(() => {
     void loadLatestBenchmarkProgress();
@@ -3196,7 +3551,9 @@ export function AdminDashboard() {
         firstTokenValues: entry.points.map((point) => point.avgFirstTokenLatencyMs),
         totalLatencyValues: entry.points.map((point) => point.avgLatencyMs),
         throughputValues: entry.points.map((point) => point.avgTokenThroughputTps),
-        latestSuccessRate: entry.points.length ? entry.points[entry.points.length - 1].successRate : 0
+        latestFirstTokenLatencyMs: entry.points.length ? entry.points[entry.points.length - 1].avgFirstTokenLatencyMs : null,
+        latestTotalLatencyMs: entry.points.length ? entry.points[entry.points.length - 1].avgLatencyMs : null,
+        latestThroughputTps: entry.points.length ? entry.points[entry.points.length - 1].avgTokenThroughputTps : null
       })),
     [data]
   );
@@ -3487,8 +3844,8 @@ export function AdminDashboard() {
   }, [benchmarkProgress, locale]);
 
   return (
-    <section className="min-h-[calc(100vh-4rem)] bg-[radial-gradient(circle_at_top,_rgba(14,165,233,0.14),_transparent_26%),linear-gradient(180deg,_#020617_0%,_#0f172a_100%)] px-4 py-6 text-slate-100 sm:px-6">
-      <div className="mx-auto flex max-w-7xl flex-col gap-4">
+    <section className="min-h-[calc(100vh-4rem)] bg-[radial-gradient(circle_at_top,_rgba(14,165,233,0.14),_transparent_26%),linear-gradient(180deg,_#020617_0%,_#0f172a_100%)] px-3 py-4 text-slate-100 sm:px-5 xl:px-6 2xl:px-8">
+      <div className="mx-auto flex w-full max-w-[1960px] flex-col gap-4">
         <header className="order-20 rounded-2xl border border-white/10 bg-slate-950/75 px-5 py-4 shadow-[0_20px_60px_rgba(2,6,23,0.45)]">
           <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
             <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:gap-4">
@@ -4008,6 +4365,110 @@ export function AdminDashboard() {
                         ))}
                       </div>
                     </div>
+                    {selectedBenchmarkSuite?.id === "milestone-formal" ? (
+                      <div className="rounded-2xl border border-cyan-400/15 bg-cyan-400/5 p-3">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="text-xs uppercase tracking-[0.22em] text-cyan-200">
+                              {locale.startsWith("en") ? "Coverage map" : "评测维度覆盖图"}
+                            </p>
+                            <p className="mt-2 text-sm leading-6 text-slate-300">
+                              {locale.startsWith("en")
+                                ? "Formal benchmark mixes public benchmark-backed lanes with internal regression lanes. The rows below show where coverage is already strong and where we should add a public benchmark next."
+                                : "正式评测集同时包含公开 benchmark 托底和内部工程回归。下面这张覆盖图用来区分哪些维度已经有公开集支撑，哪些维度目前仍主要依赖内部回归，后续最值得补哪条公开标准集。"}
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap gap-2 text-[11px]">
+                            <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2.5 py-1 text-emerald-100">
+                              {locale.startsWith("en") ? "Public benchmark backed" : "已有公开 benchmark"}
+                            </span>
+                            <span className="rounded-full border border-violet-400/20 bg-violet-400/10 px-2.5 py-1 text-violet-100">
+                              {locale.startsWith("en") ? "Internal regression backed" : "已有内部回归"}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="mt-3 space-y-2">
+                          {BENCHMARK_COVERAGE_HELP_ROWS.map((row) => (
+                            <div
+                              key={row.id}
+                              className="rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-3 text-sm text-slate-300"
+                            >
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div>
+                                  <p className="font-medium text-white">
+                                    {locale.startsWith("en") ? row.labelEn : row.labelZh}
+                                  </p>
+                                  <p className="mt-1 text-xs leading-6 text-slate-400">
+                                    {locale.startsWith("en") ? "Workloads" : "当前工作负载"}: {row.workloads.join(" · ")}
+                                  </p>
+                                </div>
+                                <div className="flex flex-wrap gap-2 text-[11px]">
+                                  <span
+                                    className={`rounded-full border px-2.5 py-1 ${
+                                      row.publicCoverage
+                                        ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
+                                        : "border-white/10 bg-white/5 text-slate-400"
+                                    }`}
+                                  >
+                                    {locale.startsWith("en") ? "Public" : "公开集"}
+                                  </span>
+                                  <span
+                                    className={`rounded-full border px-2.5 py-1 ${
+                                      row.internalCoverage
+                                        ? "border-violet-400/20 bg-violet-400/10 text-violet-100"
+                                        : "border-white/10 bg-white/5 text-slate-400"
+                                    }`}
+                                  >
+                                    {locale.startsWith("en") ? "Internal" : "内部回归"}
+                                  </span>
+                                </div>
+                              </div>
+                              <p className="mt-2 text-xs leading-6 text-slate-400">
+                                {locale.startsWith("en") ? "Next public gap to fill" : "下一步最值得补的公开标准集"}:{" "}
+                                <span className="text-slate-200">
+                                  {locale.startsWith("en") ? row.nextPublicBenchmarkEn : row.nextPublicBenchmarkZh}
+                                </span>
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="mt-3 rounded-2xl border border-amber-400/20 bg-amber-400/8 p-3">
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div className="max-w-2xl">
+                              <p className="text-xs uppercase tracking-[0.22em] text-amber-200">
+                                {locale.startsWith("en") ? "DeepSeek focus regression" : "DeepSeek 专项回归"}
+                              </p>
+                              <p className="mt-2 text-sm leading-6 text-slate-300">
+                                {locale.startsWith("en")
+                                  ? "DeepSeek is already fast in the formal remote subset, but tool-first and thinking remain the weaker lanes. This preset reruns only those weak lanes with the formal comparison subset so the review loop stays tight."
+                                  : "DeepSeek 在正式远端子集里的性能已经很快，但 tool-first 和 thinking 仍然是弱项。这个预设会只重跑弱项 lane，并沿用正式集 comparison-subset，方便持续压这条尾巴。"}
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={applyDeepSeekFocusPreset}
+                              className="rounded-full border border-amber-300/30 bg-amber-300/10 px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-amber-100 transition hover:bg-amber-300/20"
+                            >
+                              {locale.startsWith("en") ? "Apply DeepSeek preset" : "套用 DeepSeek 预设"}
+                            </button>
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-amber-100/90">
+                            <span className="rounded-full border border-amber-300/20 bg-black/20 px-2.5 py-1">
+                              suite · milestone-formal
+                            </span>
+                            <span className="rounded-full border border-amber-300/20 bg-black/20 px-2.5 py-1">
+                              target · deepseek-api
+                            </span>
+                            <span className="rounded-full border border-amber-300/20 bg-black/20 px-2.5 py-1">
+                              scope · comparison-subset
+                            </span>
+                            <span className="rounded-full border border-amber-300/20 bg-black/20 px-2.5 py-1">
+                              lanes · tool-first / thinking
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 )}
               </div>
@@ -4134,6 +4595,30 @@ export function AdminDashboard() {
                       <option value="comparison-subset">{uiText.benchmarkBatchScopeSubset}</option>
                     </select>
                     <p className="mt-2 text-xs leading-5 text-slate-500">{uiText.benchmarkBatchScopeHint}</p>
+                    <p className="mb-2 mt-4 text-xs uppercase tracking-[0.22em] text-slate-500">
+                      {locale.startsWith("en") ? "Profile preset" : "Profile 预设"}
+                    </p>
+                    <select
+                      value={benchmarkBatchProfilePreset}
+                      onChange={(event) => setBenchmarkBatchProfilePreset(event.target.value as BenchmarkBatchProfilePreset)}
+                      className="w-full rounded-2xl border border-white/10 bg-black/25 px-3 py-3 text-sm text-slate-100 outline-none"
+                    >
+                      <option value="full-compare">
+                        {locale.startsWith("en") ? "Full compare (speed / balanced / tool-first / thinking)" : "完整对比（speed / balanced / tool-first / thinking）"}
+                      </option>
+                      <option value="tool-thinking-focus">
+                        {locale.startsWith("en") ? "Tool + thinking focus" : "Tool + thinking 专项"}
+                      </option>
+                    </select>
+                    <p className="mt-2 text-xs leading-5 text-slate-500">
+                      {benchmarkBatchProfilePreset === "tool-thinking-focus"
+                        ? locale.startsWith("en")
+                          ? "Runs only tool-first standard and tool-first thinking so weak remote lanes can iterate faster."
+                          : "只跑 tool-first standard 与 tool-first thinking，方便更快压远端弱项。"
+                        : locale.startsWith("en")
+                          ? "Runs the full remote comparison batch across all four benchmarked profile lanes."
+                          : "跑完整的远端 profile 对照批次，覆盖四条标准 lane。"}
+                    </p>
                   </div>
                 ) : null}
               </div>
@@ -4555,7 +5040,7 @@ export function AdminDashboard() {
               <MultiSeriesCard
                 title={uiText.firstTokenLatency}
                 lines={benchmarkTrendLines.map((line) => ({
-                  label: `${line.label} · ${uiText.benchmarkSuccessRate} ${line.latestSuccessRate.toFixed(0)}%`,
+                  label: `${line.label} · ${formatBenchmarkTrendLegendMetric(line.latestFirstTokenLatencyMs, "first-token", uiText.tokensPerSecond)}`,
                   values: line.firstTokenValues,
                   tone: line.tone
                 }))}
@@ -4563,7 +5048,7 @@ export function AdminDashboard() {
               <MultiSeriesCard
                 title={uiText.totalLatency}
                 lines={benchmarkTrendLines.map((line) => ({
-                  label: `${line.label} · ${uiText.benchmarkSuccessRate} ${line.latestSuccessRate.toFixed(0)}%`,
+                  label: `${line.label} · ${formatBenchmarkTrendLegendMetric(line.latestTotalLatencyMs, "total-latency", uiText.tokensPerSecond)}`,
                   values: line.totalLatencyValues,
                   tone: line.tone
                 }))}
@@ -4571,7 +5056,7 @@ export function AdminDashboard() {
               <MultiSeriesCard
                 title={uiText.tokenThroughput}
                 lines={benchmarkTrendLines.map((line) => ({
-                  label: `${line.label} · ${uiText.benchmarkSuccessRate} ${line.latestSuccessRate.toFixed(0)}%`,
+                  label: `${line.label} · ${formatBenchmarkTrendLegendMetric(line.latestThroughputTps, "throughput", uiText.tokensPerSecond)}`,
                   values: line.throughputValues,
                   tone: line.tone
                 }))}
@@ -4816,6 +5301,47 @@ export function AdminDashboard() {
                     <span>{uiText.benchmarkRuns}: {benchmarkData.runs}</span>
                   </div>
                 </div>
+                {benchmarkData.runNote ? (
+                  <details className="rounded-2xl border border-cyan-400/15 bg-cyan-400/5 px-4 py-3 text-sm text-cyan-50">
+                    <summary className="cursor-pointer list-none">
+                      <div className="space-y-1">
+                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-cyan-100">
+                          {locale.startsWith("en") ? "Run note" : "运行备注"}
+                        </p>
+                        <p className="text-[11px] leading-5 text-cyan-100/75">
+                          {summarizeBenchmarkRunNote(benchmarkData.runNote)}
+                        </p>
+                      </div>
+                    </summary>
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                      <p className="text-[11px] leading-5 text-cyan-100/75">
+                        {locale.startsWith("en")
+                          ? "This note came from the Compare handoff and keeps the benchmark run tied to its original review framing."
+                          : "这段备注来自 Compare handoff，用来把 benchmark 结果和当时的 compare 审阅语境继续绑在一起。"}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => void handleCopyBenchmarkRunNote(benchmarkData.runNote || "", "current-run-note")}
+                        className="rounded-full border border-cyan-200/20 bg-cyan-400/10 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-cyan-50 transition hover:border-cyan-200/35 hover:bg-cyan-400/20"
+                      >
+                        {benchmarkCopyState?.key === "current-run-note"
+                          ? benchmarkCopyState.tone === "success"
+                            ? locale.startsWith("en")
+                              ? "Copied"
+                              : "已复制"
+                            : locale.startsWith("en")
+                              ? "Copy failed"
+                              : "复制失败"
+                          : locale.startsWith("en")
+                            ? "Copy run note"
+                            : "复制备注"}
+                      </button>
+                    </div>
+                    <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 text-[11px] leading-6 text-slate-200">
+                      {benchmarkData.runNote}
+                    </pre>
+                  </details>
+                ) : null}
                 <div className="space-y-4">
                   {benchmarkResultGroups.map((group) => (
                     <section key={`results:${group.execution}`} className="space-y-3">
@@ -5174,6 +5700,47 @@ export function AdminDashboard() {
                         ) : (
                           <p className="text-xs text-slate-500">{uiText.benchmarkPrompt}: {entry.prompt}</p>
                         )}
+                        {entry.runNote ? (
+                          <details className="rounded-2xl border border-cyan-400/15 bg-cyan-400/5 px-3 py-3 text-sm text-cyan-50">
+                            <summary className="cursor-pointer list-none">
+                              <div className="space-y-1">
+                                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-cyan-100">
+                                  {locale.startsWith("en") ? "Run note" : "运行备注"}
+                                </p>
+                                <p className="text-[11px] leading-5 text-cyan-100/75">
+                                  {summarizeBenchmarkRunNote(entry.runNote)}
+                                </p>
+                              </div>
+                            </summary>
+                            <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                              <p className="text-[11px] leading-5 text-cyan-100/75">
+                                {locale.startsWith("en")
+                                  ? "Captured from Compare handoff so this benchmark run keeps its original review context."
+                                  : "这段内容来自 Compare handoff，用来保留这轮 benchmark 当时的审阅上下文。"}
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() => void handleCopyBenchmarkRunNote(entry.runNote || "", `history-run-note:${entry.id}`)}
+                                className="rounded-full border border-cyan-200/20 bg-cyan-400/10 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-cyan-50 transition hover:border-cyan-200/35 hover:bg-cyan-400/20"
+                              >
+                                {benchmarkCopyState?.key === `history-run-note:${entry.id}`
+                                  ? benchmarkCopyState.tone === "success"
+                                    ? locale.startsWith("en")
+                                      ? "Copied"
+                                      : "已复制"
+                                    : locale.startsWith("en")
+                                      ? "Copy failed"
+                                      : "复制失败"
+                                  : locale.startsWith("en")
+                                    ? "Copy run note"
+                                    : "复制备注"}
+                              </button>
+                            </div>
+                            <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 text-[11px] leading-6 text-slate-200">
+                              {entry.runNote}
+                            </pre>
+                          </details>
+                        ) : null}
                         {(() => {
                           const executionGroups = buildExecutionSections(entry.results, {
                             local: dictionary.common.local,
@@ -5879,6 +6446,25 @@ export function AdminDashboard() {
           <div className="mt-4 grid gap-4 xl:grid-cols-2">
             {localTargets.map((target) => {
               const runtime = runtimeStatuses[target.id];
+              const metricHistory = runtimeMetricHistory[target.id] || [];
+              const cpuHistory = metricHistory
+                .map((entry) => entry.gatewayCpuPct)
+                .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+              const rssHistory = metricHistory
+                .map((entry) => entry.gatewayResidentMemoryMb)
+                .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+              const gpuHistory = metricHistory
+                .map((entry) => entry.gatewayGpuPct)
+                .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+              const gpuMemoryHistory = metricHistory
+                .map((entry) => entry.gatewayGpuMemoryMb)
+                .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+              const energyHistory = metricHistory
+                .map((entry) => entry.gatewayEnergySignalPct)
+                .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+              const diskUsedHistory = metricHistory
+                .map((entry) => entry.gatewayDiskUsedPct)
+                .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
               const action = runtimeActionPending[target.id] || "";
               const runtimeMessage = runtimeMessages[target.id] || runtime?.message || "";
               const logExcerpt = runtimeLogExcerpts[target.id] || "";
@@ -5889,8 +6475,87 @@ export function AdminDashboard() {
               const loadedAliasForTarget = runtime?.loadedAlias === target.id ? runtime.loadedAlias : null;
               const gatewayLoadedOtherAlias =
                 runtime?.loadedAlias && runtime.loadedAlias !== target.id ? runtime.loadedAlias : null;
+              const liveCostTargetLabel = loadedAliasForTarget
+                ? target.label
+                : gatewayLoadedOtherAlias
+                  ? describeRuntimeAlias(gatewayLoadedOtherAlias, localTargets)
+                  : null;
+              const recommendedContextBadge = formatRecommendedContextBadge(target.recommendedContextWindow);
               const lastSwitchMsForTarget = runtimeLastSwitchMs[target.id] ?? null;
               const lastSwitchAtForTarget = runtimeLastSwitchAt[target.id] ?? null;
+              const runtimeIsIdle = runtime?.phase === "unloaded";
+              const supervisorValue = runtime?.supervisorPid
+                ? String(runtime.supervisorPid)
+                : runtimeIsIdle
+                  ? locale.startsWith("en")
+                    ? "On-demand"
+                    : "按需"
+                  : "—";
+              const supervisorDetail = runtime?.supervisorPid
+                ? runtime?.supervisorAlive
+                  ? dictionary.common.ok
+                  : dictionary.common.failed
+                : runtimeIsIdle
+                  ? locale.startsWith("en")
+                    ? "Not required while idle"
+                    : "空载时无需常驻"
+                  : dictionary.common.unknown;
+              const gatewayValue = runtime?.gatewayPid ? String(runtime.gatewayPid) : "—";
+              const gatewayDetail = runtime?.gatewayAlive
+                ? runtimeIsIdle
+                  ? locale.startsWith("en")
+                    ? "Idle"
+                    : "空载"
+                  : dictionary.common.ok
+                : runtimeIsIdle
+                  ? locale.startsWith("en")
+                    ? "Cold"
+                    : "冷启动"
+                  : dictionary.common.failed;
+              const lastExitCodeValue =
+                typeof runtime?.lastExitCode === "number" ? String(runtime.lastExitCode) : "—";
+              const lastStartValue = runtime?.lastStartAt ? new Date(runtime.lastStartAt).toLocaleString() : "—";
+              const lastExitValue = runtime?.lastExitAt ? new Date(runtime.lastExitAt).toLocaleString() : "—";
+              const overviewCards = [
+                {
+                  label: uiText.runtimeSupervisor,
+                  value: supervisorValue,
+                  detail: supervisorDetail
+                },
+                {
+                  label: uiText.runtimeGateway,
+                  value: gatewayValue,
+                  detail: gatewayDetail
+                },
+                {
+                  label: uiText.runtimeRestartCount,
+                  value: String(runtime?.restartCount ?? 0),
+                  detail: locale.startsWith("en")
+                    ? "Gateway restarts observed"
+                    : "累计网关重启次数"
+                },
+                {
+                  label: uiText.runtimeLastExitCode,
+                  value: lastExitCodeValue,
+                  detail: locale.startsWith("en")
+                    ? "Latest process exit code"
+                    : "最近一次进程退出码"
+                },
+                {
+                  label: uiText.runtimeLastStart,
+                  value: lastStartValue,
+                  detail: locale.startsWith("en")
+                    ? "Last gateway start"
+                    : "最近一次网关启动"
+                },
+                {
+                  label: uiText.runtimeLastExit,
+                  value: lastExitValue,
+                  detail: locale.startsWith("en")
+                    ? "Last gateway stop"
+                    : "最近一次网关退出"
+                }
+              ];
               return (
                 <article key={target.id} className="rounded-3xl border border-white/10 bg-black/20 p-4">
                   <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
@@ -5929,38 +6594,154 @@ export function AdminDashboard() {
                       <p className="mt-1 text-xs text-slate-500">
                         {uiText.queueLabel}: {runtime?.queueDepth ?? 0} · {uiText.activeLabel}: {runtime?.activeRequests ?? 0}
                       </p>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {target.parameterScale ? (
+                          <span className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-cyan-100">
+                            {locale.startsWith("en") ? "Scale" : "参数规模"} · {target.parameterScale}
+                          </span>
+                        ) : null}
+                        {target.quantizationLabel ? (
+                          <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-emerald-100">
+                            {locale.startsWith("en") ? "Quant" : "量化"} · {target.quantizationLabel}
+                          </span>
+                        ) : null}
+                        {recommendedContextBadge ? (
+                          <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-200">
+                            {locale.startsWith("en") ? "Rec context" : "建议上下文"} · {recommendedContextBadge}
+                          </span>
+                        ) : null}
+                        {target.sourceLabel ? (
+                          <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">
+                            {target.sourceLabel}
+                          </span>
+                        ) : null}
+                      </div>
+                      {target.sourceRepoId ? (
+                        <p className="mt-2 text-xs text-slate-500">
+                          {locale.startsWith("en") ? "Repo id" : "模型仓库"}: {target.sourceRepoId}
+                        </p>
+                      ) : null}
+                      {target.sourcePath ? (
+                        <p className="mt-1 break-all text-xs text-slate-500">
+                          {locale.startsWith("en") ? "Source path" : "来源路径"}: {target.sourcePath}
+                        </p>
+                      ) : null}
+                      <p className="mt-1 text-xs text-slate-500">
+                        {locale.startsWith("en")
+                          ? liveCostTargetLabel
+                            ? `Live hardware cost currently reflects ${liveCostTargetLabel}.`
+                            : "Load a local model to inspect live hardware cost."
+                          : liveCostTargetLabel
+                            ? `当前实时硬件开销反映的是 ${liveCostTargetLabel}。`
+                            : "先加载一个本地模型，才能看到实时硬件开销。"}
+                      </p>
                     </div>
                   </div>
 
                   <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
                     <div className="space-y-4">
-                      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-2">
-                        <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-4 text-sm text-slate-300">
-                          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeSupervisor}</p>
-                          <p className="mt-3 text-xl font-semibold text-white">{runtime?.supervisorPid ?? dictionary.common.unknown}</p>
-                          <p className="mt-2 text-xs text-slate-400">{runtime?.supervisorAlive ? dictionary.common.ok : dictionary.common.failed}</p>
-                        </div>
-                        <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-4 text-sm text-slate-300">
-                          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeGateway}</p>
-                          <p className="mt-3 text-xl font-semibold text-white">{runtime?.gatewayPid ?? dictionary.common.unknown}</p>
-                          <p className="mt-2 text-xs text-slate-400">{runtime?.gatewayAlive ? dictionary.common.ok : dictionary.common.failed}</p>
-                        </div>
-                        <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-4 text-sm text-slate-300">
-                          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeRestartCount}</p>
-                          <p className="mt-3 text-xl font-semibold text-white">{runtime?.restartCount ?? 0}</p>
-                        </div>
-                        <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-4 text-sm text-slate-300">
-                          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeLastExitCode}</p>
-                          <p className="mt-3 text-xl font-semibold text-white">{runtime?.lastExitCode ?? dictionary.common.unknown}</p>
-                        </div>
-                        <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-4 text-sm text-slate-300">
-                          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeLastStart}</p>
-                          <p className="mt-3 text-base font-semibold text-white">{runtime?.lastStartAt ? new Date(runtime.lastStartAt).toLocaleString() : dictionary.common.unknown}</p>
-                        </div>
-                        <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-4 text-sm text-slate-300">
-                          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeLastExit}</p>
-                          <p className="mt-3 text-base font-semibold text-white">{runtime?.lastExitAt ? new Date(runtime.lastExitAt).toLocaleString() : dictionary.common.unknown}</p>
-                        </div>
+                      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                        {overviewCards.map((card) => (
+                          <div key={card.label} className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3.5 text-sm text-slate-300">
+                            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{card.label}</p>
+                            <p className="mt-2 text-lg font-semibold text-white">{card.value}</p>
+                            <p className="mt-2 text-xs leading-5 text-slate-400">{card.detail}</p>
+                          </div>
+                        ))}
+                        <RuntimeMetricSparkline
+                          title={locale.startsWith("en") ? "Gateway CPU" : "网关 CPU"}
+                          latest={typeof runtime?.gatewayCpuPct === "number" ? `${runtime.gatewayCpuPct.toFixed(1)}%` : "--"}
+                          values={cpuHistory}
+                          tone="cyan"
+                          helper={
+                            liveCostTargetLabel
+                              ? locale.startsWith("en")
+                                ? `Realtime process usage for ${liveCostTargetLabel}`
+                                : `${liveCostTargetLabel} 的实时进程开销`
+                              : locale.startsWith("en")
+                                ? "No local model loaded"
+                                : "当前没有已加载模型"
+                          }
+                        />
+                        <RuntimeMetricSparkline
+                          title={locale.startsWith("en") ? "Gateway RSS" : "网关内存"}
+                          latest={
+                            typeof runtime?.gatewayResidentMemoryMb === "number"
+                              ? `${runtime.gatewayResidentMemoryMb.toFixed(1)} MB`
+                              : "--"
+                          }
+                          values={rssHistory}
+                          tone="emerald"
+                          helper={
+                            locale.startsWith("en")
+                              ? "Rolling resident memory footprint for the shared gateway process"
+                              : "共享本地网关进程的滚动常驻内存占用"
+                          }
+                        />
+                        <RuntimeMetricSparkline
+                          title={locale.startsWith("en") ? "Gateway GPU" : "网关 GPU"}
+                          latest={typeof runtime?.gatewayGpuPct === "number" ? `${runtime.gatewayGpuPct.toFixed(1)}%` : "--"}
+                          values={gpuHistory}
+                          tone="violet"
+                          helper={
+                            locale.startsWith("en")
+                              ? "Apple AGX device utilization sampled from ioreg without requiring sudo"
+                              : "通过 ioreg 采样 Apple AGX 设备利用率，无需 sudo"
+                          }
+                        />
+                        <RuntimeMetricSparkline
+                          title={locale.startsWith("en") ? "GPU memory" : "GPU 显存"}
+                          latest={
+                            typeof runtime?.gatewayGpuMemoryMb === "number"
+                              ? `${runtime.gatewayGpuMemoryMb.toFixed(1)} MB`
+                              : "--"
+                          }
+                          values={gpuMemoryHistory}
+                          tone="amber"
+                          helper={
+                            locale.startsWith("en")
+                              ? "Shared GPU system memory currently in use by AGX"
+                              : "AGX 当前占用的共享 GPU 系统内存"
+                          }
+                        />
+                        <RuntimeMetricSparkline
+                          title={locale.startsWith("en") ? "Energy signal" : "能耗信号"}
+                          latest={
+                            typeof runtime?.gatewayEnergySignalPct === "number"
+                              ? `${runtime.gatewayEnergySignalPct.toFixed(1)}%`
+                              : "--"
+                          }
+                          values={energyHistory}
+                          tone="amber"
+                          helper={
+                            locale.startsWith("en")
+                              ? "Best-effort energy estimate derived from CPU, GPU, busy state, and AC/battery context"
+                              : "结合 CPU、GPU、忙碌状态与供电信息得到的近似能耗信号"
+                          }
+                        />
+                        <RuntimeMetricSparkline
+                          title={locale.startsWith("en") ? "Storage pressure" : "存储占用"}
+                          latest={
+                            typeof runtime?.gatewayDiskUsedPct === "number"
+                              ? `${runtime.gatewayDiskUsedPct.toFixed(1)}%`
+                              : "--"
+                          }
+                          values={diskUsedHistory}
+                          tone="emerald"
+                          helper={
+                            locale.startsWith("en")
+                              ? `System disk usage. Model footprint: ${
+                                  typeof runtime?.modelStorageFootprintMb === "number"
+                                    ? `${runtime.modelStorageFootprintMb.toFixed(1)} MB`
+                                    : "--"
+                                }`
+                              : `系统磁盘使用率。模型体积：${
+                                  typeof runtime?.modelStorageFootprintMb === "number"
+                                    ? `${runtime.modelStorageFootprintMb.toFixed(1)} MB`
+                                    : "--"
+                                }`
+                          }
+                        />
                       </div>
                     </div>
 

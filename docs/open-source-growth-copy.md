@@ -1,6 +1,6 @@
 # Open Source Growth Copy Kit
 
-This file is the practical copy pack for sharing Local Agent Lab after the repository has already gone public.
+This file is the practical copy pack for sharing First LLM Studio after the repository has already gone public.
 
 It complements:
 
@@ -21,11 +21,11 @@ Local-first coding agent workbench with MLX local runtimes, benchmark ops, and r
 
 ### English
 
-Local Agent Lab is the workbench we wanted for running MLX local models, benchmarking remote APIs under aligned context budgets, and inspecting replay, trace, patch review, and runtime recovery in one place.
+First LLM Studio is the workbench we wanted for running MLX local models, benchmarking remote APIs under aligned context budgets, and inspecting replay, trace, patch review, and runtime recovery in one place.
 
 ### 中文
 
-Local Agent Lab 是一个把 MLX 本地模型、远端 API benchmark 对比、replay、trace、patch review 和 runtime recovery 收到同一工作流里的 agent 工作台。
+First LLM Studio 是一个把 MLX 本地模型、远端 API benchmark 对比、replay、trace、patch review 和 runtime recovery 收到同一工作流里的 agent 工作台。
 
 ## GitHub profile bio options
 
@@ -51,25 +51,25 @@ Open-sourcing local-first coding agent and benchmark tooling for Apple Silicon.
 
 ### English short
 
-Local Agent Lab is an open-source local-first coding agent workbench for Apple Silicon, built around MLX local runtimes, remote model comparisons, replay, trace review, and benchmark operations.
+First LLM Studio is an open-source local-first coding agent workbench for Apple Silicon, built around MLX local runtimes, remote model comparisons, replay, trace review, and benchmark operations.
 
 ### English medium
 
-Local Agent Lab is the project I use to bring local MLX models, remote coding APIs, benchmark execution, replay, patch inspection, and runtime recovery into one operating surface. The goal is not just to get answers from models, but to compare behavior and debug the full workflow.
+First LLM Studio is the project I use to bring local MLX models, remote coding APIs, benchmark execution, replay, patch inspection, and runtime recovery into one operating surface. The goal is not just to get answers from models, but to compare behavior and debug the full workflow.
 
 ### 中文短版
 
-Local Agent Lab 是一个面向 Apple Silicon 的开源本地优先 coding agent 工作台，围绕 MLX 本地模型、远端模型对比、replay、trace review 和 benchmark 运维构建。
+First LLM Studio 是一个面向 Apple Silicon 的开源本地优先 coding agent 工作台，围绕 MLX 本地模型、远端模型对比、replay、trace review 和 benchmark 运维构建。
 
 ### 中文中版
 
-Local Agent Lab 想解决的是“本地模型推理、远端模型对比、benchmark、trace、runtime 排障被分散在不同工具里”的问题。它把 MLX 本地运行、远端 API 对比、benchmark 执行、replay、patch 检查和 runtime recovery 收进了一个统一工作流。
+First LLM Studio 想解决的是“本地模型推理、远端模型对比、benchmark、trace、runtime 排障被分散在不同工具里”的问题。它把 MLX 本地运行、远端 API 对比、benchmark 执行、replay、patch 检查和 runtime recovery 收进了一个统一工作流。
 
 ## X / Twitter launch post
 
 ### English
 
-Open sourced Local Agent Lab today.
+Open sourced First LLM Studio today.
 
 It is a local-first coding agent workbench for Apple Silicon with:
 
@@ -89,7 +89,7 @@ Repo: https://github.com/ChrisChen667788/local-agent-lab
 
 ### 中文
 
-把 Local Agent Lab 开源了。
+把 First LLM Studio 开源了。
 
 这是一个面向 Apple Silicon 的本地优先 coding agent 工作台，核心是把这些环节放回同一个界面里：
 
@@ -111,9 +111,9 @@ Repo: https://github.com/ChrisChen667788/local-agent-lab
 
 ### English
 
-I just open sourced Local Agent Lab.
+I just open sourced First LLM Studio.
 
-The project started from a frustration with switching between separate tools for local model inference, benchmark spreadsheets, runtime shell scripts, and coding-agent debugging. Local Agent Lab is my attempt to keep those loops in one Apple Silicon workbench:
+The project started from a frustration with switching between separate tools for local model inference, benchmark spreadsheets, runtime shell scripts, and coding-agent debugging. First LLM Studio is my attempt to keep those loops in one Apple Silicon workbench:
 
 - local MLX models and remote APIs in one UI
 - benchmark runs, history, baseline deltas, and compare mode
@@ -126,9 +126,9 @@ Repository: https://github.com/ChrisChen667788/local-agent-lab
 
 ### 中文
 
-我把 Local Agent Lab 开源了。
+我把 First LLM Studio 开源了。
 
-这个项目的出发点很简单：本地模型推理、远端 API 对比、benchmark、runtime shell 脚本和 agent 调试，通常都被拆在不同工具里。Local Agent Lab 想做的是把这些环节重新收回同一个 Apple Silicon 工作台：
+这个项目的出发点很简单：本地模型推理、远端 API 对比、benchmark、runtime shell 脚本和 agent 调试，通常都被拆在不同工具里。First LLM Studio 想做的是把这些环节重新收回同一个 Apple Silicon 工作台：
 
 - MLX 本地模型和远端 API 放在同一套 UI 里
 - benchmark 执行、历史、baseline delta 和 compare 模式放在一起
@@ -143,7 +143,7 @@ Repository: https://github.com/ChrisChen667788/local-agent-lab
 
 ### Title ideas
 
-- Show HN: Local Agent Lab, a local-first coding agent workbench for Apple Silicon
+- Show HN: First LLM Studio, a local-first coding agent workbench for Apple Silicon
 - Show HN: Benchmark local MLX models and remote coding APIs in one workbench
 
 ### Intro paragraph
@@ -154,11 +154,11 @@ I built this because I wanted one place to run local MLX models, compare them ag
 
 ### English
 
-I open sourced Local Agent Lab, a local-first coding agent workbench for Apple Silicon. It combines MLX local runtimes, remote model comparisons, replay, trace review, and benchmark operations in one app.
+I open sourced First LLM Studio, a local-first coding agent workbench for Apple Silicon. It combines MLX local runtimes, remote model comparisons, replay, trace review, and benchmark operations in one app.
 
 ### 中文
 
-开源了一个面向 Apple Silicon 的本地优先 coding agent 工作台：Local Agent Lab。它把 MLX 本地模型、远端模型对比、replay、trace review 和 benchmark 运维放到了同一套工作流里。
+开源了一个面向 Apple Silicon 的本地优先 coding agent 工作台：First LLM Studio。它把 MLX 本地模型、远端模型对比、replay、trace review 和 benchmark 运维放到了同一套工作流里。
 
 ## Reply templates
 

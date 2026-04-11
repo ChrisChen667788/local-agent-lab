@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getAgentTarget } from "@/lib/agent/catalog";
+import { getServerAgentTarget } from "@/lib/agent/server-targets";
 import {
   ensureLocalGatewayAvailableDetailed,
   getLocalGatewaySupervisorInfo,
@@ -7,6 +7,7 @@ import {
   readLocalGatewayRecentLog,
   restartLocalGateway
 } from "@/lib/agent/local-gateway";
+import { readRuntimeProcessMetrics } from "@/lib/agent/runtime-process-metrics";
 import { resolveTarget } from "@/lib/agent/providers";
 import type { AgentRuntimeAction, AgentRuntimeActionResponse, AgentRuntimeStatus } from "@/lib/agent/types";
 
@@ -22,6 +23,7 @@ type RuntimeActionBody = {
 function deriveRuntimePhase(input: {
   available: boolean;
   busy?: boolean;
+  loadedAlias?: string | null;
   loadingAlias?: string | null;
   loadingError?: string | null;
   supervisorAlive?: boolean;
@@ -44,6 +46,12 @@ function deriveRuntimePhase(input: {
     return {
       phase: "busy" as const,
       phaseDetail: "The local runtime is serializing requests."
+    };
+  }
+  if (input.available && !input.loadedAlias) {
+    return {
+      phase: "unloaded" as const,
+      phaseDetail: "No local model is currently loaded. The gateway is idle and ready for a prewarm or chat request."
     };
   }
   if (input.available) {
@@ -69,13 +77,24 @@ function buildRuntimeStatus(
   targetLabel: string,
   execution: "local" | "remote",
   payload: Record<string, unknown> | null,
-  message?: string
+  message?: string,
+  options?: {
+    modelSourcePath?: string;
+  }
 ): AgentRuntimeStatus {
   const supervisor = getLocalGatewaySupervisorInfo();
+  const processMetrics = readRuntimeProcessMetrics(supervisor.gatewayPid ?? supervisor.supervisorPid, {
+    modelSourcePath: options?.modelSourcePath,
+    runtimeBusy: Boolean(payload?.busy)
+  });
   return {
     ...deriveRuntimePhase({
       available: Boolean(payload),
       busy: Boolean(payload?.busy),
+      loadedAlias:
+        typeof payload?.loaded_alias === "string" || payload?.loaded_alias === null
+          ? (payload.loaded_alias as string | null)
+          : null,
       loadingAlias:
         typeof payload?.loading_alias === "string" || payload?.loading_alias === null
           ? (payload.loading_alias as string | null)
@@ -92,6 +111,13 @@ function buildRuntimeStatus(
     busy: Boolean(payload?.busy),
     queueDepth: typeof payload?.queue_depth === "number" ? payload.queue_depth : 0,
     activeRequests: typeof payload?.active_requests === "number" ? payload.active_requests : 0,
+    gatewayCpuPct: processMetrics.gatewayCpuPct,
+    gatewayResidentMemoryMb: processMetrics.gatewayResidentMemoryMb,
+    gatewayGpuPct: processMetrics.gatewayGpuPct,
+    gatewayGpuMemoryMb: processMetrics.gatewayGpuMemoryMb,
+    gatewayEnergySignalPct: processMetrics.gatewayEnergySignalPct,
+    gatewayDiskUsedPct: processMetrics.gatewayDiskUsedPct,
+    modelStorageFootprintMb: processMetrics.modelStorageFootprintMb,
     loadedAlias:
       typeof payload?.loaded_alias === "string" || payload?.loaded_alias === null
         ? (payload.loaded_alias as string | null)
@@ -130,7 +156,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "action must be release, restart, or read_log." }, { status: 400 });
     }
 
-    const target = getAgentTarget(body.targetId);
+    const target = getServerAgentTarget(body.targetId);
     if (!target) {
       return NextResponse.json({ error: `Unknown target: ${body.targetId}` }, { status: 404 });
     }
@@ -151,13 +177,21 @@ export async function POST(request: Request) {
         attempts: 0
       }));
       const runtime = ensureResult.ok
-        ? buildRuntimeStatus(body.targetId, target.label, target.execution, await fetchHealth(baseUrl), "Loaded recent gateway log.")
+        ? buildRuntimeStatus(
+            body.targetId,
+            target.label,
+            target.execution,
+            await fetchHealth(baseUrl),
+            "Loaded recent gateway log.",
+            { modelSourcePath: target.sourcePath }
+          )
         : buildRuntimeStatus(
             body.targetId,
             target.label,
             target.execution,
             null,
-            `Gateway is unavailable. ${ensureResult.reason}`
+            `Gateway is unavailable. ${ensureResult.reason}`,
+            { modelSourcePath: target.sourcePath }
           );
       return NextResponse.json({
         ok: true,
@@ -186,7 +220,8 @@ export async function POST(request: Request) {
               target.label,
               target.execution,
               null,
-              "Gateway restart timed out."
+              "Gateway restart timed out.",
+              { modelSourcePath: target.sourcePath }
             )
           } satisfies AgentRuntimeActionResponse,
           { status: 503 }
@@ -200,7 +235,14 @@ export async function POST(request: Request) {
         targetId: body.targetId,
         targetLabel: target.label,
         message: "Local gateway restarted successfully.",
-        runtime: buildRuntimeStatus(body.targetId, target.label, target.execution, health, "Gateway restarted successfully.")
+        runtime: buildRuntimeStatus(
+          body.targetId,
+          target.label,
+          target.execution,
+          health,
+          "Gateway restarted successfully.",
+          { modelSourcePath: target.sourcePath }
+        )
       } satisfies AgentRuntimeActionResponse);
     }
 
@@ -213,7 +255,9 @@ export async function POST(request: Request) {
           targetId: body.targetId,
           targetLabel: target.label,
           message: ensureResult.reason,
-          runtime: buildRuntimeStatus(body.targetId, target.label, target.execution, null, ensureResult.reason)
+          runtime: buildRuntimeStatus(body.targetId, target.label, target.execution, null, ensureResult.reason, {
+            modelSourcePath: target.sourcePath
+          })
         } satisfies AgentRuntimeActionResponse,
         { status: 503 }
       );
@@ -245,7 +289,14 @@ export async function POST(request: Request) {
       targetLabel: target.label,
       message: payload.message || "Released the currently loaded model.",
       releasedAlias: payload.released_alias ?? null,
-      runtime: buildRuntimeStatus(body.targetId, target.label, target.execution, health, payload.message || "Released the currently loaded model.")
+      runtime: buildRuntimeStatus(
+        body.targetId,
+        target.label,
+        target.execution,
+        health,
+        payload.message || "Released the currently loaded model.",
+        { modelSourcePath: target.sourcePath }
+      )
     } satisfies AgentRuntimeActionResponse);
   } catch (error) {
     return NextResponse.json(

@@ -9,22 +9,43 @@ export function AgentPageShell() {
 
   useEffect(() => {
     let cancelled = false;
+    let timeoutId: number | null = null;
+    let idleCallbackId: number | null = null;
 
-    void import("@/components/agent/AgentWorkbench").then((mod) => {
-      if (!cancelled) {
-        setAgentWorkbench(() => mod.AgentWorkbench);
-      }
-    });
+    const loadWorkbench = () => {
+      void import("@/components/agent/AgentWorkbench").then((mod) => {
+        if (!cancelled) {
+          setAgentWorkbench(() => mod.AgentWorkbench);
+        }
+      });
+    };
+
+    const requestIdle = window as Window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+
+    if (typeof requestIdle.requestIdleCallback === "function") {
+      idleCallbackId = requestIdle.requestIdleCallback(loadWorkbench, { timeout: 1200 });
+    } else {
+      timeoutId = window.setTimeout(loadWorkbench, 180);
+    }
 
     return () => {
       cancelled = true;
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+      if (idleCallbackId !== null && typeof requestIdle.cancelIdleCallback === "function") {
+        requestIdle.cancelIdleCallback(idleCallbackId);
+      }
     };
   }, []);
 
   if (!AgentWorkbench) {
     return (
-      <main className="min-h-[calc(100vh-4rem)] bg-[radial-gradient(circle_at_top,_rgba(14,165,233,0.14),_transparent_26%),radial-gradient(circle_at_bottom_right,_rgba(249,115,22,0.14),_transparent_28%),linear-gradient(180deg,_#020617_0%,_#0f172a_100%)] px-4 py-6 text-slate-100 sm:px-6">
-        <div className="mx-auto grid max-w-7xl gap-4 lg:grid-cols-[300px_minmax(0,1fr)]">
+      <main className="min-h-[calc(100vh-4rem)] bg-[radial-gradient(circle_at_top,_rgba(14,165,233,0.14),_transparent_26%),radial-gradient(circle_at_bottom_right,_rgba(249,115,22,0.14),_transparent_28%),linear-gradient(180deg,_#020617_0%,_#0f172a_100%)] px-3 py-4 text-slate-100 sm:px-5 xl:px-6 2xl:px-8">
+        <div className="mx-auto grid w-full max-w-[1960px] gap-5 xl:grid-cols-[360px_minmax(0,1fr)] 2xl:grid-cols-[400px_minmax(0,1fr)]">
           <aside className="overflow-hidden rounded-[28px] border border-white/10 bg-slate-950/70 shadow-[0_30px_80px_rgba(2,6,23,0.55)] backdrop-blur">
             <div className="border-b border-white/10 px-5 py-4">
               <p className="text-[11px] uppercase tracking-[0.28em] text-cyan-300">AGENT SHELL</p>
@@ -45,7 +66,7 @@ export function AgentPageShell() {
             </div>
           </aside>
 
-          <div className="overflow-hidden rounded-[28px] border border-white/10 bg-slate-950/75 shadow-[0_30px_80px_rgba(2,6,23,0.55)] backdrop-blur">
+          <div className="min-w-0 overflow-hidden rounded-[28px] border border-white/10 bg-slate-950/75 shadow-[0_30px_80px_rgba(2,6,23,0.55)] backdrop-blur">
             <header className="border-b border-white/10 px-5 py-4">
               <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
                 <div>
@@ -74,7 +95,7 @@ export function AgentPageShell() {
                 ))}
               </div>
             </div>
-            <div className="grid xl:grid-cols-[minmax(0,1fr)_320px]">
+            <div className="grid xl:grid-cols-[minmax(0,1.24fr)_400px] 2xl:grid-cols-[minmax(0,1.42fr)_460px]">
               <div className="border-b border-white/10 px-5 py-5 xl:border-b-0 xl:border-r xl:border-white/10">
                 <div className="space-y-3">
                   {[0, 1, 2].map((index) => (

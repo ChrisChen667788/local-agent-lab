@@ -1,9 +1,10 @@
-import { agentToolSpecs, getAgentTarget } from "@/lib/agent/catalog";
+import { agentToolSpecs } from "@/lib/agent/catalog";
 import {
   ensureLocalGatewayAvailableDetailed,
   probeLocalGateway,
   restartLocalGateway
 } from "@/lib/agent/local-gateway";
+import { getServerAgentTarget } from "@/lib/agent/server-targets";
 import { runWorkspaceTool } from "@/lib/agent/server-tools";
 import type {
   AgentChatRequest,
@@ -33,6 +34,12 @@ const STRICT_JSON_PATTERNS = [
   /```json/i,
   /\bjson\b/i
 ];
+const JSON_TOOL_CALL_PATTERNS = [
+  /(只输出|仅输出|只返回|only output|return only).{0,18}(json).{0,18}(工具调用|tool call)/i,
+  /\b(weather\.get_current|repo\.read_file|task\.schedule)\b/i
+];
+const SINGLE_LINE_PATTERNS = [/(只输出一行|single line|one line)/i, /\bDONE\b/i];
+const BULLET_ONLY_PATTERNS = [/(3 条 bullet|3 bullets|bulletCount|bullet)/i];
 const TOOL_INTENT_PATTERNS = [
   /(^|\b)(repo|repository|file|files|folder|directory|directories|code|patch|diff|command|shell|terminal|run|execute|edit|write|read|inspect|list|fix|implement|search|grep|rg|mkdir|npm|pnpm|yarn|git|tool|apply_patch|write_file|execute_command|list_files|read_file|prettier|format)(\b|$)/i,
   /(仓库|代[码碼]|文件|目录|目錄|补丁|補丁|命令|终端|終端|执行|執行|运行|運行|修改|读取|讀取|检查|檢查|列出|修复|修復|实现|實作|搜索|搜尋|脚本|腳本|格式化|比较|比較|对比|對比)/,
@@ -72,6 +79,10 @@ function loadLocalEnv() {
   return values;
 }
 
+export function clearProviderEnvCache() {
+  localEnvCache = null;
+}
+
 function readEnv(name: string | undefined, fallback: string) {
   if (!name) return fallback;
   const localEnv = loadLocalEnv();
@@ -86,7 +97,7 @@ export function resolveTargetWithMode(
   targetId: string,
   thinkingMode: AgentThinkingMode = "standard"
 ): ResolvedTarget {
-  const target = getAgentTarget(targetId);
+  const target = getServerAgentTarget(targetId);
   if (!target) {
     throw new Error(`Unknown target: ${targetId}`);
   }
@@ -95,7 +106,10 @@ export function resolveTargetWithMode(
   const modelEnv = thinkingMode === "thinking" ? target.thinkingModelEnv || target.modelEnv : target.modelEnv;
   const modelDefault =
     thinkingMode === "thinking" ? target.thinkingModelDefault || target.modelDefault : target.modelDefault;
-  const resolvedModel = readEnv(modelEnv, modelDefault);
+  const resolvedModel =
+    target.id === "deepseek-api" && thinkingMode === "thinking"
+      ? readEnv(target.modelEnv, target.modelDefault)
+      : readEnv(modelEnv, modelDefault);
   const resolvedApiKey = target.apiKeyEnv ? readEnv(target.apiKeyEnv, "") : undefined;
 
   if (target.apiKeyEnv && !resolvedApiKey) {
@@ -111,10 +125,9 @@ export function resolveTargetWithMode(
 }
 
 export function isThinkingModelConfigured(targetId: string) {
-  const target = getAgentTarget(targetId);
+  const target = getServerAgentTarget(targetId);
   if (!target?.thinkingModelEnv) return false;
-  const localEnv = loadLocalEnv();
-  return Boolean(process.env[target.thinkingModelEnv] || localEnv[target.thinkingModelEnv]);
+  return Boolean(readEnv(target.thinkingModelEnv, target.thinkingModelDefault || ""));
 }
 
 function estimateTokens(text: string) {
@@ -212,6 +225,228 @@ export function suggestMaxTokens(
   return inputLength <= 80 ? 128 : 192;
 }
 
+export function isDeepSeekCompatibleTarget(target: ResolvedTarget) {
+  return target.id === "deepseek-api" || /deepseek/i.test(target.resolvedModel);
+}
+
+export type OpenAICompatibleProviderFamily =
+  | "openai"
+  | "deepseek"
+  | "claude-compatible"
+  | "moonshot"
+  | "zhipu"
+  | "dashscope"
+  | "generic";
+
+export function getOpenAICompatibleProviderFamily(target: ResolvedTarget): OpenAICompatibleProviderFamily {
+  const baseUrl = target.resolvedBaseUrl.toLowerCase();
+  const model = target.resolvedModel.toLowerCase();
+  if (target.id === "openai-gpt54" || baseUrl.includes("api.openai.com") || /\bgpt-|o\d|o[34]\b/.test(model)) {
+    return "openai";
+  }
+  if (target.id === "deepseek-api" || baseUrl.includes("deepseek.com") || model.includes("deepseek")) {
+    return "deepseek";
+  }
+  if (target.id === "anthropic-claude" || model.includes("claude")) {
+    return "claude-compatible";
+  }
+  if (target.id === "kimi-api" || baseUrl.includes("moonshot.cn") || model.includes("kimi")) {
+    return "moonshot";
+  }
+  if (target.id === "glm-api" || baseUrl.includes("bigmodel.cn") || model.includes("glm")) {
+    return "zhipu";
+  }
+  if (target.id === "qwen-api" || baseUrl.includes("dashscope.aliyuncs.com") || model.includes("qwen")) {
+    return "dashscope";
+  }
+  return "generic";
+}
+
+function isOpenAICompatibleRemoteTarget(target: ResolvedTarget) {
+  return target.execution === "remote" && target.transport === "openai-compatible";
+}
+
+function expectsJsonToolCallOutput(input: string) {
+  const trimmed = input.trim();
+  if (!trimmed) return false;
+  return JSON_TOOL_CALL_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
+function expectsSingleLineOutput(input: string) {
+  return SINGLE_LINE_PATTERNS.some((pattern) => pattern.test(input));
+}
+
+function expectsBulletOnlyOutput(input: string) {
+  return BULLET_ONLY_PATTERNS.some((pattern) => pattern.test(input));
+}
+
+export function buildProviderOutputContract(systemPrompt: string, options: {
+  target: ResolvedTarget;
+  input: string;
+  enableTools: boolean;
+  thinkingMode?: AgentThinkingMode;
+}) {
+  const { target, input, enableTools, thinkingMode = "standard" } = options;
+  const lines: string[] = [];
+  const strictJsonRequested = expectsStrictJsonOutput(input);
+  const jsonToolCallRequested = expectsJsonToolCallOutput(input);
+  const providerFamily = getOpenAICompatibleProviderFamily(target);
+
+  if (strictJsonRequested) {
+    lines.push("- Return valid JSON only.");
+    lines.push("- Do not wrap JSON in markdown fences.");
+    lines.push("- Do not add prose before or after the JSON payload.");
+  }
+
+  if (jsonToolCallRequested) {
+    lines.push("- Return exactly one compact JSON object with top-level keys `name` and `arguments`.");
+    lines.push("- Use the key `arguments`; never use `parameters`, `args`, or markdown code fences.");
+    lines.push("- Keep argument values machine-readable and API-friendly.");
+  }
+
+  if (expectsSingleLineOutput(input)) {
+    lines.push("- Return one visible line only.");
+  }
+
+  if (expectsBulletOnlyOutput(input)) {
+    lines.push("- If the task asks for bullet items, emit only the requested bullet lines.");
+  }
+
+  if (isOpenAICompatibleRemoteTarget(target) && (strictJsonRequested || jsonToolCallRequested)) {
+    lines.push("- Prefer one final machine-readable payload over explanatory lead-in text.");
+    lines.push("- Keep the visible answer parseable even if the provider performs hidden reasoning first.");
+  }
+
+  if (isOpenAICompatibleRemoteTarget(target) && enableTools) {
+    lines.push("- If tools are enabled, do not narrate the tool choice before emitting the structured result.");
+  }
+
+  if (isDeepSeekCompatibleTarget(target) && thinkingMode === "thinking") {
+    lines.push("- Always produce a final visible answer in `content`; do not stop after reasoning alone.");
+  }
+
+  if ((providerFamily === "moonshot" || providerFamily === "zhipu" || providerFamily === "dashscope") && strictJsonRequested) {
+    lines.push("- Keep keys stable and avoid optional prose fields that would break downstream regression parsing.");
+  }
+
+  if ((providerFamily === "moonshot" || providerFamily === "zhipu" || providerFamily === "dashscope") && jsonToolCallRequested) {
+    lines.push("- Return the tool object directly; avoid extra explanation, markdown, or roleplay around the tool payload.");
+  }
+
+  if (!lines.length) {
+    return systemPrompt;
+  }
+
+  return [
+    systemPrompt,
+    "",
+    "Provider output contract:",
+    ...lines
+  ].join("\n");
+}
+
+export function buildOpenAICompatibleRequestShape(options: {
+  target: ResolvedTarget;
+  input: string;
+  enableTools: boolean;
+  thinkingMode?: AgentThinkingMode;
+}) {
+  const { target, input, enableTools, thinkingMode = "standard" } = options;
+  const bodyExtras: Record<string, unknown> = {};
+  let model = target.resolvedModel;
+  const strictJsonRequested = expectsStrictJsonOutput(input);
+  const jsonToolCallRequested = expectsJsonToolCallOutput(input);
+
+  if (target.execution === "local") {
+    const extraBody = buildLocalChatTemplateExtraBody(target, thinkingMode);
+    if (extraBody) {
+      bodyExtras.extra_body = extraBody;
+    }
+  }
+
+  if (isDeepSeekCompatibleTarget(target) && thinkingMode === "thinking") {
+    model = readEnv(target.modelEnv, target.modelDefault);
+    bodyExtras.thinking = { type: "enabled" };
+  }
+
+  if (
+    !enableTools &&
+    isOpenAICompatibleRemoteTarget(target) &&
+    (strictJsonRequested || jsonToolCallRequested)
+  ) {
+    bodyExtras.response_format = { type: "json_object" };
+  }
+
+  return {
+    model,
+    bodyExtras
+  };
+}
+
+export function resolveSuggestedMaxTokens(options: {
+  target: ResolvedTarget;
+  enableTools: boolean;
+  input: string;
+  providerProfile?: AgentProviderProfile;
+  thinkingMode?: AgentThinkingMode;
+  requestedMaxTokens?: number;
+}) {
+  const {
+    target,
+    enableTools,
+    input,
+    providerProfile = "balanced",
+    thinkingMode = "standard",
+    requestedMaxTokens
+  } = options;
+
+  const suggested = suggestMaxTokens(target.execution, enableTools, input, providerProfile);
+  const strictJsonRequested = expectsStrictJsonOutput(input);
+  const jsonToolCallRequested = expectsJsonToolCallOutput(input);
+  const providerFamily = getOpenAICompatibleProviderFamily(target);
+  let nextMaxTokens =
+    typeof requestedMaxTokens === "number" ? Math.min(requestedMaxTokens, suggested) : suggested;
+
+  if (isDeepSeekCompatibleTarget(target) && thinkingMode === "thinking") {
+    let deepSeekReasoningFloor = 1024;
+    if (providerProfile === "tool-first") {
+      deepSeekReasoningFloor = 2048;
+    }
+    if (strictJsonRequested) {
+      deepSeekReasoningFloor = Math.max(deepSeekReasoningFloor, 2048);
+    }
+    if (enableTools) {
+      deepSeekReasoningFloor = Math.max(deepSeekReasoningFloor, 3072);
+    }
+    nextMaxTokens = Math.max(nextMaxTokens, deepSeekReasoningFloor);
+  }
+
+  if (
+    isOpenAICompatibleRemoteTarget(target) &&
+    providerFamily !== "deepseek" &&
+    providerFamily !== "claude-compatible"
+  ) {
+    let providerSpecificFloor = 0;
+    if (thinkingMode === "thinking") {
+      providerSpecificFloor = 1536;
+    }
+    if (providerProfile === "tool-first") {
+      providerSpecificFloor = Math.max(providerSpecificFloor, 1024);
+    }
+    if (strictJsonRequested || jsonToolCallRequested) {
+      providerSpecificFloor = Math.max(providerSpecificFloor, thinkingMode === "thinking" ? 2048 : 1280);
+    }
+    if (enableTools) {
+      providerSpecificFloor = Math.max(providerSpecificFloor, thinkingMode === "thinking" ? 2048 : 1408);
+    }
+    if (providerSpecificFloor > 0) {
+      nextMaxTokens = Math.max(nextMaxTokens, providerSpecificFloor);
+    }
+  }
+
+  return nextMaxTokens;
+}
+
 function extractTextFromContent(content: unknown) {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
@@ -225,6 +460,10 @@ function extractTextFromContent(content: unknown) {
       .join("\n");
   }
   return "";
+}
+
+function extractReasoningContent(value: unknown) {
+  return typeof value === "string" ? value : "";
 }
 
 export function sanitizeAssistantContent(content: string) {
@@ -581,8 +820,14 @@ async function callOpenAICompatible(
       // Let the main request path handle local runtime errors.
     }
   }
+  const effectiveSystemPrompt = buildProviderOutputContract(systemPrompt, {
+    target,
+    input,
+    enableTools,
+    thinkingMode
+  });
   const requestMessages: Array<Record<string, unknown>> = [
-    { role: "system", content: systemPrompt },
+    { role: "system", content: effectiveSystemPrompt },
     ...buildProviderMessages(messages, input, contextWindow).map((message) => ({
       role: message.role,
       content: message.content
@@ -597,15 +842,26 @@ async function callOpenAICompatible(
   let latestUsage: AgentUsage | undefined;
 
   for (let step = 0; step < MAX_REMOTE_TOOL_STEPS; step += 1) {
-    const defaultMaxTokens = suggestMaxTokens(target.execution, enableTools, input, providerProfile);
+    const defaultMaxTokens = resolveSuggestedMaxTokens({
+      target,
+      enableTools,
+      input,
+      providerProfile,
+      thinkingMode
+    });
+    const requestShape = buildOpenAICompatibleRequestShape({
+      target,
+      input,
+      enableTools,
+      thinkingMode
+    });
     const body: Record<string, unknown> = {
-      model: target.resolvedModel,
+      model: requestShape.model,
       messages: currentMessages,
       max_tokens: defaultMaxTokens
     };
-    const extraBody = buildLocalChatTemplateExtraBody(target, thinkingMode);
-    if (extraBody) {
-      body.extra_body = extraBody;
+    if (Object.keys(requestShape.bodyExtras).length) {
+      Object.assign(body, requestShape.bodyExtras);
     }
 
     if (enableTools && target.supportsTools) {
@@ -689,6 +945,7 @@ async function callOpenAICompatible(
       choices?: Array<{
         message?: {
           content?: unknown;
+          reasoning_content?: unknown;
           tool_calls?: Array<{
             id?: string;
             function?: {
@@ -704,6 +961,7 @@ async function callOpenAICompatible(
     latestUsage = normalizeUsage(data.usage) || latestUsage;
     const assistantMessage = data.choices?.[0]?.message;
     const content = sanitizeAssistantContent(extractTextFromContent(assistantMessage?.content));
+    const reasoningContent = extractReasoningContent(assistantMessage?.reasoning_content);
     const toolCalls =
       assistantMessage?.tool_calls?.map((toolCall) => ({
         id: toolCall.id || crypto.randomUUID(),
@@ -717,7 +975,8 @@ async function callOpenAICompatible(
         toolCalls: [],
         toolRuns: [...toolRuns, ...(data.tool_runs || [])],
         usage: latestUsage,
-        warning
+        warning,
+        resolvedModel: requestShape.model
       };
     }
 
@@ -729,6 +988,7 @@ async function callOpenAICompatible(
       {
         role: "assistant",
         content,
+        ...(reasoningContent ? { reasoning_content: reasoningContent } : {}),
         tool_calls: toolCalls.map((toolCall) => ({
           id: toolCall.id,
           type: "function",
@@ -751,6 +1011,7 @@ async function callOpenAICompatible(
     toolCalls: [],
     toolRuns,
     usage: latestUsage,
+    resolvedModel: target.resolvedModel,
     warning:
       warning ||
       `Tool loop stopped after ${MAX_REMOTE_TOOL_STEPS} steps. Narrow the task or inspect the latest tool output.`
@@ -796,7 +1057,12 @@ async function callAnthropic(
       model: target.resolvedModel,
       system: systemPrompt,
       messages: currentMessages,
-      max_tokens: suggestMaxTokens(target.execution, enableTools, input, providerProfile)
+      max_tokens: resolveSuggestedMaxTokens({
+        target,
+        enableTools,
+        input,
+        providerProfile
+      })
     };
 
     if (enableTools && target.supportsTools) {
@@ -909,6 +1175,7 @@ export async function runAgentRequest(request: AgentChatRequest, systemPrompt: s
       : undefined;
 
   const localFallbackTarget =
+    !request.disableLocalFallback &&
     target.execution === "local" && LOCAL_COMPARISON_4B_TARGET_IDS.has(target.id)
       ? resolveTargetWithMode("local-qwen3-0.6b", "standard")
       : null;
@@ -1075,6 +1342,7 @@ export async function runAgentRequest(request: AgentChatRequest, systemPrompt: s
   }
 
   let finalContent = normalizeStructuredAnswerOutput(reply.content, request.input);
+  resolvedModel = reply.resolvedModel || resolvedModel;
   if (target.execution === "local" && looksLikeLocalMetaReasoning(finalContent)) {
     const repairTarget =
       localFallbackUsed && localFallbackTargetId === localFallbackTarget?.id
