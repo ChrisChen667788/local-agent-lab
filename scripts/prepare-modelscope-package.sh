@@ -19,5 +19,8 @@ cp "$ROOT_DIR/public/oss-social-square.png" "$OUT_DIR/assets/oss-social-square.p
 cp "$ROOT_DIR/docs/assets/landing-page.png" "$OUT_DIR/assets/landing-page.png" || true
 cp "$ROOT_DIR/docs/assets/agent-workbench.png" "$OUT_DIR/assets/agent-workbench.png" || true
 cp "$ROOT_DIR/docs/assets/admin-dashboard.png" "$OUT_DIR/assets/admin-dashboard.png" || true
+cp "$ROOT_DIR/docs/assets/benchmark-percentiles.png" "$OUT_DIR/assets/benchmark-percentiles.png" || true
+cp "$ROOT_DIR/docs/assets/formal-regression-summary.png" "$OUT_DIR/assets/formal-regression-summary.png" || true
+cp "$ROOT_DIR/docs/assets/runtime-telemetry-cards.png" "$OUT_DIR/assets/runtime-telemetry-cards.png" || true
 
 echo "Prepared ModelScope package: $OUT_DIR"

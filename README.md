@@ -104,6 +104,20 @@ It is designed for people who need to:
 ![Agent workbench](./docs/assets/agent-workbench.png)
 ![Admin dashboard](./docs/assets/admin-dashboard.png)
 
+## Proof snapshots
+
+Benchmark percentile board:
+
+![Benchmark percentiles](./docs/assets/benchmark-percentiles.png)
+
+Formal milestone regression summary:
+
+![Formal regression summary](./docs/assets/formal-regression-summary.png)
+
+Local runtime telemetry:
+
+![Local runtime telemetry](./docs/assets/runtime-telemetry-cards.png)
+
 ## Quick start
 
 ### Requirements

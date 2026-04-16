@@ -104,6 +104,20 @@ First LLM Studio 不是另一个聊天壳。
 ![Agent workbench](./docs/assets/agent-workbench.png)
 ![Admin dashboard](./docs/assets/admin-dashboard.png)
 
+## 结果与监控截图
+
+Benchmark 百分位看板：
+
+![Benchmark 百分位看板](./docs/assets/benchmark-percentiles.png)
+
+正式里程碑评测汇总：
+
+![正式里程碑评测汇总](./docs/assets/formal-regression-summary.png)
+
+本地 runtime 实时监控：
+
+![本地 runtime 实时监控](./docs/assets/runtime-telemetry-cards.png)
+
 ## 快速开始
 
 ### 环境要求

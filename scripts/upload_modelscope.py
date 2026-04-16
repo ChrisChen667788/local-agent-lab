@@ -43,13 +43,34 @@ api.create_repo(
     create_default_config=False,
 )
 
-commit_info = api.upload_folder(
-    repo_id=REPO_ID,
-    folder_path=str(PACKAGE_DIR),
-    commit_message="Initial First LLM Studio open-source launch",
-    commit_description="Upload bilingual launch-ready project package for First LLM Studio.",
-    token=TOKEN,
-    repo_type="model",
-)
+commit_message = "Initial First LLM Studio open-source launch"
+commit_description = "Upload bilingual launch-ready project package for First LLM Studio."
 
-print(getattr(commit_info, "commit_url", commit_info))
+try:
+    commit_info = api.upload_folder(
+        repo_id=REPO_ID,
+        folder_path=str(PACKAGE_DIR),
+        commit_message=commit_message,
+        commit_description=commit_description,
+        token=TOKEN,
+        repo_type="model",
+    )
+    print(getattr(commit_info, "commit_url", commit_info))
+except Exception as exc:
+    print(f"upload_folder failed, falling back to per-file upload: {exc}", file=sys.stderr)
+    files = sorted(path for path in PACKAGE_DIR.rglob("*") if path.is_file())
+    last_result = None
+    for file_path in files:
+        repo_path = file_path.relative_to(PACKAGE_DIR).as_posix()
+        last_result = api.upload_file(
+            path_or_fileobj=str(file_path),
+            path_in_repo=repo_path,
+            repo_id=REPO_ID,
+            token=TOKEN,
+            repo_type="model",
+            commit_message=f"Update {repo_path}",
+            commit_description=commit_description,
+            disable_tqdm=True,
+        )
+        print(f"uploaded {repo_path}", flush=True)
+    print(getattr(last_result, "commit_url", last_result))

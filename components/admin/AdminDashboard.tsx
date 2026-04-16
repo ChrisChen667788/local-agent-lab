@@ -7,6 +7,7 @@ import {
   benchmarkMilestoneSuites
 } from "@/lib/agent/benchmark-datasets";
 import { useLocale } from "@/components/layout/LocaleProvider";
+import { sanitizeDisplayPath } from "@/lib/agent/path-display";
 import type {
   AgentBenchmarkProgress,
   AgentBenchmarkPromptSet,
@@ -6623,7 +6624,7 @@ export function AdminDashboard() {
                       ) : null}
                       {target.sourcePath ? (
                         <p className="mt-1 break-all text-xs text-slate-500">
-                          {locale.startsWith("en") ? "Source path" : "来源路径"}: {target.sourcePath}
+                          {locale.startsWith("en") ? "Source path" : "来源路径"}: {sanitizeDisplayPath(target.sourcePath)}
                         </p>
                       ) : null}
                       <p className="mt-1 text-xs text-slate-500">
@@ -6815,7 +6816,7 @@ export function AdminDashboard() {
                           </div>
                           <div>
                             <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeLogPath}</p>
-                            <p className="mt-1 break-all text-xs text-slate-400">{runtime?.logFile || dictionary.common.unknown}</p>
+                            <p className="mt-1 break-all text-xs text-slate-400">{runtime?.logFile ? sanitizeDisplayPath(runtime.logFile) : dictionary.common.unknown}</p>
                           </div>
                         </div>
                         <div className="mt-4 flex flex-wrap gap-2 border-t border-white/10 pt-3">

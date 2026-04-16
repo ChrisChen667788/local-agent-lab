@@ -31,6 +31,7 @@ import {
   getLocalizedToolDescription
 } from "@/lib/i18n";
 import { clampContextWindowForTarget } from "@/lib/agent/metrics";
+import { sanitizeDisplayPath } from "@/lib/agent/path-display";
 import type {
   AgentCacheMode,
   AgentBenchmarkResponse,
@@ -3615,7 +3616,7 @@ export function AgentWorkbench() {
                     ) : null}
                     {selectedTarget.sourcePath ? (
                       <p className="mt-1 break-all text-[12px] leading-6 text-slate-400">
-                        {locale.startsWith("en") ? "Source path" : "来源路径"}: {selectedTarget.sourcePath}
+                        {locale.startsWith("en") ? "Source path" : "来源路径"}: {sanitizeDisplayPath(selectedTarget.sourcePath)}
                       </p>
                     ) : null}
                   </div>

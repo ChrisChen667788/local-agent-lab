@@ -9,11 +9,11 @@
 
 ### English
 
-A local-first LLM studio for Apple Silicon with MLX local runtimes, remote API comparison, benchmark ops, Compare Lab, replay, trace review, and runtime recovery.
+A local-first LLM studio for Apple Silicon with MLX local runtimes, remote API comparison, benchmark ops, Compare Lab, replay, trace review, and runtime telemetry.
 
 ### 中文
 
-面向 Apple Silicon 的本地优先 LLM 工作台，集成 MLX 本地运行时、远端 API 对比、benchmark 运维、Compare Lab、replay、trace review 和 runtime recovery。
+面向 Apple Silicon 的本地优先 LLM 工作台，集成 MLX 本地运行时、远端 API 对比、benchmark 运维、Compare Lab、replay、trace review 和 runtime 实时监控。
 
 ## Target users
 
@@ -59,8 +59,26 @@ First LLM Studio：面向 Apple Silicon 的开源本地优先 LLM 工作台
 
 ### English
 
-First LLM Studio is the workspace I wanted for running MLX local models, comparing them against remote APIs, reviewing benchmark regressions, and diagnosing runtime issues without splitting the workflow across separate tools.
+First LLM Studio is built for teams that need more than a chat UI. It combines local MLX runtimes, remote API comparison, Compare Lab, benchmark review, replay, trace review, and runtime telemetry in one workbench.
 
 ### 中文
 
-First LLM Studio 是我想要的那种工作台：把 MLX 本地模型、远端 API 对比、benchmark 回归审阅和 runtime 排障统一放在一个工作流里，而不是拆在多个工具之间。
+First LLM Studio 面向的不是“只需要聊天界面”的用户，而是那些需要把本地 MLX、远端 API 对比、Compare Lab、benchmark 审阅、replay、trace review 和 runtime 遥测统一到一个工作台里的团队。
+
+## Recommended screenshot stack
+
+1. `docs/assets/landing-page.png`
+2. `docs/assets/agent-workbench.png`
+3. `docs/assets/runtime-telemetry-cards.png`
+4. `docs/assets/benchmark-percentiles.png`
+5. `docs/assets/formal-regression-summary.png`
+
+## Messaging angle for ModelScope
+
+### English
+
+Emphasize that this project is not only about inference. It is about making the whole local-first LLM workflow visible: compare, benchmark, replay, trace, recovery, and telemetry.
+
+### 中文
+
+重点强调这个项目不只是“推理工具”，而是把本地优先 LLM 工作流里的 compare、benchmark、replay、trace、恢复和硬件遥测一起做可见。

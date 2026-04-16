@@ -61,6 +61,20 @@ It is not only a chat shell. It is a working surface for:
 
 ![Admin dashboard](./assets/admin-dashboard.png)
 
+## Benchmark and telemetry proof
+
+### Benchmark percentile board
+
+![Benchmark percentile board](./assets/benchmark-percentiles.png)
+
+### Formal regression summary
+
+![Formal regression summary](./assets/formal-regression-summary.png)
+
+### Local runtime telemetry
+
+![Local runtime telemetry](./assets/runtime-telemetry-cards.png)
+
 ## Why it is attractive for the community
 
 Many open-source tools do one slice well. First LLM Studio tries to keep the full workflow together:
@@ -138,6 +152,20 @@ First LLM Studio 是一个面向 Apple Silicon 的本地优先 LLM 工作台，�
 ### Admin 后台
 
 ![Admin 后台截图](./assets/admin-dashboard.png)
+
+## Benchmark 与监控证明
+
+### Benchmark 百分位看板
+
+![Benchmark 百分位看板](./assets/benchmark-percentiles.png)
+
+### 正式回归汇总
+
+![正式回归汇总](./assets/formal-regression-summary.png)
+
+### 本地 runtime 实时监控
+
+![本地 runtime 实时监控](./assets/runtime-telemetry-cards.png)
 
 ## 为什么值得社区关注
 
