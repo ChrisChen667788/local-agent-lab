@@ -70,6 +70,48 @@ Use this order in launch posts or repo discussions:
 - First LLM Studio: compare local MLX models and remote APIs in one workbench
 - First LLM Studio v0.3.0: Compare Lab, benchmark ops, and runtime telemetry in one place
 
+### GitHub short post
+
+#### English
+
+Open-sourced **First LLM Studio v0.3.0**.
+
+A local-first LLM workbench for Apple Silicon that keeps:
+
+- MLX local runtimes
+- remote API comparison
+- Compare Lab
+- benchmark ops
+- replay / trace review
+- runtime telemetry
+
+inside one operating surface.
+
+If you care about how local and remote models actually behave, not just how they answer, this project is built for that loop.
+
+Repo: https://github.com/ChrisChen667788/local-agent-lab  
+Release: https://github.com/ChrisChen667788/local-agent-lab/releases/tag/v0.3.0
+
+#### 中文
+
+刚开源 **First LLM Studio v0.3.0**。
+
+这是一个面向 Apple Silicon 的本地优先 LLM 工作台，把：
+
+- MLX 本地运行时
+- 远端 API 对比
+- Compare Lab
+- benchmark 运维
+- replay / trace 审阅
+- runtime 实时监控
+
+收进同一个操作面。
+
+如果你关心的不是“模型答了什么”，而是“本地和远端模型到底怎么表现、怎么退化、怎么恢复”，这个项目就是为这条链路做的。
+
+Repo: https://github.com/ChrisChen667788/local-agent-lab  
+Release: https://github.com/ChrisChen667788/local-agent-lab/releases/tag/v0.3.0
+
 ### GitHub discussion post
 
 #### English
@@ -134,6 +176,24 @@ A local-first LLM studio for Apple Silicon with MLX runtimes, remote API compari
 
 面向 Apple Silicon 的本地优先 LLM Studio，集成 MLX 本地运行时、远端 API 对比、Compare Lab、benchmark 运维、replay 和 runtime 实时监控。
 
+### ModelScope short post
+
+#### English
+
+First LLM Studio is now on ModelScope.
+
+It is built for local-first LLM workflows on Apple Silicon: run MLX models, compare them with remote APIs, review benchmark regressions, inspect replay/trace evidence, and watch runtime cost in one place.
+
+ModelScope: https://www.modelscope.cn/models/haozi667788/first-llm-studio
+
+#### 中文
+
+**First LLM Studio** 已经同步到魔搭社区。
+
+它面向 Apple Silicon 的本地优先 LLM 工作流：跑 MLX 本地模型、对比远端 API、审阅 benchmark 回归、查看 replay/trace 证据，并在同一个工作台里观察 runtime 开销。
+
+魔搭地址：https://www.modelscope.cn/models/haozi667788/first-llm-studio
+
 ### Long-form intro for ModelScope
 
 #### English
@@ -175,6 +235,19 @@ First LLM Studio 不是“又一个聊天壳”。
 
 GitHub: https://github.com/ChrisChen667788/local-agent-lab
 ModelScope: https://www.modelscope.cn/models/haozi667788/first-llm-studio
+
+### Super short post
+
+#### 中文
+
+开源了一个我自己很想长期用下去的项目：**First LLM Studio**。
+
+它把本地 MLX、远端 API 对比、Compare Lab、benchmark 运维和 runtime 实时监控收进同一个工作台里。
+
+如果你也在做本地优先 LLM 工作流，欢迎看一眼：
+
+GitHub: https://github.com/ChrisChen667788/local-agent-lab  
+魔搭: https://www.modelscope.cn/models/haozi667788/first-llm-studio
 
 ### Long post
 
