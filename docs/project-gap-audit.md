@@ -83,6 +83,20 @@ What to improve:
 - better failure grouping
 - stronger benchmark-to-issue export flow
 
+### 5. Recipe and reproducibility layer
+
+Current state:
+
+- compare presets and benchmark presets already exist in pieces
+- the product can already export reports and review notes
+
+What to improve:
+
+- a real `Studio Recipe Gallery`
+- stronger share / import story
+- `Get Code` style request reproduction
+- clearer capability chips for tools / retrieval / structured output / thinking
+
 ## Clearly missing or not finished yet
 
 These are the biggest product gaps if we look beyond launch polish.
@@ -151,15 +165,29 @@ Why it matters:
 - the project now has a real public face
 - release quality needs to be repeatable, not handcrafted every time
 
+### P1. Provider usage and health desk
+
+Still missing:
+
+- recent API health by provider
+- rough token / request / cost ledger
+- clearer timeout / 429 / auth-failure grouping
+
+Why it matters:
+
+- the project already treats local runtimes as operational surfaces
+- remote providers should be equally observable
+
 ## Best next priorities after launch
 
 If we pick the highest-leverage sequence, it should be:
 
-1. Server-side persistence
-2. Retrieval stage two
-3. Fine-tune workflow planning into first executable slice
-4. Compare review density polish
-5. CI / demo automation
+1. Studio Recipe Gallery + Get Code
+2. Server-side persistence
+3. Retrieval stage two
+4. Fine-tune workflow planning into first executable slice
+5. Provider usage desk
+6. CI / demo automation
 
 ## Open GitHub issues that still matter
 
