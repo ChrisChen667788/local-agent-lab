@@ -76,6 +76,14 @@ Last updated: 2026-04-08
 3. Inference Compare Lab（面向结构化输出、采样参数和 prompt 模板的可重复对比）
 4. 面向 Apple Silicon 的本地 LoRA / QLoRA 微调工作流规划
 
+2026-04-17 又补了一轮来自 Google AI Studio 与 LM Studio 的产品对比结论，新增了几条更偏“工作台产品感”的方向：
+
+5. `Studio Recipe Gallery`（比 Prompt Gallery 更进一步的可执行实验配方）
+6. `Get Code / Reproduce Request`（把当前 chat / compare / benchmark 配置导出成可运行 SDK snippet）
+7. `Capability Chips / Run Settings Chips`（把工具、检索、结构化输出、thinking 变成高层能力模块）
+8. `Provider Usage Ledger / API Health Desk`（把远端 provider 也纳入可运营视角）
+9. `Prompt-to-Workflow Drafts`（用自然语言生成 compare / benchmark / schema draft）
+
 这些能力默认进入 `v0.3.x` 讨论范围，不回塞到 `v0.2.x` 的小步稳定节奏里，也不意味着另起一个新项目。
 
 ## Current focus
