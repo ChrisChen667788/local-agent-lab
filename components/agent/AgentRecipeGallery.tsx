@@ -6,6 +6,7 @@ type AgentRecipeGalleryProps = {
   locale: string;
   recipes: AgentStudioRecipe[];
   pending: boolean;
+  executionPending: boolean;
   error: string;
   activeRecipeId: string;
   draftLabel: string;
@@ -15,6 +16,8 @@ type AgentRecipeGalleryProps = {
   onDraftDescriptionChange: (value: string) => void;
   onRefresh: () => void;
   onApply: (recipeId: string) => void;
+  onRunCompare: (recipeId: string) => void;
+  onRunBenchmark: (recipeId: string) => void;
   onDelete: (recipeId: string) => void;
   onSaveCurrent: () => void;
 };
@@ -27,6 +30,7 @@ export function AgentRecipeGallery({
   locale,
   recipes,
   pending,
+  executionPending,
   error,
   activeRecipeId,
   draftLabel,
@@ -36,6 +40,8 @@ export function AgentRecipeGallery({
   onDraftDescriptionChange,
   onRefresh,
   onApply,
+  onRunCompare,
+  onRunBenchmark,
   onDelete,
   onSaveCurrent
 }: AgentRecipeGalleryProps) {
@@ -143,6 +149,22 @@ export function AgentRecipeGallery({
                     className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1.5 text-[11px] font-semibold text-cyan-100 transition hover:bg-cyan-400/20"
                   >
                     {isEn ? "Apply recipe" : "应用配方"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onRunCompare(recipe.id)}
+                    disabled={executionPending}
+                    className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {isEn ? "Run compare" : "直接对比"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onRunBenchmark(recipe.id)}
+                    disabled={executionPending}
+                    className="rounded-full border border-violet-400/25 bg-violet-400/10 px-3 py-1.5 text-[11px] font-semibold text-violet-100 transition hover:bg-violet-400/20 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {isEn ? "Benchmark handoff" : "送入评测"}
                   </button>
                   {recipe.source === "user" ? (
                     <button

@@ -2528,30 +2528,50 @@ export function AgentWorkbench() {
     });
   }
 
-  const handleApplyStudioRecipe = useCallback(
-    (recipeId: string) => {
+  const resolveStudioRecipeState = useCallback(
+    (
+      recipeId: string
+    ):
+      | { error: string }
+      | { recipe: AgentStudioRecipe; validRecipeTargetIds: string[]; nextSelectedTargetId: string } => {
       const recipe = recipes.find((entry) => entry.id === recipeId);
       if (!recipe) {
-        setRecipesError(locale.startsWith("en") ? "Recipe not found." : "没有找到这个配方。");
-        return;
+        return {
+          error: locale.startsWith("en") ? "Recipe not found." : "没有找到这个配方。"
+        };
       }
-      const validTargetIds = Array.from(
+      const validRecipeTargetIds = Array.from(
         new Set(recipe.targetIds.filter((targetId) => agentTargets.some((target) => target.id === targetId)))
       );
       const nextSelectedTargetId =
-        validTargetIds[0] || (agentTargets.some((target) => target.id === selectedTargetId) ? selectedTargetId : agentTargets[0]?.id);
+        validRecipeTargetIds[0] ||
+        (agentTargets.some((target) => target.id === selectedTargetId) ? selectedTargetId : agentTargets[0]?.id);
       if (!nextSelectedTargetId) {
-        setRecipesError(locale.startsWith("en") ? "No valid targets are available for this recipe." : "这个配方当前没有可用目标。");
-        return;
+        return {
+          error:
+            locale.startsWith("en") ? "No valid targets are available for this recipe." : "这个配方当前没有可用目标。"
+        };
       }
+      return {
+        recipe,
+        validRecipeTargetIds: validRecipeTargetIds.length ? validRecipeTargetIds : [nextSelectedTargetId],
+        nextSelectedTargetId
+      };
+    },
+    [agentTargets, locale, recipes, selectedTargetId]
+  );
 
+  const applyStudioRecipeState = useCallback(
+    (recipe: AgentStudioRecipe, nextSelectedTargetId: string, validRecipeTargetIds: string[]) => {
       setSelectedTargetId(nextSelectedTargetId);
-      setCompareTargetIds(validTargetIds.length ? validTargetIds : [nextSelectedTargetId]);
+      setCompareTargetIds(validRecipeTargetIds);
       setInput(recipe.input);
       setSystemPrompt(recipe.systemPrompt);
       setCompareIntent(recipe.compareIntent);
       setCompareOutputShape(recipe.compareOutputShape);
-      setContextWindow(clampUiContextWindow(nextSelectedTargetId, recipe.contextWindow, recipe.enableTools, recipe.enableRetrieval));
+      setContextWindow(
+        clampUiContextWindow(nextSelectedTargetId, recipe.contextWindow, recipe.enableTools, recipe.enableRetrieval)
+      );
       setEnableTools(recipe.enableTools);
       setEnableRetrieval(recipe.enableRetrieval);
       setProviderProfile(recipe.providerProfile);
@@ -2562,15 +2582,19 @@ export function AgentWorkbench() {
       setRecipeDraftDescription(recipe.description);
       setRecipesError("");
     },
-    [
-      agentTargets,
-      locale,
-      recipes,
-      selectedTargetId,
-      setCompareIntent,
-      setCompareOutputShape,
-      setCompareTargetIds
-    ]
+    [setCompareIntent, setCompareOutputShape, setCompareTargetIds]
+  );
+
+  const handleApplyStudioRecipe = useCallback(
+    (recipeId: string) => {
+      const resolved = resolveStudioRecipeState(recipeId);
+      if ("error" in resolved) {
+        setRecipesError(resolved.error);
+        return;
+      }
+      applyStudioRecipeState(resolved.recipe, resolved.nextSelectedTargetId, resolved.validRecipeTargetIds);
+    },
+    [applyStudioRecipeState, resolveStudioRecipeState]
   );
 
   const handleCreateStudioRecipe = useCallback(async () => {
@@ -2658,6 +2682,138 @@ export function AgentWorkbench() {
       }
     },
     [loadStudioRecipes]
+  );
+
+  const handleRunStudioRecipeCompare = useCallback(
+    async (recipeId: string) => {
+      const resolved = resolveStudioRecipeState(recipeId);
+      if ("error" in resolved) {
+        setRecipesError(resolved.error);
+        return;
+      }
+      const { recipe, validRecipeTargetIds, nextSelectedTargetId } = resolved;
+      applyStudioRecipeState(recipe, nextSelectedTargetId, validRecipeTargetIds);
+
+      const requestId = crypto.randomUUID();
+      setComparePending(true);
+      setCompareError("");
+      setBenchmarkError("");
+      setBenchmarkResult(null);
+      setCompareRequestId(requestId);
+      setCompareProgressByTargetId({});
+      try {
+        const response = await fetch("/api/agent/compare", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            requestId,
+            targetIds: validRecipeTargetIds,
+            input: recipe.input,
+            messages: historyMessages,
+            systemPrompt: recipe.systemPrompt,
+            compareIntent: recipe.compareIntent,
+            compareOutputShape: recipe.compareOutputShape,
+            enableTools: recipe.enableTools,
+            enableRetrieval: recipe.enableRetrieval,
+            contextWindow: recipe.contextWindow,
+            providerProfile: recipe.providerProfile,
+            thinkingMode: recipe.thinkingMode
+          })
+        });
+        const payload = (await response.json()) as AgentCompareResponse & { error?: string };
+        if (!response.ok) {
+          throw new Error(payload.error || "Recipe compare run failed.");
+        }
+        setCompareResult(payload);
+        setCompareRequestId(payload.requestId || requestId);
+        setCompareBaseTargetId(payload.results[0]?.targetId || "");
+      } catch (recipeCompareError) {
+        setCompareError(recipeCompareError instanceof Error ? recipeCompareError.message : "Recipe compare run failed.");
+      } finally {
+        setComparePending(false);
+      }
+    },
+    [
+      applyStudioRecipeState,
+      historyMessages,
+      resolveStudioRecipeState,
+      setBenchmarkError,
+      setBenchmarkResult,
+      setCompareBaseTargetId,
+      setCompareError,
+      setComparePending,
+      setCompareProgressByTargetId,
+      setCompareRequestId,
+      setCompareResult
+    ]
+  );
+
+  const handleRunStudioRecipeBenchmark = useCallback(
+    async (recipeId: string) => {
+      const resolved = resolveStudioRecipeState(recipeId);
+      if ("error" in resolved) {
+        setRecipesError(resolved.error);
+        return;
+      }
+      const { recipe, validRecipeTargetIds, nextSelectedTargetId } = resolved;
+      applyStudioRecipeState(recipe, nextSelectedTargetId, validRecipeTargetIds);
+
+      setBenchmarkPending(true);
+      setBenchmarkError("");
+      setBenchmarkResult(null);
+      try {
+        const compareShare = await import("@/lib/agent/compare-share");
+        const prompt = compareShare.buildCompareBenchmarkPrompt({
+          input: recipe.input,
+          systemPrompt: recipe.systemPrompt,
+          compareOutputShape: recipe.compareOutputShape,
+          compareBenchmarkUseOutputContract: true
+        });
+        const runNote = [
+          `Recipe handoff: ${recipe.label}`,
+          recipe.description ? `Description: ${recipe.description}` : "",
+          `Targets: ${validRecipeTargetIds.join(", ")}`,
+          `Intent: ${recipe.compareIntent}`,
+          `Output: ${recipe.compareOutputShape}`,
+          `Profile: ${recipe.providerProfile}`,
+          `Thinking: ${recipe.thinkingMode}`
+        ]
+          .filter(Boolean)
+          .join("\n");
+        const response = await fetch("/api/admin/benchmark", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            targetIds: validRecipeTargetIds,
+            benchmarkMode: "prompt",
+            prompt,
+            runNote,
+            runs: 1,
+            contextWindow: recipe.contextWindow,
+            providerProfile: recipe.providerProfile,
+            thinkingMode: recipe.thinkingMode
+          })
+        });
+        const payload = (await response.json()) as AgentBenchmarkResponse & { error?: string };
+        if (!response.ok) {
+          throw new Error(payload.error || "Recipe benchmark handoff failed.");
+        }
+        setBenchmarkResult(payload);
+      } catch (recipeBenchmarkError) {
+        setBenchmarkError(
+          recipeBenchmarkError instanceof Error ? recipeBenchmarkError.message : "Recipe benchmark handoff failed."
+        );
+      } finally {
+        setBenchmarkPending(false);
+      }
+    },
+    [
+      applyStudioRecipeState,
+      resolveStudioRecipeState,
+      setBenchmarkError,
+      setBenchmarkPending,
+      setBenchmarkResult
+    ]
   );
 
   const loadRuntimeStatus = useCallback(
@@ -5887,6 +6043,7 @@ export function AgentWorkbench() {
                   benchmarkResult={benchmarkResult}
                   recipes={recipes}
                   recipesPending={recipesPending}
+                  recipesExecutionPending={comparePending || benchmarkPending}
                   recipesError={recipesError}
                   activeRecipeId={activeRecipeId}
                   recipeDraftLabel={recipeDraftLabel}
@@ -5923,6 +6080,8 @@ export function AgentWorkbench() {
                   onRecipeDraftDescriptionChange={setRecipeDraftDescription}
                   onRefreshRecipes={loadStudioRecipes}
                   onApplyRecipe={handleApplyStudioRecipe}
+                  onRunRecipeCompare={handleRunStudioRecipeCompare}
+                  onRunRecipeBenchmark={handleRunStudioRecipeBenchmark}
                   onDeleteRecipe={handleDeleteStudioRecipe}
                   onSaveCurrentRecipe={handleCreateStudioRecipe}
                   onCopy={handleCopy}

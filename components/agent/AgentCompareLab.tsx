@@ -53,6 +53,7 @@ type AgentCompareLabProps = {
   benchmarkResult: AgentBenchmarkResponse | null;
   recipes: AgentStudioRecipe[];
   recipesPending: boolean;
+  recipesExecutionPending: boolean;
   recipesError: string;
   activeRecipeId: string;
   recipeDraftLabel: string;
@@ -89,6 +90,8 @@ type AgentCompareLabProps = {
   onRecipeDraftDescriptionChange: (value: string) => void;
   onRefreshRecipes: () => void;
   onApplyRecipe: (recipeId: string) => void;
+  onRunRecipeCompare: (recipeId: string) => void;
+  onRunRecipeBenchmark: (recipeId: string) => void;
   onDeleteRecipe: (recipeId: string) => void;
   onSaveCurrentRecipe: () => void;
   onCopy: (text: string, key: string) => void;
@@ -267,6 +270,7 @@ export function AgentCompareLab({
   benchmarkResult,
   recipes,
   recipesPending,
+  recipesExecutionPending,
   recipesError,
   activeRecipeId,
   recipeDraftLabel,
@@ -303,6 +307,8 @@ export function AgentCompareLab({
   onRecipeDraftDescriptionChange,
   onRefreshRecipes,
   onApplyRecipe,
+  onRunRecipeCompare,
+  onRunRecipeBenchmark,
   onDeleteRecipe,
   onSaveCurrentRecipe,
   onCopy,
@@ -638,6 +644,7 @@ export function AgentCompareLab({
               locale={locale}
               recipes={recipes}
               pending={recipesPending}
+              executionPending={recipesExecutionPending}
               error={recipesError}
               activeRecipeId={activeRecipeId}
               draftLabel={recipeDraftLabel}
@@ -647,6 +654,8 @@ export function AgentCompareLab({
               onDraftDescriptionChange={onRecipeDraftDescriptionChange}
               onRefresh={onRefreshRecipes}
               onApply={onApplyRecipe}
+              onRunCompare={onRunRecipeCompare}
+              onRunBenchmark={onRunRecipeBenchmark}
               onDelete={onDeleteRecipe}
               onSaveCurrent={onSaveCurrentRecipe}
             />
