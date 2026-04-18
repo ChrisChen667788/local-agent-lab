@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 import { readBenchmarkBaselines, readBenchmarkLogs } from "@/lib/agent/log-store";
-import type { AgentBenchmarkBaseline, AgentBenchmarkResponse, AgentBenchmarkResult } from "@/lib/agent/types";
+import type {
+  AgentBenchmarkBaseline,
+  AgentBenchmarkReportMatchSource,
+  AgentBenchmarkReportPreview,
+  AgentBenchmarkResponse,
+  AgentBenchmarkResult
+} from "@/lib/agent/types";
 
 export const runtime = "nodejs";
 
@@ -315,9 +321,16 @@ function renderMarkdown(input: {
   return lines.join("\n");
 }
 
+function normalizeMatchSource(value: "window" | "full-history" | "run-id"): AgentBenchmarkReportMatchSource {
+  if (value === "run-id") return "exact-run-id";
+  if (value === "full-history") return "full-history";
+  return "recent-window";
+}
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const requestedRunId = (searchParams.get("runId") || "").trim();
+  const responseFormat = (searchParams.get("format") || "markdown").trim();
   const targetIds = parseTargetIds(searchParams);
   const benchmarkMode = parseBenchmarkMode(searchParams);
   const providerProfile = (searchParams.get("providerProfile") || "all").trim();
@@ -397,10 +410,27 @@ export async function GET(request: Request) {
     matchScope
   });
 
+  const filename = `benchmark-regression-report${promptSetId ? `-${promptSetId}` : ""}.md`;
+  const matchSource = normalizeMatchSource(matchScope);
+
+  if (responseFormat === "json") {
+    const preview: AgentBenchmarkReportPreview = {
+      ok: true,
+      runId: latest.runId,
+      generatedAt: new Date().toISOString(),
+      latestGeneratedAt: latest.generatedAt,
+      filename,
+      title: latest.suiteLabel || latest.datasetLabel || latest.promptSetLabel || latest.prompt || "Benchmark regression report",
+      matchSource,
+      markdown
+    };
+    return NextResponse.json(preview);
+  }
+
   return new NextResponse(markdown, {
     headers: {
       "Content-Type": "text/markdown; charset=utf-8",
-      "Content-Disposition": `attachment; filename="benchmark-regression-report${promptSetId ? `-${promptSetId}` : ""}.md"`
+      "Content-Disposition": `attachment; filename="${filename}"`
     }
   });
 }

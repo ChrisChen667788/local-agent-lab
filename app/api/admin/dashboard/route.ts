@@ -4,6 +4,8 @@ import { calculateTokenThroughputTps, percentile } from "@/lib/agent/metrics";
 import { collectDashboardDataWithFilters } from "@/lib/agent/admin-metrics";
 import { getObservabilityPaths, readBenchmarkLogs, readChatLogs } from "@/lib/agent/log-store";
 import { resolveTargetWithMode } from "@/lib/agent/providers";
+import { buildProviderHealthDesk } from "@/lib/agent/provider-health-desk";
+import { readBenchmarkReleaseEvidence } from "@/lib/agent/benchmark-release-evidence-store";
 
 export const runtime = "nodejs";
 
@@ -148,6 +150,7 @@ export async function GET(request: Request) {
     })
     .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
   const benchmarkHistoryRaw = readBenchmarkLogs({ sinceIso, limit: 120 });
+  const allBenchmarkHistoryRaw = readBenchmarkLogs({ limit: 1000 });
   const availableBenchmarkThinkingModes = Array.from(
     new Set(
       benchmarkHistoryRaw.flatMap((entry) =>
@@ -182,6 +185,38 @@ export async function GET(request: Request) {
     .filter((entry) => entry.results.length > 0)
     .filter((entry) => (normalizedContextWindow === null ? true : entry.contextWindow === normalizedContextWindow));
   const benchmarkHistory = benchmarkHistoryFiltered.slice(-20).reverse();
+  const recentBenchmarkRunIds = new Set(
+    benchmarkHistoryRaw
+      .map((entry) => entry.runId)
+      .filter((value): value is string => typeof value === "string" && value.length > 0)
+  );
+  const releaseEvidence = readBenchmarkReleaseEvidence()
+    .map((entry) => {
+      const matching = allBenchmarkHistoryRaw.find((row) => row.runId === entry.runId);
+      if (!matching) return null;
+      return {
+        id: entry.id,
+        runId: entry.runId,
+        pinnedAt: entry.pinnedAt,
+        title: entry.title,
+        note: entry.note,
+        generatedAt: matching.generatedAt,
+        benchmarkMode: matching.benchmarkMode,
+        prompt: matching.prompt,
+        promptSetLabel: matching.promptSetLabel,
+        datasetLabel: matching.datasetLabel,
+        suiteLabel: matching.suiteLabel,
+        profileBatchScope: matching.profileBatchScope,
+        contextWindow: matching.contextWindow,
+        matchSource: recentBenchmarkRunIds.has(entry.runId) ? "recent-window" : "full-history",
+        results: matching.results.map((result) => normalizeBenchmarkResult(result))
+      };
+    })
+    .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
+    .slice(0, 8);
+  const providerDeskWindowMinutes = Math.max(windowMinutes, 24 * 60);
+  const providerDeskSinceIso = new Date(Date.now() - providerDeskWindowMinutes * 60 * 1000).toISOString();
+  const providerHealthDesk = buildProviderHealthDesk({ sinceIso: providerDeskSinceIso });
   const benchmarkTrendMap = new Map<
     string,
     {
@@ -377,7 +412,9 @@ export async function GET(request: Request) {
     benchmarkTargetVersions,
     comparison,
     benchmarkHistory,
+    releaseEvidence,
     benchmarkTrends,
+    providerHealthDesk,
     benchmarkHeatmap,
     paths: getObservabilityPaths()
   });

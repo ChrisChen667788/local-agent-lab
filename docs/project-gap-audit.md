@@ -91,7 +91,7 @@ What to improve:
 - clearer explanation of quality score methodology
 - better failure grouping
 - stronger benchmark-to-issue export flow
-- report preview / pinned-report flow inside `/admin`
+- deeper report drawer polish, evidence note editing, and stronger benchmark-to-issue export flow inside `/admin`
 
 ### 5. Recipe and reproducibility layer
 
@@ -177,11 +177,16 @@ Why it matters:
 
 ### P1. Provider usage and health desk
 
+Current state:
+
+- v1 is now shipped in `/admin`
+- remote providers now expose recent connection health, timeout / 429 / auth-failure grouping, token volume, rough cost, and latest failure summaries
+
 Still missing:
 
-- recent API health by provider
-- rough token / request / cost ledger
-- clearer timeout / 429 / auth-failure grouping
+- provider-specific cost drill-down by model / profile
+- stronger historical trend views for failures and cost
+- better “what changed since last outage” framing
 
 Why it matters:
 
@@ -190,16 +195,22 @@ Why it matters:
 
 ### P1. Benchmark history discoverability
 
+Current state:
+
+- report preview now exists in `/admin`
+- benchmark runs can now be pinned as release evidence
+- explicit “recent window” vs “full history fallback” badges are now exposed in the report and evidence UI
+
 Still missing:
 
-- a report drawer / preview before exporting
-- pinning a benchmark run as “release evidence”
-- explicit “recent window” vs “full history fallback” badges in the main `/admin` history UI
+- richer release evidence annotation / grouping
+- stronger benchmark-history-to-release-note flow
+- a more compact report drawer tuned for repeated triage
 
 Why it matters:
 
 - export is now reliable again
-- users still need clearer in-product cues about which run was matched and why
+- users can now see how a report was matched, but the release workflow can still be smoother
 
 ## Best next priorities after launch
 
@@ -208,9 +219,10 @@ If we pick the highest-leverage sequence, it should be:
 1. Server-side persistence
 2. Fine-tune workflow planning into first executable slice
 3. Retrieval stage two
-4. Provider usage desk
-5. Benchmark history discoverability + report preview
-6. CI / demo automation
+4. Compare reading flow for small screens and long multi-lane reviews
+5. Provider usage desk v2 (historical trends + model-level cost)
+6. Benchmark release evidence polish
+7. CI / demo automation
 
 ## Open GitHub issues that still matter
 

@@ -10,11 +10,14 @@ import { useLocale } from "@/components/layout/LocaleProvider";
 import { sanitizeDisplayPath } from "@/lib/agent/path-display";
 import type {
   AgentBenchmarkProgress,
+  AgentBenchmarkReportPreview,
+  AgentBenchmarkReleaseEvidence,
   AgentBenchmarkPromptSet,
   AgentBenchmarkResponse,
   AgentKnowledgeDocument,
   AgentRetrievalSummary,
   AgentMetricPercentiles,
+  AgentProviderHealthDeskItem,
   AgentRuntimeActionResponse,
   AgentRuntimeLogSummary,
   AgentRuntimePrewarmAllResponse,
@@ -196,6 +199,36 @@ function summarizeBenchmarkRunNote(value: string, maxLength = 220) {
   return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 }
 
+function formatBenchmarkReportMatchSource(
+  locale: string,
+  value: AgentBenchmarkReportPreview["matchSource"] | AgentBenchmarkReleaseEvidence["matchSource"] | undefined
+) {
+  if (value === "exact-run-id") {
+    return locale.startsWith("en") ? "Exact run" : "精确 run";
+  }
+  if (value === "full-history") {
+    return locale.startsWith("en") ? "Full history fallback" : "全历史回退";
+  }
+  return locale.startsWith("en") ? "Recent window" : "最近窗口";
+}
+
+function buildBenchmarkReportMatchSourceClass(
+  value: AgentBenchmarkReportPreview["matchSource"] | AgentBenchmarkReleaseEvidence["matchSource"] | undefined
+) {
+  if (value === "exact-run-id") {
+    return "border-violet-300/20 bg-violet-400/10 text-violet-100";
+  }
+  if (value === "full-history") {
+    return "border-amber-300/20 bg-amber-300/10 text-amber-100";
+  }
+  return "border-cyan-300/20 bg-cyan-400/10 text-cyan-100";
+}
+
+function formatUsd(value?: number | null) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "--";
+  return value < 0.01 ? `$${value.toFixed(4)}` : `$${value.toFixed(2)}`;
+}
+
 type DashboardResponse = {
   generatedAt: string;
   target: {
@@ -228,6 +261,7 @@ type DashboardResponse = {
   }>;
   benchmarkHistory: Array<{
     id: string;
+    runId?: string;
     generatedAt: string;
     prompt: string;
     runNote?: string;
@@ -275,6 +309,8 @@ type DashboardResponse = {
       }>;
     }>;
   }>;
+  releaseEvidence: AgentBenchmarkReleaseEvidence[];
+  providerHealthDesk: AgentProviderHealthDeskItem[];
   benchmarkTrends: Array<{
     targetId: string;
     targetLabel: string;
@@ -1216,6 +1252,10 @@ export function AdminDashboard() {
   const [prewarmAllPending, setPrewarmAllPending] = useState(false);
   const [prewarmAllMessage, setPrewarmAllMessage] = useState("");
   const [benchmarkCopyState, setBenchmarkCopyState] = useState<{ key: string; tone: "success" | "error" } | null>(null);
+  const [benchmarkReportPreview, setBenchmarkReportPreview] = useState<AgentBenchmarkReportPreview | null>(null);
+  const [benchmarkReportPreviewPending, setBenchmarkReportPreviewPending] = useState(false);
+  const [benchmarkReportPreviewError, setBenchmarkReportPreviewError] = useState("");
+  const [benchmarkEvidencePendingRunId, setBenchmarkEvidencePendingRunId] = useState("");
   const knowledgeImportInputRef = useRef<HTMLInputElement | null>(null);
   const knowledgeHighlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const benchmarkCopyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -3285,37 +3325,134 @@ export function AdminDashboard() {
     window.open(`/api/admin/benchmark/export?${query.toString()}`, "_blank");
   }
 
-  function exportBenchmarkRegressionReport() {
+  function buildBenchmarkReportQuery(
+    entry?:
+      | DashboardResponse["benchmarkHistory"][number]
+      | DashboardResponse["releaseEvidence"][number]
+      | AgentBenchmarkResponse
+      | null,
+    format?: "markdown" | "json"
+  ) {
     const query = new URLSearchParams({
       benchmarkMode:
-        benchmarkPromptMode === "dataset"
+        entry?.benchmarkMode ||
+        (benchmarkPromptMode === "dataset"
           ? "dataset"
           : benchmarkPromptMode === "suite"
             ? "suite"
-            : "prompt",
-      targetIds: benchmarkTargetIds.join(","),
+            : "prompt"),
+      targetIds:
+        entry?.results?.map((result) => result.targetId).join(",") || benchmarkTargetIds.join(","),
       windowMinutes: String(benchmarkExportWindowMinutes),
       providerProfile: benchmarkProviderProfile,
       thinkingMode: benchmarkThinkingMode
     });
-    const exportRunId = benchmarkData?.runId || benchmarkProgress?.runId || benchmarkRunId;
+    const exportRunId =
+      entry && "runId" in entry
+        ? entry.runId
+        : benchmarkData?.runId || benchmarkProgress?.runId || benchmarkRunId;
     if (exportRunId) {
       query.set("runId", exportRunId);
     }
-    if (benchmarkPromptMode === "prompt-set" && benchmarkPromptSetId) {
-      query.set("promptSetId", benchmarkPromptSetId);
-    } else if (benchmarkPromptMode === "dataset" && benchmarkDatasetId) {
-      query.set("datasetId", benchmarkDatasetId);
-    } else if (benchmarkPromptMode === "suite" && benchmarkSuiteId) {
-      query.set("suiteId", benchmarkSuiteId);
-    } else if (benchmarkPrompt.trim()) {
-      query.set("prompt", benchmarkPrompt.trim());
+    const entryPromptSetId = entry && "promptSetId" in entry ? entry.promptSetId : undefined;
+    const entryDatasetId = entry && "datasetId" in entry ? entry.datasetId : undefined;
+    const entrySuiteId = entry && "suiteId" in entry ? entry.suiteId : undefined;
+    const entryPrompt = entry && "prompt" in entry ? entry.prompt : undefined;
+    const entryContextWindow = entry && "contextWindow" in entry ? entry.contextWindow : undefined;
+    const entryProfileBatchScope =
+      entry && "profileBatchScope" in entry ? entry.profileBatchScope : undefined;
+    if (entryPromptSetId || (benchmarkPromptMode === "prompt-set" && benchmarkPromptSetId)) {
+      query.set("promptSetId", entryPromptSetId || benchmarkPromptSetId);
+    } else if (entryDatasetId || (benchmarkPromptMode === "dataset" && benchmarkDatasetId)) {
+      query.set("datasetId", entryDatasetId || benchmarkDatasetId);
+    } else if (entrySuiteId || (benchmarkPromptMode === "suite" && benchmarkSuiteId)) {
+      query.set("suiteId", entrySuiteId || benchmarkSuiteId);
+    } else if ((entryPrompt || benchmarkPrompt).trim()) {
+      query.set("prompt", (entryPrompt || benchmarkPrompt).trim());
     }
-    if (benchmarkBatchProfiles) {
-      query.set("profileBatchScope", benchmarkBatchScope);
+    if (entryProfileBatchScope || benchmarkBatchProfiles) {
+      query.set("profileBatchScope", entryProfileBatchScope || benchmarkBatchScope);
     }
-    query.set("contextWindow", String(benchmarkContextWindow));
-    window.open(`/api/admin/benchmark/report?${query.toString()}`, "_blank");
+    query.set("contextWindow", String(entryContextWindow || benchmarkContextWindow));
+    if (format === "json") {
+      query.set("format", "json");
+    }
+    return query;
+  }
+
+  function exportBenchmarkRegressionReport() {
+    window.open(`/api/admin/benchmark/report?${buildBenchmarkReportQuery(null).toString()}`, "_blank");
+  }
+
+  function openBenchmarkReportMarkdown(
+    entry?:
+      | DashboardResponse["benchmarkHistory"][number]
+      | DashboardResponse["releaseEvidence"][number]
+      | AgentBenchmarkResponse
+      | null
+  ) {
+    window.open(`/api/admin/benchmark/report?${buildBenchmarkReportQuery(entry).toString()}`, "_blank");
+  }
+
+  async function openBenchmarkReportPreview(
+    entry?:
+      | DashboardResponse["benchmarkHistory"][number]
+      | DashboardResponse["releaseEvidence"][number]
+      | AgentBenchmarkResponse
+      | null
+  ) {
+    setBenchmarkReportPreviewPending(true);
+    setBenchmarkReportPreviewError("");
+    try {
+      const response = await fetch(`/api/admin/benchmark/report?${buildBenchmarkReportQuery(entry, "json").toString()}`, {
+        cache: "no-store"
+      });
+      const payload = (await response.json()) as AgentBenchmarkReportPreview & { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error || "Failed to load regression report preview.");
+      }
+      setBenchmarkReportPreview(payload);
+    } catch (previewError) {
+      setBenchmarkReportPreviewError(
+        previewError instanceof Error ? previewError.message : "Failed to load regression report preview."
+      );
+    } finally {
+      setBenchmarkReportPreviewPending(false);
+    }
+  }
+
+  async function toggleBenchmarkReleaseEvidence(entry: { runId?: string; suiteLabel?: string; datasetLabel?: string; promptSetLabel?: string; prompt: string }, pinned: boolean) {
+    if (!entry.runId) return;
+    setBenchmarkEvidencePendingRunId(entry.runId);
+    setBenchmarkReportPreviewError("");
+    try {
+      const response = await fetch(
+        pinned
+          ? `/api/admin/benchmark/evidence?runId=${encodeURIComponent(entry.runId)}`
+          : "/api/admin/benchmark/evidence",
+        pinned
+          ? { method: "DELETE" }
+          : {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                runId: entry.runId,
+                title: entry.suiteLabel || entry.datasetLabel || entry.promptSetLabel || entry.prompt
+              })
+            }
+      );
+      const payload = (await response.json()) as { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error || "Failed to update release evidence.");
+      }
+      await loadDashboard();
+    } catch (evidenceError) {
+      setBenchmarkReportPreviewError(
+        evidenceError instanceof Error ? evidenceError.message : "Failed to update release evidence."
+      );
+    } finally {
+      setBenchmarkEvidencePendingRunId("");
+    }
   }
 
   useEffect(() => {
@@ -3499,6 +3636,11 @@ export function AdminDashboard() {
     () => benchmarkBaselines.find((entry) => entry.id === selectedComparisonBaselineId) || benchmarkBaseline || null,
     [benchmarkBaseline, benchmarkBaselines, selectedComparisonBaselineId]
   );
+  const pinnedEvidenceRunIds = useMemo(
+    () => new Set((data?.releaseEvidence || []).map((entry) => entry.runId)),
+    [data?.releaseEvidence]
+  );
+  const providerHealthDeskRows = useMemo(() => data?.providerHealthDesk || [], [data?.providerHealthDesk]);
   const requestValues = useMemo(() => data?.series.requests.map((entry) => entry.value) || [], [data]);
   const tokenValues = useMemo(() => data?.series.totalTokens.map((entry) => entry.value) || [], [data]);
   const memoryValues = useMemo(
@@ -4122,6 +4264,33 @@ export function AdminDashboard() {
                   className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10"
                 >
                   {uiText.exportJson}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void openBenchmarkReportPreview(benchmarkData)}
+                  className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-400/20"
+                >
+                  {locale.startsWith("en") ? "Preview report" : "预览报告"}
+                </button>
+                <button
+                  type="button"
+                  disabled={!benchmarkData?.runId || benchmarkEvidencePendingRunId === benchmarkData.runId}
+                  onClick={() => {
+                    if (!benchmarkData) return;
+                    void toggleBenchmarkReleaseEvidence(
+                      benchmarkData,
+                      benchmarkData.runId ? pinnedEvidenceRunIds.has(benchmarkData.runId) : false
+                    );
+                  }}
+                  className="rounded-full border border-violet-400/20 bg-violet-400/10 px-4 py-2 text-sm font-semibold text-violet-100 transition hover:bg-violet-400/20 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
+                >
+                  {benchmarkData?.runId && pinnedEvidenceRunIds.has(benchmarkData.runId)
+                    ? locale.startsWith("en")
+                      ? "Unpin evidence"
+                      : "取消固定证据"
+                    : locale.startsWith("en")
+                      ? "Pin release evidence"
+                      : "固定发布证据"}
                 </button>
                 <button
                   type="button"
@@ -5595,6 +5764,348 @@ export function AdminDashboard() {
               </div>
             )}
 
+            {benchmarkReportPreviewPending || benchmarkReportPreviewError || benchmarkReportPreview ? (
+              <section className="rounded-3xl border border-white/10 bg-slate-950/70 p-4">
+                <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-100">
+                      {locale.startsWith("en") ? "Regression report preview" : "回归报告预览"}
+                    </p>
+                    <p className="mt-1 text-xs leading-6 text-slate-500">
+                      {locale.startsWith("en")
+                        ? "Preview the release-facing markdown before exporting, and verify how this report was matched."
+                        : "先看 release 视角的 Markdown，再确认这次报告是如何命中的。"}
+                    </p>
+                  </div>
+                  {benchmarkReportPreview ? (
+                    <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                      <span
+                        className={`rounded-full border px-2.5 py-1 font-medium ${buildBenchmarkReportMatchSourceClass(
+                          benchmarkReportPreview.matchSource
+                        )}`}
+                      >
+                        {formatBenchmarkReportMatchSource(locale, benchmarkReportPreview.matchSource)}
+                      </span>
+                      <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-slate-400">
+                        {benchmarkReportPreview.filename}
+                      </span>
+                    </div>
+                  ) : null}
+                </div>
+                {benchmarkReportPreviewError ? (
+                  <div className="mt-3 rounded-2xl border border-rose-400/20 bg-rose-400/10 px-3 py-2.5 text-sm text-rose-100">
+                    {benchmarkReportPreviewError}
+                  </div>
+                ) : null}
+                {benchmarkReportPreviewPending ? (
+                  <div className="mt-3 rounded-2xl border border-white/10 bg-black/20 px-3 py-3 text-sm text-slate-400">
+                    {locale.startsWith("en") ? "Loading regression report preview…" : "正在加载回归报告预览…"}
+                  </div>
+                ) : null}
+                {benchmarkReportPreview ? (
+                  <div className="mt-3 space-y-3">
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                      <span>
+                        {locale.startsWith("en") ? "Matched run" : "命中 run"}:{" "}
+                        <span className="font-mono text-slate-300">{benchmarkReportPreview.runId || "--"}</span>
+                      </span>
+                      <span>
+                        {locale.startsWith("en") ? "Generated" : "生成于"}:{" "}
+                        {new Date(benchmarkReportPreview.generatedAt).toLocaleString()}
+                      </span>
+                      {benchmarkReportPreview.latestGeneratedAt ? (
+                        <span>
+                          {locale.startsWith("en") ? "Latest sample at" : "样本时间"}:{" "}
+                          {new Date(benchmarkReportPreview.latestGeneratedAt).toLocaleString()}
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void handleCopyBenchmarkRunNote(
+                            benchmarkReportPreview.markdown,
+                            `report-preview:${benchmarkReportPreview.runId || "latest"}`
+                          )
+                        }
+                        className="rounded-full border border-cyan-200/20 bg-cyan-400/10 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-cyan-50 transition hover:border-cyan-200/35 hover:bg-cyan-400/20"
+                      >
+                        {benchmarkCopyState?.key === `report-preview:${benchmarkReportPreview.runId || "latest"}`
+                          ? benchmarkCopyState.tone === "success"
+                            ? locale.startsWith("en")
+                              ? "Copied"
+                              : "已复制"
+                            : locale.startsWith("en")
+                              ? "Copy failed"
+                              : "复制失败"
+                          : locale.startsWith("en")
+                            ? "Copy preview"
+                            : "复制预览"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          openBenchmarkReportMarkdown(
+                            benchmarkReportPreview?.runId ? ({ runId: benchmarkReportPreview.runId } as AgentBenchmarkResponse) : benchmarkData
+                          )
+                        }
+                        className="rounded-full border border-amber-300/20 bg-amber-300/10 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-100 transition hover:bg-amber-300/20"
+                      >
+                        {locale.startsWith("en") ? "Open markdown" : "打开 Markdown"}
+                      </button>
+                    </div>
+                    <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-2xl border border-white/10 bg-black/20 px-3 py-3 text-[11px] leading-6 text-slate-200">
+                      {benchmarkReportPreview.markdown}
+                    </pre>
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
+
+            <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3">
+              <div className="flex flex-col gap-2 xl:flex-row xl:items-start xl:justify-between">
+                <div>
+                  <p className="text-sm text-slate-300">
+                    {locale.startsWith("en") ? "Provider usage / health desk" : "Provider 使用 / 健康台"}
+                  </p>
+                  <p className="mt-1 text-xs leading-6 text-slate-500">
+                    {locale.startsWith("en")
+                      ? "Track remote provider reliability, connection health, token volume, rough cost, and the latest failure mode from one place."
+                      : "把远端 provider 的连通性、稳定性、token 体量、粗略成本和最近失败模式收在一个面板里。"}
+                  </p>
+                </div>
+                <span className="text-[11px] text-slate-500">
+                  {locale.startsWith("en") ? "24h aggregation" : "近 24h 聚合"} · {providerHealthDeskRows.length}
+                </span>
+              </div>
+              <div className="mt-3 grid gap-3 xl:grid-cols-2">
+                {providerHealthDeskRows.length ? (
+                  providerHealthDeskRows.map((entry) => (
+                    <article
+                      key={`provider-health:${entry.targetId}`}
+                      className="rounded-3xl border border-white/10 bg-slate-950/70 p-4"
+                    >
+                      <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+                        <div className="min-w-0">
+                          <p className="text-base font-semibold text-white">{entry.targetLabel}</p>
+                          <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-400">
+                            <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1">
+                              {entry.providerLabel}
+                            </span>
+                            <span
+                              className={`rounded-full border px-2.5 py-1 ${
+                                entry.lastConnectionOk === true
+                                  ? "border-emerald-300/20 bg-emerald-400/10 text-emerald-100"
+                                  : entry.lastConnectionOk === false
+                                    ? "border-rose-300/20 bg-rose-400/10 text-rose-100"
+                                    : "border-white/10 bg-white/5 text-slate-400"
+                              }`}
+                            >
+                              {entry.lastConnectionOk === true
+                                ? locale.startsWith("en")
+                                  ? "Connection OK"
+                                  : "连接正常"
+                                : entry.lastConnectionOk === false
+                                  ? locale.startsWith("en")
+                                    ? "Connection failed"
+                                    : "连接失败"
+                                  : locale.startsWith("en")
+                                    ? "Connection unknown"
+                                    : "连接未知"}
+                            </span>
+                          </div>
+                          <div className="mt-2 text-xs text-slate-500">
+                            <div>
+                              {dictionary.common.model}:{" "}
+                              <span className="font-mono text-slate-300">{entry.resolvedModel || "--"}</span>
+                            </div>
+                            {entry.lastConnectionAt ? (
+                              <div>
+                                {locale.startsWith("en") ? "Last connection check" : "最近连接检查"}:{" "}
+                                {new Date(entry.lastConnectionAt).toLocaleString()}
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
+                        <div className="grid min-w-0 gap-3 text-xs text-slate-400 sm:grid-cols-2 xl:min-w-[360px] xl:grid-cols-3">
+                          <div>
+                            <p className="uppercase tracking-[0.2em] text-slate-500">{locale.startsWith("en") ? "Requests" : "请求数"}</p>
+                            <p className="mt-2 text-sm text-white">{entry.totalRequests}</p>
+                          </div>
+                          <div>
+                            <p className="uppercase tracking-[0.2em] text-slate-500">{locale.startsWith("en") ? "Success / fail" : "成功 / 失败"}</p>
+                            <p className="mt-2 text-sm text-white">{entry.successCount} / {entry.failureCount}</p>
+                          </div>
+                          <div>
+                            <p className="uppercase tracking-[0.2em] text-slate-500">{locale.startsWith("en") ? "Est. cost" : "估算成本"}</p>
+                            <p className="mt-2 text-sm text-white">{formatUsd(entry.estimatedCostUsd)}</p>
+                          </div>
+                          <div>
+                            <p className="uppercase tracking-[0.2em] text-slate-500">{uiText.firstTokenLatency}</p>
+                            <p className="mt-2 text-sm text-white">
+                              {typeof entry.avgFirstTokenLatencyMs === "number" ? `${entry.avgFirstTokenLatencyMs.toFixed(1)} ms` : "--"}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="uppercase tracking-[0.2em] text-slate-500">{uiText.totalLatency}</p>
+                            <p className="mt-2 text-sm text-white">
+                              {typeof entry.avgLatencyMs === "number" ? `${entry.avgLatencyMs.toFixed(1)} ms` : "--"}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="uppercase tracking-[0.2em] text-slate-500">
+                              {locale.startsWith("en") ? "Token volume" : "Token 体量"}
+                            </p>
+                            <p className="mt-2 text-sm text-white">
+                              {entry.totalTokens.toLocaleString()}{" "}
+                              <span className="text-xs text-slate-500">{locale.startsWith("en") ? "tokens total" : "总 token"}</span>
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
+                        <span className="rounded-full border border-amber-300/20 bg-amber-300/10 px-2.5 py-1 text-amber-100">
+                          timeout {entry.timeoutCount}
+                        </span>
+                        <span className="rounded-full border border-rose-300/20 bg-rose-400/10 px-2.5 py-1 text-rose-100">
+                          429 {entry.rateLimitCount}
+                        </span>
+                        <span className="rounded-full border border-violet-300/20 bg-violet-400/10 px-2.5 py-1 text-violet-100">
+                          auth {entry.authFailureCount}
+                        </span>
+                        <span className="rounded-full border border-cyan-300/20 bg-cyan-400/10 px-2.5 py-1 text-cyan-100">
+                          network {entry.networkFailureCount}
+                        </span>
+                      </div>
+                      {entry.lastFailureSummary || entry.lastConnectionSummary ? (
+                        <div className="mt-3 rounded-2xl border border-white/10 bg-black/20 px-3 py-3 text-xs leading-6 text-slate-400">
+                          {entry.lastFailureSummary ? (
+                            <div>
+                              <span className="text-slate-500">{locale.startsWith("en") ? "Latest failure" : "最近失败"}:</span>{" "}
+                              {entry.lastFailureSummary}
+                            </div>
+                          ) : null}
+                          {entry.lastConnectionSummary ? (
+                            <div className={entry.lastFailureSummary ? "mt-2" : ""}>
+                              <span className="text-slate-500">{locale.startsWith("en") ? "Connection summary" : "连接摘要"}:</span>{" "}
+                              {entry.lastConnectionSummary}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </article>
+                  ))
+                ) : (
+                  <p className="text-sm text-slate-500">
+                    {locale.startsWith("en")
+                      ? "No remote provider activity has been recorded in the current aggregation window yet."
+                      : "当前聚合窗口里还没有记录到远端 provider 活动。"}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3">
+              <div className="flex flex-col gap-2 xl:flex-row xl:items-start xl:justify-between">
+                <div>
+                  <p className="text-sm text-slate-300">
+                    {locale.startsWith("en") ? "Release evidence" : "发布证据"}
+                  </p>
+                  <p className="mt-1 text-xs leading-6 text-slate-500">
+                    {locale.startsWith("en")
+                      ? "Pin the benchmark runs that should survive beyond the recent window and stay attached to release reviews."
+                      : "把需要跨越最近窗口保留下来的 benchmark run 固定下来，作为 release 审阅证据。"}
+                  </p>
+                </div>
+                <span className="text-[11px] text-slate-500">{data?.releaseEvidence.length || 0}</span>
+              </div>
+              <div className="mt-3 grid gap-3 xl:grid-cols-2">
+                {data?.releaseEvidence.length ? (
+                  data.releaseEvidence.map((entry) => (
+                    <article
+                      key={`release-evidence:${entry.id}`}
+                      className="rounded-3xl border border-white/10 bg-slate-950/70 p-4"
+                    >
+                      <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="text-base font-semibold text-white">
+                              {entry.title || entry.suiteLabel || entry.datasetLabel || entry.promptSetLabel || entry.prompt}
+                            </p>
+                            <span
+                              className={`rounded-full border px-2.5 py-1 text-[11px] ${buildBenchmarkReportMatchSourceClass(
+                                entry.matchSource
+                              )}`}
+                            >
+                              {formatBenchmarkReportMatchSource(locale, entry.matchSource)}
+                            </span>
+                          </div>
+                          <div className="mt-2 space-y-1 text-xs text-slate-500">
+                            <p>
+                              {locale.startsWith("en") ? "Pinned at" : "固定于"}: {new Date(entry.pinnedAt).toLocaleString()}
+                            </p>
+                            <p>
+                              {locale.startsWith("en") ? "Run generated at" : "run 生成于"}: {new Date(entry.generatedAt).toLocaleString()}
+                            </p>
+                            <p>
+                              runId: <span className="font-mono text-slate-300">{entry.runId}</span>
+                            </p>
+                          </div>
+                        </div>
+                        <div className="grid gap-3 text-xs text-slate-400 sm:grid-cols-2 xl:min-w-[300px] xl:grid-cols-3">
+                          <div>
+                            <p className="uppercase tracking-[0.2em] text-slate-500">{locale.startsWith("en") ? "Mode" : "模式"}</p>
+                            <p className="mt-2 text-sm text-white">{entry.benchmarkMode || "--"}</p>
+                          </div>
+                          <div>
+                            <p className="uppercase tracking-[0.2em] text-slate-500">{uiText.contextWindowFilter}</p>
+                            <p className="mt-2 text-sm text-white">
+                              {entry.contextWindow >= 1024 ? `${Math.round(entry.contextWindow / 1024)}K` : entry.contextWindow}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="uppercase tracking-[0.2em] text-slate-500">{locale.startsWith("en") ? "Results" : "结果数"}</p>
+                            <p className="mt-2 text-sm text-white">{entry.results.length}</p>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void openBenchmarkReportPreview(entry)}
+                          className="rounded-full border border-cyan-300/20 bg-cyan-400/10 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-cyan-50 transition hover:bg-cyan-400/20"
+                        >
+                          {locale.startsWith("en") ? "Preview report" : "预览报告"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openBenchmarkReportMarkdown(entry)}
+                          className="rounded-full border border-amber-300/20 bg-amber-300/10 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-100 transition hover:bg-amber-300/20"
+                        >
+                          {locale.startsWith("en") ? "Open markdown" : "打开 Markdown"}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={benchmarkEvidencePendingRunId === entry.runId}
+                          onClick={() => void toggleBenchmarkReleaseEvidence(entry, true)}
+                          className="rounded-full border border-rose-300/20 bg-rose-400/10 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-rose-100 transition hover:bg-rose-400/20 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
+                        >
+                          {locale.startsWith("en") ? "Remove pin" : "取消固定"}
+                        </button>
+                      </div>
+                    </article>
+                  ))
+                ) : (
+                  <p className="text-sm text-slate-500">
+                    {locale.startsWith("en")
+                      ? "Nothing is pinned yet. Pin a benchmark run once it becomes release-worthy."
+                      : "还没有固定的发布证据。等某一轮 benchmark 值得进 release 时，再把它固定下来。"}
+                  </p>
+                )}
+              </div>
+            </div>
+
             <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3">
               <div className="flex items-center justify-between gap-3">
                 <p className="text-sm text-slate-300">{uiText.benchmarkHistory}</p>
@@ -5678,7 +6189,38 @@ export function AdminDashboard() {
                                 </div>
                               ) : null}
                             </div>
-                            <div className="text-[11px] text-slate-500">{entry.results.length} results</div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="rounded-full border border-cyan-300/20 bg-cyan-400/10 px-2.5 py-1 text-[11px] text-cyan-100">
+                                {formatBenchmarkReportMatchSource(locale, "recent-window")}
+                              </span>
+                              <span className="text-[11px] text-slate-500">{entry.results.length} results</span>
+                              <button
+                                type="button"
+                                onClick={() => void openBenchmarkReportPreview(entry)}
+                                className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-semibold text-slate-200 transition hover:bg-white/10"
+                              >
+                                {locale.startsWith("en") ? "Preview" : "预览"}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={!entry.runId || benchmarkEvidencePendingRunId === entry.runId}
+                                onClick={() =>
+                                  void toggleBenchmarkReleaseEvidence(
+                                    entry,
+                                    entry.runId ? pinnedEvidenceRunIds.has(entry.runId) : false
+                                  )
+                                }
+                                className="rounded-full border border-violet-400/20 bg-violet-400/10 px-2.5 py-1 text-[11px] font-semibold text-violet-100 transition hover:bg-violet-400/20 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
+                              >
+                                {entry.runId && pinnedEvidenceRunIds.has(entry.runId)
+                                  ? locale.startsWith("en")
+                                    ? "Pinned"
+                                    : "已固定"
+                                  : locale.startsWith("en")
+                                    ? "Pin"
+                                    : "固定"}
+                              </button>
+                            </div>
                           </div>
                         );
                       })()}

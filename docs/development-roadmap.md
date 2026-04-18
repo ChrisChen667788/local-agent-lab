@@ -123,6 +123,8 @@ Last updated: 2026-04-18
 22. 前端服务访问恢复，`/agent` 与 `/admin` 已验证返回 `200`
 23. benchmark 回归报告导出已补全历史兜底，不再因时间窗口过窄直接失败
 24. Compare middle-zone 已补矩阵式 target selector 与 lane preview
+25. `/admin` 已补 benchmark regression report preview、release evidence 固定与 match-source 徽标
+26. `/admin` 已补 provider usage / health desk，汇总远端 provider 的连接状态、timeout / 429 / auth failure、token 体量与粗略成本
 
 ## Main gaps
 
@@ -146,7 +148,7 @@ Last updated: 2026-04-18
    - 报告预览 / 报告固定 / release evidence 视图
 
 4. benchmark 和会话历史还需更强管理
-   当前 benchmark 已支持 Markdown / JSON 导出、样本过滤、历史级成功/失败过滤、providerProfile / thinkingMode 过滤，并且回归报告导出已经支持精确 runId 与全历史兜底；会话已支持恢复、重命名、删除、固定、搜索、按 target 分组、按 target 过滤、批量清理、批量导出（当前筛选项 / 仅固定项），但还没有服务端持久化。
+   当前 benchmark 已支持 Markdown / JSON 导出、样本过滤、历史级成功/失败过滤、providerProfile / thinkingMode 过滤，并且回归报告导出已经支持精确 runId、最近窗口命中和全历史兜底；`/admin` 已补报告预览、release evidence 固定和 match source 徽标。会话已支持恢复、重命名、删除、固定、搜索、按 target 分组、按 target 过滤、批量清理、批量导出（当前筛选项 / 仅固定项），但还没有真正的服务端持久化与多设备连续性。
 
 5. 产品结构仍有旧页面残留
    导航已收敛到 `/agent` 和 `/admin`，但仓库里还保留历史演示页面文件。
@@ -161,11 +163,11 @@ Last updated: 2026-04-18
     当前已有上下文裁剪、短问答自动降档、按 profile 压 `max_tokens`，但还没有 prompt caching、semantic cache、任务级 token budget controller、route-to-small-model、retrieval compression、response compression、speculative decoding 等系统级降本能力。
 
 9. Compare 的阅读体验仍未完全收口
-   当前 `Compare targets` 与 `lane preview` 已矩阵化，主阅读负担已下降；下一步仍需继续补：
-   - base lane 固定阅读流
+   当前 `Compare targets`、`lane preview` 和中段 composer 已矩阵化，主阅读负担已下降；base lane 优先阅读和次级 diff 抽屉也已经形成初版。下一步仍需继续补：
    - 窄屏 / 小屏 compare 布局
-   - 次级 diff 抽屉默认折叠策略
+   - 次级 diff 抽屉更激进的默认折叠策略
    - review summary 与 report preview 更顺滑的联动
+   - lane pinning 与多 lane 长输出时的二级导航
 
 ## New backlog from the latest review
 

@@ -684,6 +684,64 @@ export type AgentBenchmarkBaseline = AgentBenchmarkResponse & {
   isDefault?: boolean;
 };
 
+export type AgentBenchmarkReportMatchSource = "recent-window" | "full-history" | "exact-run-id";
+
+export type AgentBenchmarkReportPreview = {
+  ok: true;
+  runId?: string;
+  generatedAt: string;
+  latestGeneratedAt?: string;
+  filename: string;
+  title: string;
+  matchSource: AgentBenchmarkReportMatchSource;
+  markdown: string;
+};
+
+export type AgentBenchmarkReleaseEvidence = {
+  id: string;
+  runId: string;
+  pinnedAt: string;
+  title?: string;
+  note?: string;
+  generatedAt: string;
+  benchmarkMode?: AgentBenchmarkMode;
+  prompt: string;
+  promptSetLabel?: string;
+  datasetLabel?: string;
+  suiteLabel?: string;
+  profileBatchScope?: AgentBenchmarkProfileBatchScope;
+  contextWindow: number;
+  matchSource: AgentBenchmarkReportMatchSource;
+  results: AgentBenchmarkResult[];
+};
+
+export type AgentProviderHealthDeskItem = {
+  targetId: string;
+  targetLabel: string;
+  providerLabel: string;
+  resolvedModel?: string;
+  totalRequests: number;
+  successCount: number;
+  failureCount: number;
+  timeoutCount: number;
+  rateLimitCount: number;
+  authFailureCount: number;
+  networkFailureCount: number;
+  totalPromptTokens: number;
+  totalCompletionTokens: number;
+  totalTokens: number;
+  estimatedCostUsd?: number | null;
+  pricingSource?: "official" | "unavailable";
+  avgFirstTokenLatencyMs?: number | null;
+  avgLatencyMs?: number | null;
+  lastSuccessAt?: string | null;
+  lastFailureAt?: string | null;
+  lastFailureSummary?: string | null;
+  lastConnectionOk?: boolean | null;
+  lastConnectionAt?: string | null;
+  lastConnectionSummary?: string | null;
+};
+
 export type AgentConnectionCheckStageId = "models" | "chat" | "tool_calls";
 
 export type AgentConnectionCheckStage = {
