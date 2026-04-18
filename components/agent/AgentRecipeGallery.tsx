@@ -111,16 +111,17 @@ export function AgentRecipeGallery({
         </div>
       </div>
 
-      <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1.45fr)_minmax(320px,0.95fr)]">
+      <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1.55fr)_minmax(320px,0.85fr)]">
         <div className="space-y-3">
           {error ? (
             <div className="rounded-2xl border border-rose-400/20 bg-rose-400/10 px-4 py-3 text-sm text-rose-100">{error}</div>
           ) : null}
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+          <div className="overflow-x-auto pb-2">
+            <div className="grid grid-flow-col auto-cols-[minmax(292px,340px)] gap-3">
             {recipes.map((recipe) => (
               <article
                 key={recipe.id}
-                className={`rounded-[24px] border px-4 py-4 transition ${
+                className={`h-full rounded-[24px] border px-4 py-4 transition ${
                   activeRecipeId === recipe.id
                     ? "border-cyan-400/30 bg-cyan-400/10"
                     : "border-white/10 bg-black/20 hover:border-white/20"
@@ -172,7 +173,7 @@ export function AgentRecipeGallery({
                   </span>
                 </div>
 
-                <p className="mt-4 line-clamp-3 rounded-2xl border border-white/10 bg-slate-950/60 px-3 py-3 text-[13px] leading-6 text-slate-300">
+                <p className="mt-4 line-clamp-2 rounded-2xl border border-white/10 bg-slate-950/60 px-3 py-3 text-[13px] leading-6 text-slate-300">
                   {recipe.input || (isEn ? "This recipe focuses on reusable controls more than prompt text." : "这个配方更强调控制项复用，而不是固定 prompt。")}
                 </p>
 
@@ -212,6 +213,7 @@ export function AgentRecipeGallery({
                 </div>
               </article>
             ))}
+            </div>
           </div>
         </div>
 
