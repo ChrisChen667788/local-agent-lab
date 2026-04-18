@@ -1,6 +1,6 @@
 # Agent Lab Development Roadmap
 
-Last updated: 2026-04-08
+Last updated: 2026-04-18
 
 ## Version snapshot
 
@@ -46,6 +46,7 @@ Last updated: 2026-04-08
 - 基线面板已支持指定某条 baseline 作为当前对比对象
 - prompt 集已支持新增 / 编辑 / 删除
 - benchmark 已支持导出 Markdown 回归报告
+- benchmark 回归报告导出已支持 `exact runId / recent window / full history fallback`
 - benchmark 已支持正式里程碑评测集，并可输出更接近正式评测口径的回归报告
 - benchmark 已区分 `milestone-formal` 与 `milestone-full`
 - benchmark 已支持运行进度、预计剩余时间与 runId 级进度查询
@@ -60,6 +61,7 @@ Last updated: 2026-04-08
 - provider 调用已补单次自动恢复策略
 - `/agent` 与 `/admin` 已改成动态加载重型 client 模块，首屏不再被大 bundle 阻塞
 - 已新增 `scripts/dev-server.sh`，并改用 `screen` 稳定托管本地前端服务
+- Compare 中段已改成更接近 studio/workbench 的矩阵布局，`Compare targets` 与 `lane preview` 不再是长卡堆叠
 
 ## Latest planning additions
 
@@ -88,11 +90,12 @@ Last updated: 2026-04-08
 
 ## Current focus
 
-当前主目标不是继续盲目加功能，而是把这三件事做实：
+当前主目标不是继续盲目加功能，而是把这四件事做实：
 
 1. 本地网关稳定性
 2. Benchmark 指标可信度
 3. 会话与运维历史可追溯性
+4. Compare / benchmark 高信息密度下的可读性
 
 ## Completed in the current line
 
@@ -118,6 +121,8 @@ Last updated: 2026-04-08
 20. 已补知识库管理 API、检索查询 API 和 grounded system prompt 注入
 21. `/agent` 和 `/admin` 都能看到 retrieval hit / citation / 低置信度状态
 22. 前端服务访问恢复，`/agent` 与 `/admin` 已验证返回 `200`
+23. benchmark 回归报告导出已补全历史兜底，不再因时间窗口过窄直接失败
+24. Compare middle-zone 已补矩阵式 target selector 与 lane preview
 
 ## Main gaps
 
@@ -138,9 +143,10 @@ Last updated: 2026-04-08
    - dataset / suite 的趋势对照
    - 正式评测报告模板收敛
    - 数据集自动扩展与人工复核闭环
+   - 报告预览 / 报告固定 / release evidence 视图
 
 4. benchmark 和会话历史还需更强管理
-   当前 benchmark 已支持 Markdown / JSON 导出、样本过滤、历史级成功/失败过滤、providerProfile / thinkingMode 过滤；会话已支持恢复、重命名、删除、固定、搜索、按 target 分组、按 target 过滤、批量清理、批量导出（当前筛选项 / 仅固定项），但还没有服务端持久化。
+   当前 benchmark 已支持 Markdown / JSON 导出、样本过滤、历史级成功/失败过滤、providerProfile / thinkingMode 过滤，并且回归报告导出已经支持精确 runId 与全历史兜底；会话已支持恢复、重命名、删除、固定、搜索、按 target 分组、按 target 过滤、批量清理、批量导出（当前筛选项 / 仅固定项），但还没有服务端持久化。
 
 5. 产品结构仍有旧页面残留
    导航已收敛到 `/agent` 和 `/admin`，但仓库里还保留历史演示页面文件。
@@ -152,7 +158,14 @@ Last updated: 2026-04-08
    当前已有 tool loop、profile、thinking、benchmark、baseline，但还没有 Planner、Memory System、状态持久化工作流、错误恢复策略、检索增强编排这些更接近生产级 Agent 的能力。
 
 8. 成本优化仍偏请求级策略
-   当前已有上下文裁剪、短问答自动降档、按 profile 压 `max_tokens`，但还没有 prompt caching、semantic cache、任务级 token budget controller、route-to-small-model、retrieval compression、response compression、speculative decoding 等系统级降本能力。
+    当前已有上下文裁剪、短问答自动降档、按 profile 压 `max_tokens`，但还没有 prompt caching、semantic cache、任务级 token budget controller、route-to-small-model、retrieval compression、response compression、speculative decoding 等系统级降本能力。
+
+9. Compare 的阅读体验仍未完全收口
+   当前 `Compare targets` 与 `lane preview` 已矩阵化，主阅读负担已下降；下一步仍需继续补：
+   - base lane 固定阅读流
+   - 窄屏 / 小屏 compare 布局
+   - 次级 diff 抽屉默认折叠策略
+   - review summary 与 report preview 更顺滑的联动
 
 ## New backlog from the latest review
 

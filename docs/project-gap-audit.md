@@ -2,6 +2,12 @@
 
 This is the current gap audit after the `v0.3.0` launch packaging pass.
 
+Updated on 2026-04-18 after:
+
+- compare middle-zone matrix layout refinement
+- runnable recipe gallery + request export
+- benchmark regression export fallback hardening
+
 The goal is not to list every possible idea.
 The goal is to identify what is:
 
@@ -35,7 +41,8 @@ These are usable, but still feel like the next round of improvement will pay off
 Current state:
 
 - much better than before
-- still dense when multiple lanes produce long outputs
+- target selection and lane preview are now much clearer than the old tall-card layout
+- still dense when multiple lanes produce long outputs or when the viewport narrows
 
 What to improve:
 
@@ -43,6 +50,7 @@ What to improve:
 - lane pinning
 - better per-lane collapse defaults
 - more compact diff summary chips
+- a true narrow-width compare layout instead of compressed desktop blocks
 
 ### 2. Runtime telemetry interpretation
 
@@ -76,26 +84,28 @@ Current state:
 
 - formal / subset / focused suites exist
 - percentile boards and regression summaries are strong proof assets
+- regression export no longer dies just because the current time window is too narrow
 
 What to improve:
 
 - clearer explanation of quality score methodology
 - better failure grouping
 - stronger benchmark-to-issue export flow
+- report preview / pinned-report flow inside `/admin`
 
 ### 5. Recipe and reproducibility layer
 
 Current state:
 
-- compare presets and benchmark presets already exist in pieces
-- the product can already export reports and review notes
+- a real recipe gallery now exists
+- compare recipes can already run compare or hand off to benchmark
+- `Get Code` can already export runnable snippets
 
 What to improve:
 
-- a real `Studio Recipe Gallery`
 - stronger share / import story
-- `Get Code` style request reproduction
 - clearer capability chips for tools / retrieval / structured output / thinking
+- recipe versioning and recipe-level benchmark history
 
 ## Clearly missing or not finished yet
 
@@ -178,15 +188,28 @@ Why it matters:
 - the project already treats local runtimes as operational surfaces
 - remote providers should be equally observable
 
+### P1. Benchmark history discoverability
+
+Still missing:
+
+- a report drawer / preview before exporting
+- pinning a benchmark run as “release evidence”
+- explicit “recent window” vs “full history fallback” badges in the main `/admin` history UI
+
+Why it matters:
+
+- export is now reliable again
+- users still need clearer in-product cues about which run was matched and why
+
 ## Best next priorities after launch
 
 If we pick the highest-leverage sequence, it should be:
 
-1. Studio Recipe Gallery + Get Code
-2. Server-side persistence
+1. Server-side persistence
+2. Fine-tune workflow planning into first executable slice
 3. Retrieval stage two
-4. Fine-tune workflow planning into first executable slice
-5. Provider usage desk
+4. Provider usage desk
+5. Benchmark history discoverability + report preview
 6. CI / demo automation
 
 ## Open GitHub issues that still matter
@@ -218,4 +241,6 @@ The biggest unfinished work is turning this into a more durable, explainable, an
 - persistence
 - stronger retrieval
 - fine-tune workflow
+- provider operations
+- benchmark history / report discoverability
 - better proof automation

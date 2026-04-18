@@ -68,6 +68,38 @@ function filterResults(entry: AgentBenchmarkResponse, options: {
   });
 }
 
+function filterBenchmarkLogs(
+  logs: AgentBenchmarkResponse[],
+  workload: {
+    benchmarkMode?: string;
+    promptSetId?: string;
+    datasetId?: string;
+    suiteId?: string;
+    profileBatchScope?: string;
+    prompt?: string;
+    contextWindow?: number;
+  },
+  resultOptions: {
+    targetIds: string[];
+    providerProfile: string;
+    thinkingMode: string;
+  }
+) {
+  return logs
+    .filter((entry) => matchesWorkload(entry, workload))
+    .map((entry) => ({
+      ...entry,
+      results: filterResults(entry, resultOptions)
+    }))
+    .filter((entry) => entry.results.length > 0);
+}
+
+function selectLatestBenchmarkLog(logs: AgentBenchmarkResponse[]) {
+  const latestSuccessful =
+    [...logs].reverse().find((entry) => entry.results.some((result) => result.okRuns > 0)) || null;
+  return latestSuccessful || logs[logs.length - 1] || null;
+}
+
 function selectBaseline(
   baselines: AgentBenchmarkBaseline[],
   workload: { targetIds: string[]; benchmarkMode?: string; promptSetId?: string; datasetId?: string; datasetSampleCount?: number; suiteId?: string; profileBatchScope?: string; prompt?: string; contextWindow?: number }
@@ -203,6 +235,7 @@ function renderMarkdown(input: {
   deltas: ReturnType<typeof compareToBaseline>;
   heatmapSummary: ReturnType<typeof buildHeatmapSummary>;
   anomalies: string[];
+  matchScope: "window" | "full-history" | "run-id";
 }) {
   const lines: string[] = [
     "# Benchmark Regression Report",
@@ -218,7 +251,15 @@ function renderMarkdown(input: {
     `- Context window: ${input.latest.contextWindow}`,
     `- Runs: ${input.latest.runs}`,
     `- Provider profile: ${input.latest.providerProfile || "--"}`,
-    `- Thinking mode: ${input.latest.thinkingMode || "standard"}`
+    `- Thinking mode: ${input.latest.thinkingMode || "standard"}`,
+    `- Run ID: ${input.latest.runId || "--"}`,
+    `- Match source: ${
+      input.matchScope === "run-id"
+        ? "exact runId"
+        : input.matchScope === "full-history"
+          ? "full history fallback"
+          : "recent window"
+    }`
   ];
 
   if (input.latest.promptSetLabel) {
@@ -289,34 +330,41 @@ export async function GET(request: Request) {
   const contextWindow = parseContextWindow(searchParams);
   const { windowMinutes, sinceIso } = parseSinceIso(searchParams);
 
-  const sourceLogs = readBenchmarkLogs(requestedRunId ? { limit: 500 } : { sinceIso, limit: 300 });
-  let filteredLogs = sourceLogs
-    .filter((entry) => matchesWorkload(entry, { benchmarkMode, promptSetId, datasetId, suiteId, profileBatchScope, prompt, contextWindow }))
-    .map((entry) => ({
-      ...entry,
-      results: filterResults(entry, { targetIds, providerProfile, thinkingMode })
-    }))
-    .filter((entry) => entry.results.length > 0);
+  const workloadFilter = { benchmarkMode, promptSetId, datasetId, suiteId, profileBatchScope, prompt, contextWindow };
+  const resultFilter = { targetIds, providerProfile, thinkingMode };
+  const recentLogs = readBenchmarkLogs({ sinceIso, limit: 300 });
+  const allLogs = readBenchmarkLogs({ limit: 1000 });
 
-  let latestSuccessful =
-    [...filteredLogs].reverse().find((entry) => entry.results.some((result) => result.okRuns > 0)) || null;
-  let latest = latestSuccessful || filteredLogs[filteredLogs.length - 1] || null;
+  let filteredLogs = filterBenchmarkLogs(recentLogs, workloadFilter, resultFilter);
+  let latest = selectLatestBenchmarkLog(filteredLogs);
+  let matchScope: "window" | "full-history" | "run-id" = "window";
 
   if (requestedRunId) {
-    const exactRun = sourceLogs.find((entry) => entry.runId === requestedRunId) || null;
+    const exactRun = allLogs.find((entry) => entry.runId === requestedRunId) || null;
     if (exactRun) {
       const exactFiltered = {
         ...exactRun,
-        results: filterResults(exactRun, { targetIds, providerProfile, thinkingMode })
+        results: filterResults(exactRun, resultFilter)
       };
       if (exactFiltered.results.length > 0) {
         latest = exactFiltered;
+        matchScope = "run-id";
         if (!filteredLogs.some((entry) => entry.runId === exactFiltered.runId)) {
           filteredLogs = [...filteredLogs, exactFiltered].sort((left, right) =>
             left.generatedAt.localeCompare(right.generatedAt)
           );
         }
       }
+    }
+  }
+
+  if (!latest) {
+    const fallbackLogs = filterBenchmarkLogs(allLogs, workloadFilter, resultFilter);
+    const fallbackLatest = selectLatestBenchmarkLog(fallbackLogs);
+    if (fallbackLatest) {
+      filteredLogs = fallbackLogs;
+      latest = fallbackLatest;
+      matchScope = "full-history";
     }
   }
 
@@ -345,7 +393,8 @@ export async function GET(request: Request) {
     baseline,
     deltas,
     heatmapSummary,
-    anomalies
+    anomalies,
+    matchScope
   });
 
   return new NextResponse(markdown, {
