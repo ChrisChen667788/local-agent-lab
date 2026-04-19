@@ -4022,6 +4022,17 @@ export function AdminDashboard() {
             <div>
               <p className="text-sm text-slate-300">{uiText.compareView}</p>
               <p className="mt-2 text-xs leading-6 text-slate-500">{uiText.compareTargets}</p>
+              <p className="mt-1 text-[11px] leading-5 text-emerald-400/90">
+                {locale === "zh-CN"
+                  ? "✓ 32K 上下文已验证"
+                  : locale === "zh-TW"
+                    ? "✓ 32K 上下文已驗證"
+                    : locale === "ja"
+                      ? "✓ 32K コンテキスト検証済み"
+                      : locale === "ko"
+                        ? "✓ 32K 컨텍스트 검증됨"
+                        : "✓ 32K context validated"}
+              </p>
             </div>
             <div className="flex flex-wrap gap-2">
               {agentTargets.map((target) => {
@@ -4628,7 +4639,7 @@ export function AdminDashboard() {
                 <div className="space-y-3 rounded-2xl border border-white/10 bg-black/20 p-3">
                   <div>
                     <p className="mb-2 text-[11px] uppercase tracking-[0.18em] text-slate-500">{dictionary.common.local}</p>
-                    <p className="mb-3 text-[11px] leading-5 text-slate-500">
+                    <p className="mb-2 text-[11px] leading-5 text-slate-500">
                       {locale === "zh-CN"
                         ? "Qwen3.5 4B 为默认本地 4B 主力，Qwen3 4B 保留为对比项。"
                         : locale === "zh-TW"
@@ -4638,6 +4649,17 @@ export function AdminDashboard() {
                             : locale === "ko"
                               ? "Qwen3.5 4B를 기본 로컬 4B 주력으로 두고, Qwen3 4B는 비교용으로 유지합니다."
                               : "Qwen3.5 4B is now the default local 4B profile; Qwen3 4B remains as the comparison target."}
+                    </p>
+                    <p className="mb-3 text-[11px] leading-5 text-emerald-400/90">
+                      {locale === "zh-CN"
+                        ? "✓ 推荐本地默认：32K 上下文（已验证）"
+                        : locale === "zh-TW"
+                          ? "✓ 推薦本地預設：32K 上下文（已驗證）"
+                          : locale === "ja"
+                            ? "✓ 推奨ローカル既定：32K コンテキスト（検証済み）"
+                            : locale === "ko"
+                              ? "✓ 권장 로컬 기본값: 32K 컨텍스트(검증됨)"
+                              : "✓ Recommended local default: 32K context (validated)"}
                     </p>
                     <div className="space-y-2">
                       {localBenchmarkTargets.map((target) => {
