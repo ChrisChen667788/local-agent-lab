@@ -62,6 +62,7 @@ DEFAULT_DATA_DIR = Path(
     )
 )
 DEFAULT_CACHE_ROOT = DEFAULT_DATA_DIR.parent / "hf-cache"
+RUNTIME_ATTACHMENTS_FILE = DEFAULT_DATA_DIR / "finetune" / "runtime-attachments.json"
 hf_home = ensure_writable_directory(os.getenv("HF_HOME"), DEFAULT_CACHE_ROOT)
 hf_hub_cache = ensure_writable_directory(
     os.getenv("HF_HUB_CACHE") or os.getenv("HUGGINGFACE_HUB_CACHE"),
@@ -207,6 +208,10 @@ def build_model_registry_entry(
     source_path: Path | str | None = None,
     source_kind: str = "configured",
     discovery_root: Path | str | None = None,
+    adapter_path: Path | str | None = None,
+    adapter_name: str | None = None,
+    adapter_job_id: str | None = None,
+    base_alias: str | None = None,
 ):
     source_path_text = str(source_path) if source_path else None
     return {
@@ -215,6 +220,10 @@ def build_model_registry_entry(
         "source_path": source_path_text,
         "source_kind": source_kind,
         "discovery_root": str(discovery_root) if discovery_root else None,
+        "adapter_path": str(adapter_path) if adapter_path else None,
+        "adapter_name": adapter_name,
+        "adapter_job_id": adapter_job_id,
+        "base_alias": base_alias,
     }
 
 
@@ -390,9 +399,58 @@ def discover_local_installed_model_paths():
     return discovered
 
 
+def discover_attached_adapter_runtimes():
+    if not RUNTIME_ATTACHMENTS_FILE.exists():
+        return {}
+
+    try:
+        payload = json.loads(RUNTIME_ATTACHMENTS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+    if not isinstance(payload, list):
+        return {}
+
+    discovered = {}
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        alias = entry.get("alias")
+        adapter_path = entry.get("adapterPath")
+        base_model_ref = entry.get("baseModelRef")
+        if (
+            not isinstance(alias, str)
+            or not alias.strip()
+            or not isinstance(adapter_path, str)
+            or not adapter_path.strip()
+            or not isinstance(base_model_ref, str)
+            or not base_model_ref.strip()
+        ):
+            continue
+
+        normalized_alias = normalize_local_model_alias(alias)
+        discovered[normalized_alias] = build_model_registry_entry(
+            base_model_ref.strip(),
+            repo_id=entry.get("baseSourceRepoId") if isinstance(entry.get("baseSourceRepoId"), str) else None,
+            source_path=entry.get("baseSourcePath") if isinstance(entry.get("baseSourcePath"), str) else None,
+            source_kind="adapter-runtime",
+            discovery_root=RUNTIME_ATTACHMENTS_FILE.parent,
+            adapter_path=adapter_path.strip(),
+            adapter_name=entry.get("label") if isinstance(entry.get("label"), str) else None,
+            adapter_job_id=entry.get("jobId") if isinstance(entry.get("jobId"), str) else None,
+            base_alias=entry.get("baseTargetId") if isinstance(entry.get("baseTargetId"), str) else None,
+        )
+
+    return discovered
+
+
 def refresh_model_repos():
     global MODEL_REPOS, MODEL_METADATA
-    discovered = {**discover_cached_model_repos(), **discover_local_installed_model_paths()}
+    discovered = {
+        **discover_cached_model_repos(),
+        **discover_local_installed_model_paths(),
+        **discover_attached_adapter_runtimes(),
+    }
     MODEL_METADATA = {**build_base_model_registry(), **discovered}
     MODEL_REPOS = {
         alias: entry["repo"]
@@ -1397,9 +1455,13 @@ def get_loaded_runtime(alias: str):
     global loaded_alias, loaded_model, loaded_tokenizer, loading_alias, loading_started_at, loading_error
 
     refresh_model_repos()
+    metadata = MODEL_METADATA.get(alias) or {}
     repo = MODEL_REPOS.get(alias)
     if not repo:
         raise HTTPException(status_code=404, detail=f"Unsupported local model alias: {alias}")
+    adapter_path = metadata.get("adapter_path") if isinstance(metadata, dict) else None
+    if not isinstance(adapter_path, str):
+        adapter_path = None
 
     if loaded_alias == alias and loaded_model is not None and loaded_tokenizer is not None:
         return repo, loaded_model, loaded_tokenizer
@@ -1438,10 +1500,14 @@ def get_loaded_runtime(alias: str):
             try:
                 _, load_fn, _ = get_mlx_runtime()
                 print(
-                    f"[load] starting alias={alias} repo={repo}",
+                    f"[load] starting alias={alias} repo={repo}"
+                    + (f" adapter_path={adapter_path}" if adapter_path else ""),
                     flush=True,
                 )
-                loaded_model, loaded_tokenizer = load_fn(repo)
+                if adapter_path:
+                    loaded_model, loaded_tokenizer = load_fn(repo, adapter_path=adapter_path)
+                else:
+                    loaded_model, loaded_tokenizer = load_fn(repo)
                 loaded_alias = alias
                 print(
                     f"[load] finished alias={alias} elapsed_ms={round((time.time() - loading_started_at) * 1000, 1)}",
@@ -2162,6 +2228,10 @@ def list_models():
                 "source_path": metadata.get("source_path"),
                 "source_kind": metadata.get("source_kind"),
                 "discovery_root": metadata.get("discovery_root"),
+                "adapter_path": metadata.get("adapter_path"),
+                "adapter_name": metadata.get("adapter_name"),
+                "adapter_job_id": metadata.get("adapter_job_id"),
+                "base_alias": metadata.get("base_alias"),
             }
             for alias, metadata in MODEL_METADATA.items()
         ]

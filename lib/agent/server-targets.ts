@@ -14,6 +14,10 @@ type LocalGatewayModelRecord = {
   source_path?: string;
   source_kind?: string;
   discovery_root?: string;
+  adapter_path?: string;
+  adapter_name?: string;
+  adapter_job_id?: string;
+  base_alias?: string;
 };
 
 const BUILTIN_TARGET_IDS = new Set(builtinAgentTargets.map((target) => target.id));
@@ -122,7 +126,13 @@ function inferMemoryProfile(alias: string, modelDescriptor?: string) {
 }
 
 function normalizeSourceKind(value?: string): AgentTarget["sourceKind"] | undefined {
-  if (value === "configured" || value === "huggingface-cache" || value === "lm-studio" || value === "custom-directory") {
+  if (
+    value === "configured" ||
+    value === "huggingface-cache" ||
+    value === "lm-studio" ||
+    value === "custom-directory" ||
+    value === "adapter-runtime"
+  ) {
     return value;
   }
   return undefined;
@@ -138,6 +148,8 @@ function inferSourceLabel(sourceKind?: string) {
       return "LM Studio library";
     case "custom-directory":
       return "Custom model directory";
+    case "adapter-runtime":
+      return "Fine-tune adapter runtime";
     default:
       return undefined;
   }
@@ -145,6 +157,15 @@ function inferSourceLabel(sourceKind?: string) {
 
 function buildSourceNotes(entry: LocalGatewayModelRecord, sourceLabel?: string) {
   const notes: string[] = ["This target was auto-discovered from the local gateway model registry."];
+  if (entry.base_alias) {
+    notes.push(`Base model alias: ${entry.base_alias}`);
+  }
+  if (entry.adapter_name) {
+    notes.push(`Adapter runtime: ${entry.adapter_name}`);
+  }
+  if (entry.adapter_path) {
+    notes.push(`Adapter path: ${entry.adapter_path}`);
+  }
   if (entry.repo_id) {
     notes.push(`Detected repo id: ${entry.repo_id}`);
   }
@@ -232,12 +253,17 @@ function buildDiscoveredLocalTarget(entry: LocalGatewayModelRecord): AgentTarget
   const sourceLabel = inferSourceLabel(sourceKind);
   return {
     id: targetId,
-    label: humanizeLocalModelName(targetId, modelDescriptor),
+    label:
+      sourceKind === "adapter-runtime"
+        ? entry.adapter_name?.trim() || `${humanizeLocalModelName(targetId, modelDescriptor)} Adapter`
+        : humanizeLocalModelName(targetId, modelDescriptor),
     providerLabel: "Local MLX Gateway",
     transport: "openai-compatible",
     execution: "local",
     description:
-      "Auto-discovered local model from the MLX gateway registry. It can be used anywhere the current local targets already work: chat, compare, runtime ops, and benchmark runs.",
+      sourceKind === "adapter-runtime"
+        ? "Fine-tune adapter mounted on the local MLX gateway. It can be used anywhere the current local targets already work: chat, compare, runtime ops, and benchmark runs."
+        : "Auto-discovered local model from the MLX gateway registry. It can be used anywhere the current local targets already work: chat, compare, runtime ops, and benchmark runs.",
     modelEnv: `LOCAL_${envKeyBase}_MODEL`,
     modelDefault: targetId,
     baseUrlEnv: "LOCAL_AGENT_BASE_URL",
@@ -254,8 +280,12 @@ function buildDiscoveredLocalTarget(entry: LocalGatewayModelRecord): AgentTarget
     sourceRepoId: entry.repo_id,
     notes: buildSourceNotes(entry, sourceLabel),
     launchHints: [
-      "Drop a compatible MLX model into the local gateway registry or Hugging Face cache.",
-      "Refresh /agent or /admin to rescan the gateway model list."
+      sourceKind === "adapter-runtime"
+        ? "Use benchmark or compare directly against this adapter-backed local target."
+        : "Drop a compatible MLX model into the local gateway registry or Hugging Face cache.",
+      sourceKind === "adapter-runtime"
+        ? "Refresh /agent or /admin if the adapter runtime metadata changes."
+        : "Refresh /agent or /admin to rescan the gateway model list."
     ]
   };
 }
@@ -285,6 +315,23 @@ function readDiscoveredLocalTargets() {
 function writeDiscoveredLocalTargets(targets: AgentTarget[]) {
   ensureRegistryDirectory();
   writeFileSync(DISCOVERED_LOCAL_TARGETS_FILE, JSON.stringify(targets, null, 2), "utf8");
+}
+
+export function upsertDiscoveredLocalTarget(target: AgentTarget) {
+  if (BUILTIN_TARGET_IDS.has(target.id)) {
+    return listServerAgentTargets();
+  }
+  const current = readDiscoveredLocalTargets().filter((entry) => entry.id !== target.id);
+  writeDiscoveredLocalTargets([target, ...current].sort((left, right) => left.label.localeCompare(right.label)));
+  return listServerAgentTargets();
+}
+
+export function removeDiscoveredLocalTarget(targetId: string) {
+  if (BUILTIN_TARGET_IDS.has(targetId)) {
+    return listServerAgentTargets();
+  }
+  writeDiscoveredLocalTargets(readDiscoveredLocalTargets().filter((target) => target.id !== targetId));
+  return listServerAgentTargets();
 }
 
 export function listServerAgentTargets() {

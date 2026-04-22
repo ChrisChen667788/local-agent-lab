@@ -1,6 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AdminFineTunePanel } from "@/components/admin/AdminFineTunePanel";
+import { AdminModelDiscoveryPanel } from "@/components/admin/AdminModelDiscoveryPanel";
+import { AdminTimelinePanel } from "@/components/admin/AdminTimelinePanel";
 import { agentTargets as builtinAgentTargets } from "@/lib/agent/catalog";
 import {
   benchmarkDatasets,
@@ -15,6 +18,9 @@ import type {
   AgentBenchmarkPromptSet,
   AgentBenchmarkResponse,
   AgentKnowledgeDocument,
+  AgentRetrievalEvidenceMode,
+  AgentRetrievalScope,
+  AgentRetrievalSourcePreference,
   AgentRetrievalSummary,
   AgentMetricPercentiles,
   AgentProviderHealthDeskItem,
@@ -47,6 +53,22 @@ type RuntimeMetricSample = {
   gatewayEnergySignalPct: number | null;
   gatewayDiskUsedPct: number | null;
   modelStorageFootprintMb: number | null;
+};
+
+type RuntimeGuardrailStrategy = {
+  cautionPeakRatio: number;
+  blockedPeakRatio: number;
+  cautionFreeMb: number;
+  blockedFreeMb: number;
+};
+
+type RuntimeGuardrailPolicyResponse = {
+  ok?: boolean;
+  error?: string;
+  message?: string;
+  strategy?: RuntimeGuardrailStrategy;
+  defaults?: RuntimeGuardrailStrategy;
+  policyFile?: string;
 };
 
 const MAX_RUNTIME_METRIC_SAMPLES = 24;
@@ -1153,6 +1175,11 @@ export function AdminDashboard() {
   const [knowledgeQuery, setKnowledgeQuery] = useState("");
   const [knowledgeQueryPending, setKnowledgeQueryPending] = useState(false);
   const [knowledgeResults, setKnowledgeResults] = useState<AgentRetrievalSummary | null>(null);
+  const [knowledgeScope, setKnowledgeScope] = useState<AgentRetrievalScope>("all");
+  const [knowledgeSourcePreference, setKnowledgeSourcePreference] =
+    useState<AgentRetrievalSourcePreference>("balanced");
+  const [knowledgeEvidenceMode, setKnowledgeEvidenceMode] =
+    useState<AgentRetrievalEvidenceMode>("compact");
   const [knowledgeImportPath, setKnowledgeImportPath] = useState("");
   const [knowledgeImportRecursive, setKnowledgeImportRecursive] = useState(true);
   const [knowledgeImportTags, setKnowledgeImportTags] = useState("");
@@ -1249,6 +1276,21 @@ export function AdminDashboard() {
   const [runtimeMessages, setRuntimeMessages] = useState<Record<string, string>>({});
   const [runtimeLastSwitchMs, setRuntimeLastSwitchMs] = useState<Record<string, number | null>>({});
   const [runtimeLastSwitchAt, setRuntimeLastSwitchAt] = useState<Record<string, string | null>>({});
+  const [runtimeGuardrailDraft, setRuntimeGuardrailDraft] = useState<RuntimeGuardrailStrategy>({
+    cautionPeakRatio: 0.68,
+    blockedPeakRatio: 0.82,
+    cautionFreeMb: 6144,
+    blockedFreeMb: 2048
+  });
+  const [runtimeGuardrailDefaults, setRuntimeGuardrailDefaults] = useState<RuntimeGuardrailStrategy>({
+    cautionPeakRatio: 0.68,
+    blockedPeakRatio: 0.82,
+    cautionFreeMb: 6144,
+    blockedFreeMb: 2048
+  });
+  const [runtimeGuardrailPending, setRuntimeGuardrailPending] = useState(false);
+  const [runtimeGuardrailMessage, setRuntimeGuardrailMessage] = useState("");
+  const [runtimeGuardrailPolicyFile, setRuntimeGuardrailPolicyFile] = useState("");
   const [prewarmAllPending, setPrewarmAllPending] = useState(false);
   const [prewarmAllMessage, setPrewarmAllMessage] = useState("");
   const [benchmarkCopyState, setBenchmarkCopyState] = useState<{ key: string; tone: "success" | "error" } | null>(null);
@@ -1493,7 +1535,16 @@ export function AdminDashboard() {
           runtimeEnsureReason: "最近啟動原因",
           runtimeLog: "網關日誌",
           runtimeNoLog: "目前沒有已載入的日誌內容。",
-          runtimeLogPath: "日誌路徑"
+          runtimeLogPath: "日誌路徑",
+          runtimeGuardrailPolicy: "載入保護策略",
+          runtimeGuardrailHint: "把本地模型載入風險閾值做成後台可調策略，供風險 badge、單模型預熱與全部預熱共用。",
+          runtimeGuardrailSave: "保存策略",
+          runtimeGuardrailReset: "恢復默認值",
+          runtimeGuardrailCautionPeakRatio: "謹慎峰值比例",
+          runtimeGuardrailBlockedPeakRatio: "阻止峰值比例",
+          runtimeGuardrailCautionFreeMb: "謹慎剩餘記憶體 MB",
+          runtimeGuardrailBlockedFreeMb: "阻止剩餘記憶體 MB",
+          runtimeGuardrailPolicyFile: "策略檔"
         };
       case "ko":
         return {
@@ -1658,7 +1709,16 @@ export function AdminDashboard() {
           runtimeEnsureReason: "최근 ensure 사유",
           runtimeLog: "게이트웨이 로그",
           runtimeNoLog: "불러온 로그가 없습니다.",
-          runtimeLogPath: "로그 경로"
+          runtimeLogPath: "로그 경로",
+          runtimeGuardrailPolicy: "로드 가드레일 정책",
+          runtimeGuardrailHint: "로컬 모델 로드 임계값을 시각적으로 조정하고, 위험 배지와 예열 경로에 공통으로 적용합니다.",
+          runtimeGuardrailSave: "정책 저장",
+          runtimeGuardrailReset: "기본값 복원",
+          runtimeGuardrailCautionPeakRatio: "주의 peak ratio",
+          runtimeGuardrailBlockedPeakRatio: "차단 peak ratio",
+          runtimeGuardrailCautionFreeMb: "주의 free MB",
+          runtimeGuardrailBlockedFreeMb: "차단 free MB",
+          runtimeGuardrailPolicyFile: "정책 파일"
         };
       case "ja":
         return {
@@ -1823,7 +1883,16 @@ export function AdminDashboard() {
           runtimeEnsureReason: "直近の起動理由",
           runtimeLog: "ゲートウェイログ",
           runtimeNoLog: "読み込まれたログはありません。",
-          runtimeLogPath: "ログパス"
+          runtimeLogPath: "ログパス",
+          runtimeGuardrailPolicy: "ロードガードレールポリシー",
+          runtimeGuardrailHint: "ローカルモデルのロード閾値を視覚的に調整し、リスク表示と予熱経路で共通利用します。",
+          runtimeGuardrailSave: "ポリシーを保存",
+          runtimeGuardrailReset: "既定値に戻す",
+          runtimeGuardrailCautionPeakRatio: "注意ピーク比率",
+          runtimeGuardrailBlockedPeakRatio: "ブロックピーク比率",
+          runtimeGuardrailCautionFreeMb: "注意 free MB",
+          runtimeGuardrailBlockedFreeMb: "ブロック free MB",
+          runtimeGuardrailPolicyFile: "ポリシーファイル"
         };
       case "en":
         return {
@@ -1988,7 +2057,16 @@ export function AdminDashboard() {
           runtimeEnsureReason: "Last ensure reason",
           runtimeLog: "Gateway log",
           runtimeNoLog: "No log excerpt loaded.",
-          runtimeLogPath: "Log path"
+          runtimeLogPath: "Log path",
+          runtimeGuardrailPolicy: "Load guardrail policy",
+          runtimeGuardrailHint: "Tune local model load thresholds here so risk badges, single-model prewarm, and prewarm-all all use the same policy.",
+          runtimeGuardrailSave: "Save policy",
+          runtimeGuardrailReset: "Reset defaults",
+          runtimeGuardrailCautionPeakRatio: "Caution peak ratio",
+          runtimeGuardrailBlockedPeakRatio: "Blocked peak ratio",
+          runtimeGuardrailCautionFreeMb: "Caution free MB",
+          runtimeGuardrailBlockedFreeMb: "Blocked free MB",
+          runtimeGuardrailPolicyFile: "Policy file"
         };
       case "zh-CN":
       default:
@@ -2154,7 +2232,16 @@ export function AdminDashboard() {
           runtimeEnsureReason: "最近启动原因",
           runtimeLog: "网关日志",
           runtimeNoLog: "当前没有已加载的日志内容。",
-          runtimeLogPath: "日志路径"
+          runtimeLogPath: "日志路径",
+          runtimeGuardrailPolicy: "加载保护策略",
+          runtimeGuardrailHint: "把本地模型加载阈值做成后台可调策略，让风险 badge、单模型预热和全部预热都沿用同一口径。",
+          runtimeGuardrailSave: "保存策略",
+          runtimeGuardrailReset: "恢复默认值",
+          runtimeGuardrailCautionPeakRatio: "谨慎峰值比例",
+          runtimeGuardrailBlockedPeakRatio: "阻止峰值比例",
+          runtimeGuardrailCautionFreeMb: "谨慎剩余内存 MB",
+          runtimeGuardrailBlockedFreeMb: "阻止剩余内存 MB",
+          runtimeGuardrailPolicyFile: "策略文件"
         };
     }
   }, [locale]);
@@ -2748,7 +2835,10 @@ export function AdminDashboard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           query: knowledgeQuery,
-          topK: 6
+          topK: 6,
+          scope: knowledgeScope,
+          sourcePreference: knowledgeSourcePreference,
+          evidenceMode: knowledgeEvidenceMode
         })
       });
       const payload = (await response.json()) as { error?: string; retrieval?: AgentRetrievalSummary };
@@ -2919,6 +3009,8 @@ export function AdminDashboard() {
               ? "loading"
               : entry.status === "queued"
                 ? "queued"
+                : entry.status === "skipped"
+                  ? "skipped"
                 : entry.status === "failed"
                   ? "failed"
                   : "ready";
@@ -2951,6 +3043,82 @@ export function AdminDashboard() {
       setPrewarmAllPending(false);
     }
   }
+
+  const loadRuntimeGuardrailPolicy = useCallback(async () => {
+    try {
+      const response = await fetch("/api/admin/runtime-guardrail", { cache: "no-store" });
+      const payload = (await response.json()) as RuntimeGuardrailPolicyResponse;
+      if (!response.ok || !payload.strategy) {
+        throw new Error(payload.error || "Failed to load runtime guardrail policy.");
+      }
+      setRuntimeGuardrailDraft(payload.strategy);
+      setRuntimeGuardrailDefaults(payload.defaults || payload.strategy);
+      setRuntimeGuardrailPolicyFile(payload.policyFile || "");
+    } catch (runtimeError) {
+      setRuntimeGuardrailMessage(
+        runtimeError instanceof Error ? runtimeError.message : "Failed to load runtime guardrail policy."
+      );
+    }
+  }, []);
+
+  const saveRuntimeGuardrailPolicy = useCallback(async () => {
+    setRuntimeGuardrailPending(true);
+    setRuntimeGuardrailMessage("");
+    try {
+      const response = await fetch("/api/admin/runtime-guardrail", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "save",
+          strategy: runtimeGuardrailDraft
+        })
+      });
+      const payload = (await response.json()) as RuntimeGuardrailPolicyResponse;
+      if (!response.ok || !payload.strategy) {
+        throw new Error(payload.error || "Failed to save runtime guardrail policy.");
+      }
+      setRuntimeGuardrailDraft(payload.strategy);
+      setRuntimeGuardrailDefaults(payload.defaults || payload.strategy);
+      setRuntimeGuardrailPolicyFile(payload.policyFile || "");
+      setRuntimeGuardrailMessage(payload.message || "Runtime guardrail policy saved.");
+      await Promise.all([loadAllRuntimeStatuses(), loadDashboard()]);
+    } catch (runtimeError) {
+      setRuntimeGuardrailMessage(
+        runtimeError instanceof Error ? runtimeError.message : "Failed to save runtime guardrail policy."
+      );
+    } finally {
+      setRuntimeGuardrailPending(false);
+    }
+  }, [loadAllRuntimeStatuses, loadDashboard, runtimeGuardrailDraft]);
+
+  const resetRuntimeGuardrailPolicy = useCallback(async () => {
+    setRuntimeGuardrailPending(true);
+    setRuntimeGuardrailMessage("");
+    try {
+      const response = await fetch("/api/admin/runtime-guardrail", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "reset"
+        })
+      });
+      const payload = (await response.json()) as RuntimeGuardrailPolicyResponse;
+      if (!response.ok || !payload.strategy) {
+        throw new Error(payload.error || "Failed to reset runtime guardrail policy.");
+      }
+      setRuntimeGuardrailDraft(payload.strategy);
+      setRuntimeGuardrailDefaults(payload.defaults || payload.strategy);
+      setRuntimeGuardrailPolicyFile(payload.policyFile || "");
+      setRuntimeGuardrailMessage(payload.message || "Runtime guardrail policy reset.");
+      await Promise.all([loadAllRuntimeStatuses(), loadDashboard()]);
+    } catch (runtimeError) {
+      setRuntimeGuardrailMessage(
+        runtimeError instanceof Error ? runtimeError.message : "Failed to reset runtime guardrail policy."
+      );
+    } finally {
+      setRuntimeGuardrailPending(false);
+    }
+  }, [loadAllRuntimeStatuses, loadDashboard]);
 
   async function handleRuntimeLogSearch(targetId: string) {
     await handleRuntimeAction(targetId, "read_log", {
@@ -3527,6 +3695,10 @@ export function AdminDashboard() {
   useEffect(() => {
     void loadAllRuntimeStatuses();
   }, []);
+
+  useEffect(() => {
+    void loadRuntimeGuardrailPolicy();
+  }, [loadRuntimeGuardrailPolicy]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -6852,6 +7024,59 @@ export function AdminDashboard() {
                   rows={4}
                   className="mt-3 w-full rounded-3xl border border-white/10 bg-slate-950/60 px-4 py-4 text-sm leading-7 text-slate-100 outline-none"
                 />
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <span className="text-[11px] uppercase tracking-[0.18em] text-slate-500">
+                    {locale.startsWith("en") ? "Scope" : "检索范围"}
+                  </span>
+                  <select
+                    value={knowledgeScope}
+                    onChange={(event) =>
+                      setKnowledgeScope(
+                        event.target.value === "knowledge-base" || event.target.value === "benchmark-builtins"
+                          ? event.target.value
+                          : "all"
+                      )
+                    }
+                    className="rounded-full border border-white/10 bg-slate-950/80 px-3 py-2 text-xs text-slate-100 outline-none"
+                  >
+                    <option value="all">{locale.startsWith("en") ? "All sources" : "全部来源"}</option>
+                    <option value="knowledge-base">{locale.startsWith("en") ? "Knowledge base only" : "仅知识库"}</option>
+                    <option value="benchmark-builtins">
+                      {locale.startsWith("en") ? "Benchmark references only" : "仅 benchmark 内置参考"}
+                    </option>
+                  </select>
+                  <span className="text-[11px] uppercase tracking-[0.18em] text-slate-500">
+                    {locale.startsWith("en") ? "Source bias" : "来源偏置"}
+                  </span>
+                  <select
+                    value={knowledgeSourcePreference}
+                    onChange={(event) =>
+                      setKnowledgeSourcePreference(
+                        event.target.value === "knowledge-first" || event.target.value === "benchmark-first"
+                          ? event.target.value
+                          : "balanced"
+                      )
+                    }
+                    className="rounded-full border border-white/10 bg-slate-950/80 px-3 py-2 text-xs text-slate-100 outline-none"
+                  >
+                    <option value="balanced">{locale.startsWith("en") ? "Balanced" : "平衡"}</option>
+                    <option value="knowledge-first">{locale.startsWith("en") ? "Prefer knowledge base" : "优先知识库"}</option>
+                    <option value="benchmark-first">{locale.startsWith("en") ? "Prefer benchmark refs" : "优先 benchmark 参考"}</option>
+                  </select>
+                  <span className="text-[11px] uppercase tracking-[0.18em] text-slate-500">
+                    {locale.startsWith("en") ? "Evidence" : "证据档位"}
+                  </span>
+                  <select
+                    value={knowledgeEvidenceMode}
+                    onChange={(event) =>
+                      setKnowledgeEvidenceMode(event.target.value === "expanded" ? "expanded" : "compact")
+                    }
+                    className="rounded-full border border-white/10 bg-slate-950/80 px-3 py-2 text-xs text-slate-100 outline-none"
+                  >
+                    <option value="compact">{locale.startsWith("en") ? "Compact review" : "紧凑审阅"}</option>
+                    <option value="expanded">{locale.startsWith("en") ? "Expanded evidence" : "展开证据"}</option>
+                  </select>
+                </div>
                 {knowledgeResults?.lowConfidence ? (
                   <p className="mt-3 text-xs leading-6 text-amber-100">
                     {locale === "en"
@@ -6864,6 +7089,89 @@ export function AdminDashboard() {
                             ? "檢索信心偏低，請將命中結果視為弱證據。"
                             : "检索信心偏低，请将命中结果视为弱证据。"}
                   </p>
+                ) : null}
+                {knowledgeResults ? (
+                  <div className="mt-3 flex flex-wrap gap-2 text-[11px] uppercase tracking-[0.18em] text-slate-300">
+                    <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1">
+                      {(knowledgeResults.strategy || "lexical").replace(/-/g, " ")}
+                    </span>
+                    {knowledgeResults.scope ? (
+                      <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1">
+                        {knowledgeResults.scope === "all"
+                          ? locale.startsWith("en")
+                            ? "all sources"
+                            : "全部来源"
+                          : knowledgeResults.scope === "knowledge-base"
+                            ? locale.startsWith("en")
+                              ? "knowledge base"
+                              : "知识库"
+                            : locale.startsWith("en")
+                              ? "benchmark refs"
+                              : "benchmark 参考"}
+                      </span>
+                    ) : null}
+                    {knowledgeResults.sourcePreference ? (
+                      <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1">
+                        {knowledgeResults.sourcePreference === "balanced"
+                          ? locale.startsWith("en")
+                            ? "balanced source mix"
+                            : "来源平衡"
+                          : knowledgeResults.sourcePreference === "knowledge-first"
+                            ? locale.startsWith("en")
+                              ? "kb preferred"
+                              : "知识库优先"
+                            : locale.startsWith("en")
+                              ? "benchmark preferred"
+                              : "benchmark 优先"}
+                      </span>
+                    ) : null}
+                    {knowledgeResults.evidenceMode ? (
+                      <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1">
+                        {knowledgeResults.evidenceMode === "expanded"
+                          ? locale.startsWith("en")
+                            ? "expanded evidence"
+                            : "展开证据"
+                          : locale.startsWith("en")
+                            ? "compact evidence"
+                            : "紧凑证据"}
+                      </span>
+                    ) : null}
+                    {typeof knowledgeResults.candidateCount === "number" ? (
+                      <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1">
+                        candidates {knowledgeResults.candidateCount}
+                      </span>
+                    ) : null}
+                    <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1">
+                      top {knowledgeResults.topScore.toFixed(1)}
+                    </span>
+                    {knowledgeResults.expandedQueries?.slice(1).map((variant) => (
+                      <span key={variant} className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2.5 py-1 text-cyan-100">
+                        {locale.startsWith("en") ? "query+" : "扩展"} {variant}
+                      </span>
+                    ))}
+                    {knowledgeResults.sourceBreakdown?.map((entry) => (
+                      <span key={entry.label} className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1">
+                        {entry.label} {entry.count}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+                {knowledgeResults?.stageNotes?.length ? (
+                  <div className="mt-3 rounded-2xl border border-white/10 bg-slate-950/50 px-3 py-3">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">
+                      {locale.startsWith("en") ? "Retrieval stages" : "检索阶段说明"}
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {knowledgeResults.stageNotes.map((note) => (
+                        <span
+                          key={note}
+                          className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-300"
+                        >
+                          {note}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
                 ) : null}
                 <div className="mt-3 max-h-[320px] space-y-3 overflow-auto pr-1">
                   {knowledgeResults?.results.length ? (
@@ -6881,9 +7189,49 @@ export function AdminDashboard() {
                           {uiText.knowledgeSection}: {result.sectionPath.length ? result.sectionPath.join(" > ") : "--"}
                           {result.source ? ` · ${result.source}` : ""}
                         </p>
+                        {result.matchedTerms?.length ? (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {result.matchedTerms.slice(0, 6).map((term) => (
+                              <span
+                                key={`${result.chunkId}:${term}`}
+                                className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2 py-0.5 text-[10px] text-cyan-100"
+                              >
+                                {term}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                        {result.scoring ? (
+                          <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] uppercase tracking-[0.16em] text-slate-400">
+                            <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5">
+                              lex {result.scoring.lexical.toFixed(1)}
+                            </span>
+                            <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5">
+                              struct {result.scoring.structural.toFixed(1)}
+                            </span>
+                            <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5">
+                              vec {result.scoring.vector.toFixed(1)}
+                            </span>
+                            <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5">
+                              rerank {result.scoring.rerank.toFixed(1)}
+                            </span>
+                          </div>
+                        ) : null}
                         <pre className="mt-2 whitespace-pre-wrap break-words text-xs leading-6 text-slate-200">
-                          {result.content}
+                          {result.evidencePreview || result.content}
                         </pre>
+                        {result.evidenceSpans?.length ? (
+                          <div className="mt-2 space-y-2 rounded-2xl border border-white/10 bg-black/20 px-3 py-3">
+                            {result.evidenceSpans.map((span) => (
+                              <div key={`${result.chunkId}:${span.label}`}>
+                                <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">{span.label}</p>
+                                <pre className="mt-1 whitespace-pre-wrap break-words text-xs leading-6 text-slate-300">
+                                  {span.preview}
+                                </pre>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
                       </div>
                     ))
                   ) : (
@@ -6919,8 +7267,20 @@ export function AdminDashboard() {
           </div>
         </div>
 
+        <div className="order-29">
+          <AdminModelDiscoveryPanel locale={locale} />
+        </div>
+
+        <div className="order-30">
+          <AdminFineTunePanel locale={locale} />
+        </div>
+
+        <div className="order-31">
+          <AdminTimelinePanel locale={locale} />
+        </div>
+
         {data?.summary.telemetryAvailable ? (
-          <div className="order-31 grid gap-4 xl:grid-cols-3">
+          <div className="order-32 grid gap-4 xl:grid-cols-3">
             <SeriesCard title={dictionary.admin.memory} values={memoryValues} tone="emerald" />
             <SeriesCard title={uiText.storageTrend} values={storageValues} tone="cyan" />
             <SeriesCard title={dictionary.admin.battery} values={batteryValues} tone="amber" />
@@ -6986,6 +7346,124 @@ export function AdminDashboard() {
               {prewarmAllMessage}
             </div>
           ) : null}
+          <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 p-4">
+            <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+              <div>
+                <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{uiText.runtimeGuardrailPolicy}</p>
+                <p className="mt-2 text-xs leading-6 text-slate-400">{uiText.runtimeGuardrailHint}</p>
+                {runtimeGuardrailPolicyFile ? (
+                  <p className="mt-2 break-all text-[11px] text-slate-500">
+                    {uiText.runtimeGuardrailPolicyFile}: {sanitizeDisplayPath(runtimeGuardrailPolicyFile)}
+                  </p>
+                ) : null}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={runtimeGuardrailPending}
+                  onClick={() => void saveRuntimeGuardrailPolicy()}
+                  className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-400/20 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-500"
+                >
+                  {runtimeGuardrailPending ? uiText.runtimeRefreshing : uiText.runtimeGuardrailSave}
+                </button>
+                <button
+                  type="button"
+                  disabled={runtimeGuardrailPending}
+                  onClick={() => void resetRuntimeGuardrailPolicy()}
+                  className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:text-slate-500"
+                >
+                  {uiText.runtimeGuardrailReset}
+                </button>
+              </div>
+            </div>
+            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <label className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-xs text-slate-400">
+                <span className="block uppercase tracking-[0.18em]">{uiText.runtimeGuardrailCautionPeakRatio}</span>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0.1"
+                  max="0.99"
+                  value={runtimeGuardrailDraft.cautionPeakRatio}
+                  onChange={(event) =>
+                    setRuntimeGuardrailDraft((current) => ({
+                      ...current,
+                      cautionPeakRatio: Number(event.target.value) || current.cautionPeakRatio
+                    }))
+                  }
+                  className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-sm text-white outline-none"
+                />
+              </label>
+              <label className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-xs text-slate-400">
+                <span className="block uppercase tracking-[0.18em]">{uiText.runtimeGuardrailBlockedPeakRatio}</span>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0.1"
+                  max="0.99"
+                  value={runtimeGuardrailDraft.blockedPeakRatio}
+                  onChange={(event) =>
+                    setRuntimeGuardrailDraft((current) => ({
+                      ...current,
+                      blockedPeakRatio: Number(event.target.value) || current.blockedPeakRatio
+                    }))
+                  }
+                  className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-sm text-white outline-none"
+                />
+              </label>
+              <label className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-xs text-slate-400">
+                <span className="block uppercase tracking-[0.18em]">{uiText.runtimeGuardrailCautionFreeMb}</span>
+                <input
+                  type="number"
+                  step="256"
+                  min="512"
+                  value={runtimeGuardrailDraft.cautionFreeMb}
+                  onChange={(event) =>
+                    setRuntimeGuardrailDraft((current) => ({
+                      ...current,
+                      cautionFreeMb: Number(event.target.value) || current.cautionFreeMb
+                    }))
+                  }
+                  className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-sm text-white outline-none"
+                />
+              </label>
+              <label className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-xs text-slate-400">
+                <span className="block uppercase tracking-[0.18em]">{uiText.runtimeGuardrailBlockedFreeMb}</span>
+                <input
+                  type="number"
+                  step="256"
+                  min="256"
+                  value={runtimeGuardrailDraft.blockedFreeMb}
+                  onChange={(event) =>
+                    setRuntimeGuardrailDraft((current) => ({
+                      ...current,
+                      blockedFreeMb: Number(event.target.value) || current.blockedFreeMb
+                    }))
+                  }
+                  className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-sm text-white outline-none"
+                />
+              </label>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-slate-500">
+              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
+                default caution peak {runtimeGuardrailDefaults.cautionPeakRatio.toFixed(2)}
+              </span>
+              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
+                default blocked peak {runtimeGuardrailDefaults.blockedPeakRatio.toFixed(2)}
+              </span>
+              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
+                default caution free {Math.round(runtimeGuardrailDefaults.cautionFreeMb)} MB
+              </span>
+              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
+                default blocked free {Math.round(runtimeGuardrailDefaults.blockedFreeMb)} MB
+              </span>
+            </div>
+            {runtimeGuardrailMessage ? (
+              <div className="mt-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-200">
+                {runtimeGuardrailMessage}
+              </div>
+            ) : null}
+          </div>
           <div className="mt-4 grid gap-4 xl:grid-cols-2">
             {localTargets.map((target) => {
               const runtime = runtimeStatuses[target.id];

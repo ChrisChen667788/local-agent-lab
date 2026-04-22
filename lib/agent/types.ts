@@ -2,6 +2,8 @@ export type AgentTransport = "openai-compatible" | "anthropic";
 
 export type AgentExecution = "local" | "remote";
 
+export type AgentRuntimeResourceGuardrailLevel = "safe" | "caution" | "blocked";
+
 export type AgentProviderProfile = "speed" | "balanced" | "tool-first";
 
 export type AgentThinkingMode = "standard" | "thinking";
@@ -47,14 +49,48 @@ export type AgentKnowledgeHit = {
   citationLabel: string;
   score: number;
   confidence: number;
+  matchedTerms?: string[];
+  evidencePreview?: string;
+  evidenceSpans?: Array<{
+    label: string;
+    preview: string;
+  }>;
+  scoring?: {
+    lexical: number;
+    structural: number;
+    vector: number;
+    rerank: number;
+    final: number;
+  };
 };
+
+export type AgentRetrievalScope = "all" | "knowledge-base" | "benchmark-builtins";
+
+export type AgentRetrievalSourcePreference = "balanced" | "knowledge-first" | "benchmark-first";
+
+export type AgentRetrievalEvidenceMode = "compact" | "expanded";
 
 export type AgentRetrievalSummary = {
   query: string;
+  scope?: AgentRetrievalScope;
+  sourcePreference?: AgentRetrievalSourcePreference;
+  evidenceMode?: AgentRetrievalEvidenceMode;
   hitCount: number;
   lowConfidence: boolean;
   topScore: number;
   usedInPrompt: boolean;
+  strategy?: "lexical" | "hybrid-rerank";
+  candidateCount?: number;
+  vectorCandidateCount?: number;
+  reranked?: boolean;
+  embeddingModel?: string;
+  indexGeneratedAt?: string;
+  expandedQueries?: string[];
+  sourceBreakdown?: Array<{
+    label: string;
+    count: number;
+  }>;
+  stageNotes?: string[];
   bypassGrounding?: boolean;
   bypassReason?:
     | "general-question-no-evidence"
@@ -250,11 +286,13 @@ export type AgentTarget = {
   launchHints?: string[];
   parameterScale?: string;
   quantizationLabel?: string;
-  sourceKind?: "configured" | "huggingface-cache" | "lm-studio" | "custom-directory";
+  sourceKind?: "configured" | "huggingface-cache" | "lm-studio" | "custom-directory" | "adapter-runtime";
   sourceLabel?: string;
   sourcePath?: string;
   sourceRepoId?: string;
   recommendedContextWindow?: number | null;
+  loadGuardrailLevel?: AgentRuntimeResourceGuardrailLevel;
+  loadGuardrailSummary?: string;
 };
 
 export type AgentChatRequest = {
@@ -447,6 +485,13 @@ export type AgentRuntimeStatus = {
   gatewayEnergySignalPct?: number | null;
   gatewayDiskUsedPct?: number | null;
   modelStorageFootprintMb?: number | null;
+  resourceGuardrailLevel?: AgentRuntimeResourceGuardrailLevel;
+  resourceGuardrailSummary?: string;
+  resourceGuardrailRecommendations?: string[];
+  estimatedLoadMemoryMb?: number | null;
+  estimatedPeakMemoryMb?: number | null;
+  systemTotalMemoryMb?: number | null;
+  systemFreeMemoryMb?: number | null;
   lastEnsureReason?: string | null;
   logFile?: string;
 };
@@ -486,18 +531,22 @@ export type AgentRuntimeLogResponse = {
 
 export type AgentRuntimePrewarmResponse = {
   ok: boolean;
-  status?: "ready" | "loading" | "queued" | "failed";
+  status?: "ready" | "loading" | "queued" | "failed" | "skipped";
   targetId: string;
   targetLabel: string;
   loadedAlias?: string | null;
   loadMs?: number;
   warmupMs?: number;
   message: string;
+  resourceGuardrailLevel?: AgentRuntimeResourceGuardrailLevel;
+  resourceGuardrailSummary?: string;
 };
 
 export type AgentRuntimePrewarmAllResponse = {
   ok: boolean;
   completed: number;
+  skipped: number;
+  failed: number;
   total: number;
   results: AgentRuntimePrewarmResponse[];
   message: string;
@@ -740,6 +789,257 @@ export type AgentProviderHealthDeskItem = {
   lastConnectionOk?: boolean | null;
   lastConnectionAt?: string | null;
   lastConnectionSummary?: string | null;
+};
+
+export type AgentWorkbenchStoredPreferences = {
+  updatedAt: string;
+  selectedTargetId?: string;
+  workbenchMode?: AgentWorkbenchMode;
+  compareTargetIds?: string[];
+  compareBaseTargetId?: string;
+  compareReviewSummaryTone?: AgentCompareReviewSummaryTone;
+  compareReviewSummaryDetail?: AgentCompareReviewSummaryDetail;
+  compareBenchmarkUseOutputContract?: boolean;
+  compareBenchmarkPreviewDiffOnly?: boolean;
+  compareIntent?: AgentCompareIntent;
+  compareOutputShape?: AgentCompareOutputShape;
+  enableTools?: boolean;
+  enableRetrieval?: boolean;
+  contextWindow?: number;
+  providerProfile?: AgentProviderProfile;
+  thinkingMode?: AgentThinkingMode;
+};
+
+export type AgentWorkbenchSessionSnapshot = {
+  schemaVersion: string;
+  updatedAt: string;
+  activeSessionId?: string | null;
+  preferences?: AgentWorkbenchStoredPreferences | null;
+  sessions: unknown[];
+};
+
+export type AgentWorkbenchSessionVersion = {
+  id: string;
+  savedAt: string;
+  source: "server-sync" | "force-overwrite" | "conflict-reload";
+  summary: string;
+  activeSessionId?: string | null;
+  sessionCount: number;
+  conflictDetected?: boolean;
+};
+
+export type AgentWorkbenchSessionConflict = {
+  code: "snapshot-outdated";
+  baseUpdatedAt?: string | null;
+  serverUpdatedAt: string;
+  localSessionCount: number;
+  serverSessionCount: number;
+  summary: string;
+};
+
+export type AgentFineTuneDatasetFormat = "chat-jsonl" | "instruction-jsonl";
+
+export type AgentFineTuneDatasetPreview = {
+  index: number;
+  inputPreview: string;
+  outputPreview: string;
+};
+
+export type AgentFineTuneDatasetValidation = {
+  ok: boolean;
+  format: AgentFineTuneDatasetFormat;
+  sampleCount: number;
+  warnings: string[];
+  errors: string[];
+  preview: AgentFineTuneDatasetPreview[];
+};
+
+export type AgentFineTuneDataset = {
+  id: string;
+  label: string;
+  format: AgentFineTuneDatasetFormat;
+  sourcePath?: string;
+  sourceType: "local-path";
+  sampleCount: number;
+  upstreamQuery?: string;
+  refreshCadenceHours?: number;
+  lastUpstreamCheckedAt?: string;
+  nextUpstreamCheckAt?: string;
+  latestUpstreamCandidates?: AgentFineTuneUpstreamDatasetCandidate[];
+  createdAt: string;
+  updatedAt: string;
+  validation: AgentFineTuneDatasetValidation;
+};
+
+export type AgentFineTuneUpstreamDatasetCandidate = {
+  id: string;
+  source: "huggingface" | "github" | "modelscope";
+  label: string;
+  repoId: string;
+  repoUrl: string;
+  summary: string;
+  updatedAt?: string;
+  docsUrl?: string;
+  paperUrl?: string;
+  sampleCount?: number | null;
+  tags: string[];
+};
+
+export type AgentFineTuneRecipe = {
+  id: string;
+  label: string;
+  datasetId: string;
+  baseTargetId: string;
+  adapterName: string;
+  sequenceLength: number;
+  batchSize: number;
+  epochs: number;
+  learningRate: number;
+  fineTuneMethod: "lora" | "dora";
+  optimizer: "adam" | "adamw" | "sgd" | "adafactor";
+  numLayers: number;
+  gradientAccumulationSteps: number;
+  loraRank: number;
+  loraAlpha: number;
+  gradientCheckpointing: boolean;
+  validationSplitPct: number;
+  saveEverySteps: number;
+  seed: number;
+  benchmarkSuiteId?: string;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AgentFineTuneJobStatus =
+  | "draft"
+  | "staged"
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type AgentFineTuneCurvePoint = {
+  step: number;
+  split: "train" | "valid";
+  loss: number;
+  learningRate?: number | null;
+  tokensPerSecond?: number | null;
+  peakMemoryGb?: number | null;
+  trainedTokens?: number | null;
+  durationSec?: number | null;
+  at: string;
+};
+
+export type AgentFineTuneJobProgress = {
+  currentStep: number;
+  totalSteps: number;
+  percent: number;
+  latestTrainLoss?: number | null;
+  latestValLoss?: number | null;
+  latestLearningRate?: number | null;
+  latestTokensPerSecond?: number | null;
+  latestPeakMemoryGb?: number | null;
+  trainedTokens?: number | null;
+};
+
+export type AgentFineTuneJob = {
+  id: string;
+  recipeId: string;
+  datasetId: string;
+  status: AgentFineTuneJobStatus;
+  createdAt: string;
+  updatedAt: string;
+  adapterName: string;
+  bundlePath: string;
+  outputDir: string;
+  bundleFile?: string;
+  datasetDir?: string;
+  configFile?: string;
+  metricsFile?: string;
+  logFile?: string;
+  stateFile?: string;
+  baseModelRef?: string;
+  launcherPid?: number | null;
+  workerHeartbeatAt?: string;
+  startedAt?: string;
+  completedAt?: string;
+  latestMessage?: string;
+  errorMessage?: string;
+  progress?: AgentFineTuneJobProgress;
+  curve?: AgentFineTuneCurvePoint[];
+  recentLogLines?: string[];
+  benchmarkSuiteId?: string;
+  notes?: string;
+};
+
+export type AgentFineTuneTargetOption = {
+  id: string;
+  label: string;
+  providerLabel: string;
+  modelDefault: string;
+  parameterScale?: string;
+  quantizationLabel?: string;
+  recommendedContextWindow?: number | null;
+  sourceKind?: AgentTarget["sourceKind"];
+  sourceLabel?: string;
+  sourcePath?: string;
+  sourceRepoId?: string;
+  sourceUrl?: string;
+};
+
+export type AgentFineTuneSummary = {
+  generatedAt: string;
+  dataDir: string;
+  localTargets: AgentFineTuneTargetOption[];
+  datasets: AgentFineTuneDataset[];
+  recipes: AgentFineTuneRecipe[];
+  jobs: AgentFineTuneJob[];
+  adapters: AgentFineTuneAdapterArtifact[];
+};
+
+export type AgentFineTuneAdapterArtifact = {
+  id: string;
+  jobId: string;
+  adapterName: string;
+  baseTargetId?: string;
+  baseTargetLabel?: string;
+  sourceUrl?: string;
+  outputDir: string;
+  configFile?: string;
+  metricsFile?: string;
+  status: "ready" | "checkpointing" | "incomplete";
+  checkpointCount: number;
+  latestCheckpointAt?: string;
+  files: string[];
+  benchmarkSuiteId?: string;
+  attachedTargetId?: string;
+  attachedTargetLabel?: string;
+  attachedAt?: string;
+  updatedAt: string;
+};
+
+export type AgentTimelineEventKind = "session" | "compare" | "benchmark" | "finetune";
+
+export type AgentTimelineEventStatus =
+  | "started"
+  | "saved"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "conflict";
+
+export type AgentTimelineEvent = {
+  id: string;
+  kind: AgentTimelineEventKind;
+  status: AgentTimelineEventStatus;
+  at: string;
+  title: string;
+  summary: string;
+  relatedId?: string;
+  targetIds?: string[];
+  metadata?: Record<string, string | number | boolean | null | undefined>;
 };
 
 export type AgentConnectionCheckStageId = "models" | "chat" | "tool_calls";
