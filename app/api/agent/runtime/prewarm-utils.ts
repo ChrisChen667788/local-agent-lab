@@ -1,4 +1,11 @@
-import { ensureLocalGatewayAvailableDetailed, restartLocalGateway } from "@/lib/agent/local-gateway";
+import {
+  ensureLocalGatewayAvailableDetailed,
+  getLocalGatewaySupervisorInfo,
+  restartLocalGateway
+} from "@/lib/agent/local-gateway";
+import { getServerAgentTarget } from "@/lib/agent/server-targets";
+import { readRuntimeProcessMetrics } from "@/lib/agent/runtime-process-metrics";
+import { buildRuntimeResourceGuardrail } from "@/lib/agent/runtime-safety";
 import type { AgentRuntimePrewarmResponse } from "@/lib/agent/types";
 
 const LOCAL_GATEWAY_WARMUP_WAIT_MS = 300000;
@@ -51,7 +58,9 @@ function buildResponse(
     loadedAlias: input.loadedAlias ?? null,
     loadMs: input.loadMs,
     warmupMs: input.warmupMs,
-    message: input.message ?? `Prewarm finished for ${targetLabel}.`
+    message: input.message ?? `Prewarm finished for ${targetLabel}.`,
+    resourceGuardrailLevel: input.resourceGuardrailLevel,
+    resourceGuardrailSummary: input.resourceGuardrailSummary
   };
 }
 
@@ -142,9 +151,36 @@ export async function prewarmLocalTargetWithRecovery(options: {
   targetId: string;
   targetLabel: string;
   allowRetry?: boolean;
+  blockedStatus?: "failed" | "skipped";
 }) {
   const { baseUrl, model, targetId, targetLabel } = options;
   const allowRetry = options.allowRetry ?? true;
+  const blockedStatus = options.blockedStatus ?? "failed";
+  const target = getServerAgentTarget(targetId);
+  const supervisor = getLocalGatewaySupervisorInfo();
+  const processMetrics = readRuntimeProcessMetrics(supervisor.gatewayPid ?? supervisor.supervisorPid, {
+    modelSourcePath: target?.sourcePath
+  });
+  const guardrail = buildRuntimeResourceGuardrail({
+    resolvedModel: model,
+    loadedAlias: null,
+    processMetrics,
+    parameterScale: target?.parameterScale,
+    quantizationLabel: target?.quantizationLabel
+  });
+
+  if (guardrail.level === "blocked") {
+    return buildResponse(targetId, targetLabel, {
+      ok: blockedStatus === "skipped",
+      status: blockedStatus,
+      message:
+        blockedStatus === "skipped"
+          ? `${targetLabel} skipped. ${guardrail.summary} ${guardrail.recommendations.join(" ")}`.trim()
+          : `${guardrail.summary} ${guardrail.recommendations.join(" ")}`.trim(),
+      resourceGuardrailLevel: guardrail.level,
+      resourceGuardrailSummary: guardrail.summary
+    });
+  }
 
   const ensureResult = await ensureGatewayReady(baseUrl);
   if (!ensureResult.ok) {
@@ -165,7 +201,9 @@ export async function prewarmLocalTargetWithRecovery(options: {
       ok: true,
       status: "ready",
       loadedAlias: health.loaded_alias,
-      message: `${targetLabel} 已经就绪。`
+      message: `${targetLabel} 已经就绪。`,
+      resourceGuardrailLevel: guardrail.level,
+      resourceGuardrailSummary: guardrail.summary
     });
   }
 
@@ -206,7 +244,9 @@ export async function prewarmLocalTargetWithRecovery(options: {
       loadMs: "load_ms" in payload && typeof payload.load_ms === "number" ? payload.load_ms : undefined,
       warmupMs:
         "warmup_ms" in payload && typeof payload.warmup_ms === "number" ? payload.warmup_ms : undefined,
-      message: `Prewarm finished for ${targetLabel}.`
+      message: `Prewarm finished for ${targetLabel}.`,
+      resourceGuardrailLevel: guardrail.level,
+      resourceGuardrailSummary: guardrail.summary
     });
   }
 

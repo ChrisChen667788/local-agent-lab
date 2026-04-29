@@ -19,6 +19,7 @@ import {
   touchCompareLaneProgress
 } from "@/lib/agent/compare-progress-store";
 import { restartLocalGateway } from "@/lib/agent/local-gateway";
+import { appendTimelineEvent } from "@/lib/agent/timeline-store";
 import {
   applyGroundedResponsePolicy,
   applyRetrievalBypassStrategy,
@@ -395,6 +396,14 @@ export async function POST(request: Request) {
         };
       })
     });
+    appendTimelineEvent({
+      kind: "compare",
+      status: "started",
+      title: "Compare run started",
+      summary: `${targetIds.length} lane${targetIds.length === 1 ? "" : "s"} queued`,
+      relatedId: requestId,
+      targetIds
+    });
 
     const compareIntent = normalizeCompareIntent(body.compareIntent);
     const compareOutputShape = normalizeCompareOutputShape(body.compareOutputShape);
@@ -612,11 +621,26 @@ export async function POST(request: Request) {
     };
 
     completeCompareProgress(requestId, response.ok ? "completed" : "failed");
+    appendTimelineEvent({
+      kind: "compare",
+      status: response.ok ? "completed" : "failed",
+      title: response.ok ? "Compare run completed" : "Compare run failed",
+      summary: `${results.filter((lane) => lane.ok).length}/${results.length} lanes returned output`,
+      relatedId: requestId,
+      targetIds
+    });
 
     return NextResponse.json(response);
   } catch (error) {
     if (requestId) {
       completeCompareProgress(requestId, "failed");
+      appendTimelineEvent({
+        kind: "compare",
+        status: "failed",
+        title: "Compare run failed",
+        summary: error instanceof Error ? error.message : "Unknown compare error.",
+        relatedId: requestId
+      });
     }
     return NextResponse.json(
       {

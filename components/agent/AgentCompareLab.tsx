@@ -411,6 +411,7 @@ export function AgentCompareLab({
         compareLatestRecovery: "Latest recovery",
         compareAwaitingRecovery: "Compare will trigger one local recovery if this lane stays stalled.",
         compareRecoveryTimeline: "Recovery timeline",
+        compareIdleStatus: "idle",
         compareNoTimeline: "Timeline entries will appear here once compare records loading or recovery milestones.",
         compareManualRecovery: "Retry local recovery",
         compareManualRecoveryPending: "Retrying local recovery...",
@@ -513,6 +514,7 @@ export function AgentCompareLab({
         compareLatestRecovery: "最近恢复动作",
         compareAwaitingRecovery: "如果这条 lane 继续卡住，compare 会触发一次本地恢复。",
         compareRecoveryTimeline: "恢复动作时间线",
+        compareIdleStatus: "空闲",
         compareNoTimeline: "当 compare 记录到加载、恢复或完成节点后，这里会显示可读历史。",
         compareManualRecovery: "手动重试本地恢复",
         compareManualRecoveryPending: "正在手动重试本地恢复...",
@@ -657,7 +659,7 @@ export function AgentCompareLab({
           ) : null}
       </section>
 
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.28fr)_minmax(340px,0.72fr)] 2xl:grid-cols-[minmax(0,1.42fr)_minmax(400px,0.74fr)]">
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.32fr)_minmax(360px,0.88fr)] 2xl:grid-cols-[minmax(0,1.48fr)_minmax(420px,0.9fr)]">
           <div className="space-y-5">
             <AgentRecipeGallery
               locale={locale}
@@ -680,65 +682,6 @@ export function AgentCompareLab({
               onExportJson={onExportRecipesJson}
               onImportJson={onImportRecipesJson}
             />
-
-            <section className="rounded-3xl border border-white/10 bg-white/[0.03] p-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{copy.targets}</p>
-                  <p className="mt-2 text-sm leading-6 text-slate-400">{copy.targetsHint}</p>
-                </div>
-                <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[11px] text-slate-200">
-                  {compareTargets.length}/{MAX_COMPARE_LANES}
-                </span>
-              </div>
-              <div className="mt-4 grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
-                {targets.map((target) => {
-                  const checked = compareTargetIds.includes(target.id);
-                  const pinned = target.id === selectedTargetId;
-                  return (
-                    <label
-                      key={target.id}
-                      className={`flex cursor-pointer items-start gap-3 rounded-2xl border px-3 py-3 transition ${
-                        checked
-                          ? "border-cyan-400/25 bg-cyan-400/10"
-                          : "border-white/10 bg-black/20 hover:border-white/20 hover:bg-white/[0.05]"
-                      } ${pinned ? "ring-1 ring-cyan-300/20" : ""}`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        disabled={pinned}
-                        onChange={() => onToggleCompareTarget(target.id)}
-                        className="mt-1 rounded border-white/20 bg-slate-950 disabled:cursor-not-allowed"
-                      />
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <p className="text-sm font-medium text-white">{target.label}</p>
-                          <span
-                            className={`rounded-full px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] ${
-                              target.execution === "local"
-                                ? "bg-emerald-400/10 text-emerald-200"
-                                : "bg-violet-400/10 text-violet-200"
-                            }`}
-                          >
-                            {target.execution === "local" ? copy.local : copy.remote}
-                          </span>
-                          {pinned ? (
-                            <span className="rounded-full bg-cyan-400/10 px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] text-cyan-100">
-                              {copy.currentTarget}
-                            </span>
-                          ) : null}
-                        </div>
-                        <p className="mt-2 text-xs leading-6 text-slate-400">{target.description}</p>
-                        <p className="mt-2 text-[11px] text-slate-500">
-                          {copy.recommendedContext}: {target.recommendedContext}
-                        </p>
-                      </div>
-                    </label>
-                  );
-                })}
-              </div>
-            </section>
 
             <section className="rounded-3xl border border-white/10 bg-white/[0.03] p-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -768,41 +711,51 @@ export function AgentCompareLab({
 
               <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.22fr)_minmax(320px,0.78fr)]">
                 <div className="space-y-4">
-                  <section className="rounded-3xl border border-white/10 bg-black/20 p-4">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div>
-                        <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{copy.promptFrame}</p>
-                        <p className="mt-2 text-sm leading-6 text-slate-400">
-                          {locale.startsWith("en")
-                            ? "Keep one clear task prompt and one optional system frame. The main editor stays primary while controls stay compact."
-                            : "保留一个清晰的任务提示词和一个可选系统提示词，让主编辑器保持优先，设置区保持紧凑。"}
-                        </p>
-                      </div>
-                      <div className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11px] text-slate-300">
-                        {selectedIntentMeta.label} · {selectedOutputShapeMeta.label}
-                      </div>
-                    </div>
-                    <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.06fr)_minmax(280px,0.94fr)]">
-                      <div className="min-w-0">
-                        <label className="text-xs uppercase tracking-[0.18em] text-slate-500">{copy.promptInput}</label>
-                        <textarea
-                          value={input}
-                          onChange={(event) => onInputChange(event.target.value)}
-                          rows={9}
-                          className="mt-2 min-h-[220px] w-full resize-y rounded-3xl border border-white/10 bg-black/25 px-4 py-4 font-mono text-sm leading-7 text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-cyan-400/40 focus:bg-black/35"
-                        />
-                      </div>
-                      <div className="min-w-0">
-                        <label className="text-xs uppercase tracking-[0.18em] text-slate-500">{copy.systemFrame}</label>
-                        <textarea
-                          value={systemPrompt}
-                          onChange={(event) => onSystemPromptChange(event.target.value)}
-                          rows={12}
-                          className="mt-2 h-full min-h-[220px] w-full rounded-3xl border border-white/10 bg-slate-950/80 px-4 py-4 font-mono text-xs leading-6 text-slate-200 outline-none transition focus:border-cyan-400/40"
-                        />
-                      </div>
-                    </div>
-                  </section>
+	                  <section className="rounded-3xl border border-white/10 bg-black/20 p-4">
+	                    <div className="flex flex-wrap items-start justify-between gap-3">
+	                      <div>
+	                        <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{copy.promptFrame}</p>
+	                        <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">
+	                          {locale.startsWith("en")
+	                            ? "One shared task prompt stays primary; system framing is folded into a secondary drawer."
+	                            : "主任务提示词保持优先，系统提示词收进次级抽屉。"}
+	                        </p>
+	                      </div>
+	                      <div className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11px] text-slate-300">
+	                        {selectedIntentMeta.label} · {selectedOutputShapeMeta.label}
+	                      </div>
+	                    </div>
+	                    <div className="mt-4">
+	                      <div className="flex flex-wrap items-center justify-between gap-2">
+	                        <label className="text-xs uppercase tracking-[0.18em] text-slate-500">{copy.promptInput}</label>
+	                        <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] text-slate-400">
+	                          {input.length} chars
+	                        </span>
+	                      </div>
+	                      <textarea
+	                        value={input}
+	                        onChange={(event) => onInputChange(event.target.value)}
+	                        rows={7}
+	                        className="mt-2 min-h-[170px] w-full resize-y rounded-3xl border border-white/10 bg-black/25 px-4 py-4 font-mono text-sm leading-7 text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-cyan-400/40 focus:bg-black/35"
+	                      />
+	                      <details className="mt-3 rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3" open={Boolean(systemPrompt.trim())}>
+	                        <summary className="cursor-pointer list-none">
+	                          <span className="flex flex-wrap items-center justify-between gap-3">
+	                            <span className="text-xs uppercase tracking-[0.18em] text-slate-500">{copy.systemFrame}</span>
+	                            <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] text-slate-400">
+	                              {systemPrompt.trim() ? `${systemPrompt.length} chars` : locale.startsWith("en") ? "optional" : "可选"}
+	                            </span>
+	                          </span>
+	                        </summary>
+	                        <textarea
+	                          value={systemPrompt}
+	                          onChange={(event) => onSystemPromptChange(event.target.value)}
+	                          rows={5}
+	                          className="mt-3 w-full rounded-2xl border border-white/10 bg-black/25 px-4 py-3 font-mono text-xs leading-6 text-slate-200 outline-none transition focus:border-cyan-400/40"
+	                        />
+	                      </details>
+	                    </div>
+	                  </section>
 
                   <section className="rounded-3xl border border-white/10 bg-black/20 p-4">
                     <div className="flex flex-wrap items-center justify-between gap-3">
@@ -819,24 +772,25 @@ export function AgentCompareLab({
                         {copy.targetMatrixCapacity}: {compareTargets.length}/{MAX_COMPARE_LANES}
                       </span>
                     </div>
-                    <div className="mt-4 overflow-hidden rounded-2xl border border-white/10 bg-slate-950/60">
-                      <div className="hidden grid-cols-[40px_minmax(0,1.5fr)_118px_110px] items-center gap-3 border-b border-white/10 bg-white/[0.03] px-4 py-3 text-[11px] uppercase tracking-[0.18em] text-slate-500 md:grid">
-                        <span />
-                        <span>{copy.targetMatrixTarget}</span>
-                        <span>{copy.targetMatrixContext}</span>
-                        <span>{copy.targetMatrixStatus}</span>
-                      </div>
-                      <div className="divide-y divide-white/10">
-                        {targets.map((target) => {
-                          const checked = compareTargetIds.includes(target.id);
-                          const pinned = target.id === selectedTargetId;
-                          return (
-                            <label
-                              key={target.id}
-                              className={`grid cursor-pointer gap-3 px-4 py-4 transition md:grid-cols-[40px_minmax(0,1.5fr)_118px_110px] md:items-center ${
-                                checked ? "bg-cyan-400/10" : "bg-slate-950/70 hover:bg-white/[0.05]"
-                              } ${pinned ? "ring-inset ring-1 ring-cyan-300/20" : ""}`}
-                            >
+                    <div className="mt-4 overflow-x-auto rounded-2xl border border-white/10 bg-slate-950/60">
+                      <div className="min-w-[760px]">
+                        <div className="hidden grid-cols-[40px_minmax(280px,1.5fr)_132px_118px] items-center gap-3 border-b border-white/10 bg-white/[0.03] px-4 py-3 text-[11px] uppercase tracking-[0.18em] text-slate-500 md:grid">
+                          <span />
+                          <span>{copy.targetMatrixTarget}</span>
+                          <span>{copy.targetMatrixContext}</span>
+                          <span>{copy.targetMatrixStatus}</span>
+                        </div>
+                        <div className="divide-y divide-white/10">
+                          {targets.map((target) => {
+                            const checked = compareTargetIds.includes(target.id);
+                            const pinned = target.id === selectedTargetId;
+                            return (
+                              <label
+                                key={target.id}
+                                className={`grid cursor-pointer gap-3 px-4 py-4 transition md:grid-cols-[40px_minmax(280px,1.5fr)_132px_118px] md:items-center ${
+                                  checked ? "bg-cyan-400/10" : "bg-slate-950/70 hover:bg-white/[0.05]"
+                                } ${pinned ? "ring-inset ring-1 ring-cyan-300/20" : ""}`}
+                              >
                               <input
                                 type="checkbox"
                                 checked={checked}
@@ -846,7 +800,7 @@ export function AgentCompareLab({
                               />
                               <div className="min-w-0">
                                 <div className="flex flex-wrap items-center gap-2">
-                                  <p className="text-sm font-medium text-white">{target.label}</p>
+                                  <p className="line-clamp-1 text-sm font-medium text-white">{target.label}</p>
                                   <span
                                     className={`rounded-full px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] ${
                                       target.execution === "local"
@@ -874,9 +828,10 @@ export function AgentCompareLab({
                                   {checked ? copy.laneReady : copy.lanePending}
                                 </span>
                               </div>
-                            </label>
-                          );
-                        })}
+                              </label>
+                            );
+                          })}
+                        </div>
                       </div>
                     </div>
                   </section>
@@ -1026,341 +981,6 @@ export function AgentCompareLab({
                 </div>
               </div>
 
-              <div className="mt-4 space-y-5">
-                <section className="rounded-3xl border border-white/10 bg-white/[0.03] p-4">
-                  <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{copy.lanePreview}</p>
-                  {copy.lanePreviewHint ? (
-                    <p className="mt-2 text-sm leading-6 text-slate-400">{copy.lanePreviewHint}</p>
-                  ) : null}
-                  {!hasEnoughTargets ? (
-                    <div className="mt-4 rounded-2xl border border-dashed border-amber-300/20 bg-amber-300/10 px-4 py-4 text-sm leading-6 text-amber-100">
-                      {copy.needMoreTargets}
-                    </div>
-                  ) : null}
-                  <div className="mt-4 overflow-hidden rounded-2xl border border-white/10 bg-slate-950/60">
-                    <div className="hidden grid-cols-[minmax(0,1.15fr)_minmax(0,0.82fr)_minmax(0,1fr)_220px] items-center gap-3 border-b border-white/10 bg-white/[0.03] px-4 py-3 text-[11px] uppercase tracking-[0.18em] text-slate-500 xl:grid">
-                      <span>{copy.targetMatrixTarget}</span>
-                      <span>{locale.startsWith("en") ? "Runtime" : "运行时"}</span>
-                      <span>{copy.compareRuntimePhase}</span>
-                      <span>{locale.startsWith("en") ? "Actions" : "动作"}</span>
-                    </div>
-                    <div className="divide-y divide-white/10">
-                      {compareTargets.map((target) => {
-                        const runtime = compareRuntimeByTargetId[target.id];
-                        const compareProgress = compareProgressByTargetId[target.id];
-                        const compareTimeline = compareProgress?.timeline || [];
-                        const loadingSeconds =
-                          typeof runtime?.loadingElapsedMs === "number"
-                            ? Math.round(runtime.loadingElapsedMs / 1000)
-                            : null;
-                        const compareLoadingSeconds =
-                          typeof compareProgress?.loadingElapsedMs === "number"
-                            ? Math.max(1, Math.round(compareProgress.loadingElapsedMs / 1000))
-                            : null;
-                        const compareRecoveryBudgetSeconds =
-                          typeof compareProgress?.recoveryThresholdMs === "number"
-                            ? Math.max(1, Math.round(compareProgress.recoveryThresholdMs / 1000))
-                            : null;
-                        const recoveryConfirmPending = compareRecoveryConfirmTargetId === target.id;
-                        const recoveryCoolingDown = (compareRecoveryCooldownByTargetId[target.id] || 0) > Date.now();
-                        return (
-                          <div key={target.id} className="px-4 py-4">
-                            <div className="grid gap-3 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.82fr)_minmax(0,1fr)_220px] xl:items-start">
-                              <div className="min-w-0">
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <p className="text-sm font-medium text-white">{target.label}</p>
-                                  <span
-                                    className={`rounded-full px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] ${
-                                      target.execution === "local"
-                                        ? "bg-emerald-400/10 text-emerald-200"
-                                        : "bg-violet-400/10 text-violet-200"
-                                    }`}
-                                  >
-                                    {target.execution === "local" ? copy.local : copy.remote}
-                                  </span>
-                                  {target.id === selectedTargetId ? (
-                                    <span className="rounded-full bg-cyan-400/10 px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] text-cyan-100">
-                                      {copy.currentTarget}
-                                    </span>
-                                  ) : null}
-                                </div>
-                                <p className="mt-2 text-xs leading-6 text-slate-400">{target.providerLabel}</p>
-                                <p className="mt-2 line-clamp-2 text-xs leading-6 text-slate-500">{target.notes[0] || target.description}</p>
-                              </div>
-                              <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-3 py-3 text-xs leading-6 text-slate-300">
-                                <p className="text-[10px] uppercase tracking-[0.16em] text-slate-500">{locale.startsWith("en") ? "Runtime" : "运行时"}</p>
-                                {runtime ? (
-                                  <>
-                                    <p className="mt-2 font-medium text-slate-100">{runtime.phaseDetail || runtime.phase || "runtime"}</p>
-                                    <p className="mt-1 text-slate-400">{copy.recommendedContext}: {target.recommendedContext}</p>
-                                    {loadingSeconds !== null ? (
-                                      <p className="text-slate-400">
-                                        {locale.startsWith("en") ? "Loading for" : "加载中"} {loadingSeconds}s
-                                      </p>
-                                    ) : null}
-                                  </>
-                                ) : (
-                                  <p className="mt-2 text-slate-400">—</p>
-                                )}
-                              </div>
-                              <div className="rounded-2xl border border-cyan-400/15 bg-cyan-400/5 px-3 py-3 text-xs leading-6 text-cyan-50">
-                                <div className="flex flex-wrap items-center justify-between gap-2">
-                                  <p className="font-medium text-cyan-100">{copy.compareRuntimePhase}</p>
-                                  <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">
-                                    {hasEnoughTargets ? copy.laneReady : copy.lanePending}
-                                  </span>
-                                </div>
-                                {compareProgress ? (
-                                  <>
-                                    <p className="mt-2 text-cyan-50/90">{compareProgress.detail}</p>
-                                    <div className="mt-2 grid gap-1 text-cyan-100/80">
-                                      {compareLoadingSeconds !== null ? (
-                                        <p>{copy.compareLoadingFor}: {compareLoadingSeconds}s</p>
-                                      ) : null}
-                                      {compareRecoveryBudgetSeconds !== null ? (
-                                        <p>{copy.compareRecoveryBudget}: {compareRecoveryBudgetSeconds}s</p>
-                                      ) : null}
-                                      {compareProgress.recoveryAction ? (
-                                        <p>{copy.compareLatestRecovery}: {compareProgress.recoveryAction}</p>
-                                      ) : compareProgress.phase === "loading" ? (
-                                        <p>{copy.compareAwaitingRecovery}</p>
-                                      ) : null}
-                                    </div>
-                                  </>
-                                ) : (
-                                  <p className="mt-2 text-slate-400">{copy.compareNoTimeline}</p>
-                                )}
-                              </div>
-                              <div className="space-y-2">
-                                {target.execution === "local" ? (
-                                  <>
-                                    <button
-                                      type="button"
-                                      onClick={() => onRetryLocalRecovery(target.id)}
-                                      disabled={compareRecoveryPendingTargetId === target.id || benchmarkPending || recoveryCoolingDown}
-                                      className={`w-full rounded-full border px-3 py-1.5 text-[11px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
-                                        recoveryConfirmPending
-                                          ? "border-amber-300/30 bg-amber-300/10 text-amber-100 hover:bg-amber-300/15"
-                                          : "border-cyan-400/20 bg-cyan-400/10 text-cyan-100 hover:bg-cyan-400/15"
-                                      }`}
-                                    >
-                                      {compareRecoveryPendingTargetId === target.id
-                                        ? copy.compareManualRecoveryPending
-                                        : recoveryCoolingDown
-                                          ? copy.compareManualRecoveryCooldown
-                                          : recoveryConfirmPending
-                                            ? copy.compareManualRecoveryConfirm
-                                            : copy.compareManualRecovery}
-                                    </button>
-                                    {recoveryConfirmPending ? (
-                                      <p className="text-[11px] leading-5 text-amber-100/80">{copy.compareManualRecoveryConfirmHint}</p>
-                                    ) : null}
-                                    {recoveryCoolingDown ? (
-                                      <p className="text-[11px] leading-5 text-slate-400">{copy.compareManualRecoveryCooldownHint}</p>
-                                    ) : null}
-                                  </>
-                                ) : (
-                                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-3 py-3 text-xs leading-6 text-slate-400">
-                                    {locale.startsWith("en") ? "Remote lanes reuse provider health and retry policy." : "远端 lane 直接复用 provider 健康检查与重试策略。"}
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                            <details
-                              className="mt-3 rounded-2xl border border-white/10 bg-black/20 px-3 py-3 text-xs leading-6 text-slate-300"
-                              open={Boolean(compareTimeline.length && compareProgress?.phase !== "completed")}
-                            >
-                              <summary className="cursor-pointer list-none font-medium text-slate-100">
-                                <span className="inline-flex items-center gap-2">
-                                  <span>{copy.compareDrawer}</span>
-                                  <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-[2px] text-[10px] text-slate-400">
-                                    {compareTimeline.length}
-                                  </span>
-                                </span>
-                              </summary>
-                              <div className="mt-3 grid gap-3 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
-                                <div>
-                                  <p className="text-[10px] uppercase tracking-[0.16em] text-slate-500">{copy.compareRecoveryTimeline}</p>
-                                  {compareTimeline.length ? (
-                                    <div className="mt-2 max-h-40 space-y-2 overflow-auto pr-1">
-                                      {compareTimeline.map((entry: AgentCompareLaneTimelineEntry, index) => (
-                                        <div key={`${target.id}:${entry.at}:${index}`} className="rounded-lg border border-white/5 bg-white/[0.03] px-3 py-2">
-                                          <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">
-                                            {formatTimelineTime(locale, entry.at)} · {entry.phase}
-                                          </p>
-                                          <p className="mt-1 text-slate-200">{entry.detail}</p>
-                                          {typeof entry.recoveryTriggerElapsedMs === "number" ? (
-                                            <p className="mt-1 text-slate-400">
-                                              {copy.compareLoadingFor}: {Math.max(1, Math.round(entry.recoveryTriggerElapsedMs / 1000))}s
-                                            </p>
-                                          ) : null}
-                                          {entry.recoveryAction ? (
-                                            <p className="mt-1 text-slate-400">{entry.recoveryAction}</p>
-                                          ) : null}
-                                        </div>
-                                      ))}
-                                    </div>
-                                  ) : (
-                                    <p className="mt-2 text-slate-400">{copy.compareNoTimeline}</p>
-                                  )}
-                                </div>
-                                <div>
-                                  <p className="text-[10px] uppercase tracking-[0.16em] text-slate-500">{locale.startsWith("en") ? "Lane notes" : "Lane 备注"}</p>
-                                  <div className="mt-2 grid gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-3">
-                                    <p>{copy.recommendedContext}: {target.recommendedContext}</p>
-                                    <p>{target.notes[0] || target.description}</p>
-                                  </div>
-                                </div>
-                              </div>
-                            </details>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </section>
-              </div>
-            </section>
-
-            <section className="rounded-3xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">
-                {locale.startsWith("en") ? "Execution handoff" : "执行交接"}
-              </p>
-              <div className="mt-4 space-y-3">
-                <div className="grid gap-3 md:grid-cols-2">
-                  <button
-                    type="button"
-                    disabled={!hasEnoughTargets || comparePending || pending}
-                    onClick={onRunCompare}
-                    className="w-full rounded-2xl border border-cyan-400/20 bg-cyan-400/10 px-4 py-3 text-left text-sm text-cyan-100 transition hover:bg-cyan-400/15 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    <span className="block font-medium">{comparePending ? copy.runningCompare : copy.runCompare}</span>
-                    <span className="mt-1 block text-xs leading-6 text-cyan-100/80">
-                      {hasEnoughTargets ? copy.fairnessFingerprint : copy.needMoreTargets}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    disabled={!compareResult || benchmarkPending || comparePending}
-                    onClick={onSendToBenchmark}
-                    className="w-full rounded-2xl border border-violet-400/20 bg-violet-400/10 px-4 py-3 text-left text-sm text-violet-100 transition hover:bg-violet-400/15 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    <span className="block font-medium">{benchmarkPending ? copy.benchmarkPending : copy.benchmarkAction}</span>
-                    <span className="mt-1 block text-xs leading-6 text-violet-100/80">{copy.benchmarkHint}</span>
-                  </button>
-                </div>
-                <label className="flex items-start gap-3 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-slate-200">
-                  <input
-                    type="checkbox"
-                    checked={compareBenchmarkUseOutputContract}
-                    onChange={(event) => onCompareBenchmarkUseOutputContractChange(event.target.checked)}
-                    className="mt-1 rounded border-white/20 bg-slate-950"
-                  />
-                  <span>
-                    <span className="block font-medium">{copy.benchmarkContractToggle}</span>
-                    <span className="mt-1 block text-xs leading-6 text-slate-400">{copy.benchmarkContractHint}</span>
-                  </span>
-                </label>
-                <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{copy.benchmarkPromptPreview}</p>
-                      <p className="mt-2 text-xs leading-6 text-slate-400">{copy.benchmarkPromptPreviewHint}</p>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <label className="flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11px] text-slate-200">
-                        <input
-                          type="checkbox"
-                          checked={compareBenchmarkPreviewDiffOnly}
-                          onChange={(event) => onCompareBenchmarkPreviewDiffOnlyChange(event.target.checked)}
-                          className="rounded border-white/20 bg-slate-950"
-                        />
-                        {copy.benchmarkPromptDiffOnly}
-                      </label>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onCopy(
-                            compareBenchmarkPreviewDiffOnly
-                              ? compareBenchmarkPromptDiffPreview
-                              : compareBenchmarkPromptPreview,
-                            "compare:benchmark-prompt"
-                          )
-                        }
-                        className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:bg-white/10"
-                      >
-                        {copyState === "compare:benchmark-prompt" ? copy.copied : copy.benchmarkPromptCopy}
-                      </button>
-                    </div>
-                  </div>
-                  <textarea
-                    readOnly
-                    value={compareBenchmarkPreviewDiffOnly ? compareBenchmarkPromptDiffPreview : compareBenchmarkPromptPreview}
-                    rows={7}
-                    className="mt-3 w-full resize-none rounded-2xl border border-white/10 bg-slate-950/90 px-4 py-3 font-mono text-xs leading-6 text-slate-200 outline-none"
-                  />
-                </div>
-                <div className="grid gap-3 md:grid-cols-2">
-                  <button
-                    type="button"
-                    disabled={!compareResult}
-                    onClick={onExportMarkdown}
-                    className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-left text-sm text-slate-200 transition hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    <span className="block font-medium">{copy.exportMarkdown}</span>
-                    <span className="mt-1 block text-xs leading-6 text-slate-400">{compareResult ? copy.resultReviewHint : copy.noResults}</span>
-                  </button>
-                  <button
-                    type="button"
-                    disabled={!compareResult}
-                    onClick={onCopyMarkdown}
-                    className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-left text-sm text-slate-200 transition hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    <span className="block font-medium">{copyState === "compare:markdown" ? copy.copied : copy.copyMarkdown}</span>
-                    <span className="mt-1 block text-xs leading-6 text-slate-400">{compareResult ? copy.resultReviewHint : copy.noResults}</span>
-                  </button>
-                </div>
-                {pending ? (
-                  <p className="text-xs leading-6 text-cyan-200">
-                    {locale.startsWith("en")
-                      ? "A chat run is already in flight. Compare execution will reuse the same runtime guardrails."
-                      : "当前已有聊天请求进行中。compare 会继续复用同一套运行时保护逻辑。"}
-                  </p>
-                ) : null}
-                {compareError ? (
-                  <div className="rounded-2xl border border-rose-400/25 bg-rose-400/10 px-4 py-3 text-sm leading-6 text-rose-100">
-                    {compareError}
-                  </div>
-                ) : null}
-                {benchmarkError ? (
-                  <div className="rounded-2xl border border-rose-400/25 bg-rose-400/10 px-4 py-3 text-sm leading-6 text-rose-100">
-                    {benchmarkError}
-                  </div>
-                ) : null}
-                {compareResult?.warning ? (
-                  <div className="rounded-2xl border border-amber-300/25 bg-amber-300/10 px-4 py-3 text-sm leading-6 text-amber-100">
-                    <p className="text-[11px] uppercase tracking-[0.22em] text-amber-50/80">{copy.compareWarning}</p>
-                    <p className="mt-2">{compareResult.warning}</p>
-                  </div>
-                ) : null}
-                {compareResult?.results.some((lane) => !lane.ok) ? (
-                  <div className="rounded-2xl border border-amber-300/25 bg-amber-300/10 px-4 py-3 text-sm leading-6 text-amber-100">
-                    {copy.partialRun}
-                  </div>
-                ) : null}
-                {benchmarkResult?.runId ? (
-                  <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 px-4 py-3 text-sm leading-6 text-emerald-100">
-                    <p className="font-medium">{copy.benchmarkSuccess}</p>
-                    <p className="mt-1 text-xs text-emerald-100/90">runId: {benchmarkResult.runId}</p>
-                    {benchmarkResult.runNote ? (
-                      <p className="mt-2 text-xs leading-6 text-emerald-100/85">{copy.benchmarkRunNoteAttached}</p>
-                    ) : null}
-                    <a href="/admin" className="mt-2 inline-flex text-xs font-semibold text-emerald-50 underline underline-offset-4">
-                      {copy.benchmarkOpen}
-                    </a>
-                  </div>
-                ) : null}
-              </div>
             </section>
 
             <section className="rounded-3xl border border-white/10 bg-white/[0.03] p-4">
@@ -1670,12 +1290,326 @@ export function AgentCompareLab({
                       </div>
                     </div>
                   ) : null}
-                </div>
-              )}
-            </section>
-          </div>
-        </div>
-      </div>
-    </div>
+	                </div>
+	              )}
+	            </section>
+	          </div>
+
+	          <aside className="space-y-5 xl:sticky xl:top-5 xl:self-start">
+	            <section className="rounded-3xl border border-white/10 bg-white/[0.035] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+	              <div className="flex flex-wrap items-start justify-between gap-3">
+	                <div>
+	                  <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{copy.lanePreview}</p>
+	                  {copy.lanePreviewHint ? (
+	                    <p className="mt-2 text-sm leading-6 text-slate-400">{copy.lanePreviewHint}</p>
+	                  ) : null}
+	                </div>
+	                <span className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-1.5 text-[11px] font-semibold text-cyan-100">
+	                  {compareTargets.length}/{MAX_COMPARE_LANES}
+	                </span>
+	              </div>
+	              {!hasEnoughTargets ? (
+	                <div className="mt-4 rounded-2xl border border-dashed border-amber-300/20 bg-amber-300/10 px-4 py-4 text-sm leading-6 text-amber-100">
+	                  {copy.needMoreTargets}
+	                </div>
+	              ) : null}
+	              <div className="mt-4 space-y-3">
+	                {compareTargets.map((target) => {
+	                  const runtime = compareRuntimeByTargetId[target.id];
+	                  const compareProgress = compareProgressByTargetId[target.id];
+	                  const compareTimeline = compareProgress?.timeline || [];
+	                  const loadingSeconds =
+	                    typeof runtime?.loadingElapsedMs === "number"
+	                      ? Math.round(runtime.loadingElapsedMs / 1000)
+	                      : null;
+	                  const compareLoadingSeconds =
+	                    typeof compareProgress?.loadingElapsedMs === "number"
+	                      ? Math.max(1, Math.round(compareProgress.loadingElapsedMs / 1000))
+	                      : null;
+	                  const compareRecoveryBudgetSeconds =
+	                    typeof compareProgress?.recoveryThresholdMs === "number"
+	                      ? Math.max(1, Math.round(compareProgress.recoveryThresholdMs / 1000))
+	                      : null;
+	                  const recoveryConfirmPending = compareRecoveryConfirmTargetId === target.id;
+	                  const recoveryCoolingDown = (compareRecoveryCooldownByTargetId[target.id] || 0) > Date.now();
+                    const runtimeSummary = runtime?.phaseDetail || runtime?.phase || "—";
+                    const compareSummary = compareProgress?.detail || compareProgress?.phase || copy.compareIdleStatus;
+		                  return (
+		                    <article key={target.id} className="rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-2.5">
+		                      <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start">
+		                        <div className="min-w-0">
+		                          <div className="flex flex-wrap items-center gap-2">
+		                            <p className="line-clamp-1 text-sm font-medium text-white">{target.label}</p>
+		                            <span
+		                              className={`rounded-full px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] ${
+		                                target.execution === "local"
+		                                  ? "bg-emerald-400/10 text-emerald-200"
+		                                  : "bg-violet-400/10 text-violet-200"
+		                              }`}
+		                            >
+		                              {target.execution === "local" ? copy.local : copy.remote}
+		                            </span>
+		                            {target.id === selectedTargetId ? (
+		                              <span className="rounded-full bg-cyan-400/10 px-2 py-[3px] text-[10px] uppercase tracking-[0.18em] text-cyan-100">
+		                                {copy.currentTarget}
+		                              </span>
+		                            ) : null}
+		                          </div>
+		                          <p className="mt-1 line-clamp-1 text-xs text-slate-500">
+		                            {target.providerLabel} · {target.recommendedContext}
+		                          </p>
+		                        </div>
+		                        <span className="justify-self-start rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300 xl:justify-self-end">
+		                          {hasEnoughTargets ? copy.laneReady : copy.lanePending}
+		                        </span>
+		                      </div>
+
+		                      <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] leading-5">
+		                        <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 text-slate-300">
+		                          <span className="text-slate-500">{locale.startsWith("en") ? "Runtime" : "运行时"} · </span>
+		                          <span className="text-slate-100">{runtimeSummary}</span>
+		                          {loadingSeconds !== null ? <span className="text-slate-500"> · {loadingSeconds}s</span> : null}
+		                        </span>
+		                        <span className="max-w-full truncate rounded-full border border-cyan-400/15 bg-cyan-400/5 px-2.5 py-1 text-cyan-50">
+		                          <span className="text-cyan-100">{copy.compareRuntimePhase}</span>
+		                          <span className="text-cyan-50/80"> · {compareSummary}</span>
+		                        </span>
+		                        {compareTimeline.length ? (
+		                          <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 text-slate-400">
+		                            {copy.compareRecoveryTimeline} · {compareTimeline.length}
+		                          </span>
+		                        ) : null}
+		                      </div>
+
+		                      <details
+		                        className="mt-3 rounded-2xl border border-white/10 bg-black/20 px-3 py-3 text-xs leading-6 text-slate-300"
+		                        open={Boolean(compareTimeline.length && compareProgress?.phase !== "completed")}
+		                      >
+		                        <summary className="cursor-pointer list-none">
+		                          <span className="flex flex-wrap items-center justify-between gap-3">
+		                            <span className="inline-flex items-center gap-2 font-medium text-slate-100">
+		                              <span>{copy.compareDrawer}</span>
+		                              <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-[2px] text-[10px] text-slate-400">
+		                                {compareTimeline.length}
+		                              </span>
+		                            </span>
+		                            {target.execution === "local" ? (
+		                              <button
+		                                type="button"
+		                                onClick={(event) => {
+		                                  event.preventDefault();
+		                                  onRetryLocalRecovery(target.id);
+		                                }}
+		                                disabled={compareRecoveryPendingTargetId === target.id || benchmarkPending || recoveryCoolingDown}
+		                                className={`rounded-full border px-3 py-1.5 text-[11px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
+		                                  recoveryConfirmPending
+		                                    ? "border-amber-300/30 bg-amber-300/10 text-amber-100 hover:bg-amber-300/15"
+		                                    : "border-cyan-400/20 bg-cyan-400/10 text-cyan-100 hover:bg-cyan-400/15"
+		                                }`}
+		                              >
+		                                {compareRecoveryPendingTargetId === target.id
+		                                  ? copy.compareManualRecoveryPending
+		                                  : recoveryCoolingDown
+		                                    ? copy.compareManualRecoveryCooldown
+		                                    : recoveryConfirmPending
+		                                      ? copy.compareManualRecoveryConfirm
+		                                      : copy.compareManualRecovery}
+		                              </button>
+		                            ) : (
+		                              <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11px] text-slate-400">
+		                                {locale.startsWith("en") ? "Provider retry policy" : "远端重试策略"}
+		                              </span>
+		                            )}
+		                          </span>
+		                        </summary>
+		                        <div className="mt-3">
+		                          {recoveryConfirmPending ? (
+		                            <p className="mb-2 rounded-xl border border-amber-300/20 bg-amber-300/10 px-3 py-2 text-[11px] leading-5 text-amber-100/85">
+		                              {copy.compareManualRecoveryConfirmHint}
+		                            </p>
+		                          ) : null}
+		                          {recoveryCoolingDown ? (
+		                            <p className="mb-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[11px] leading-5 text-slate-400">
+		                              {copy.compareManualRecoveryCooldownHint}
+		                            </p>
+		                          ) : null}
+		                          <div className="grid gap-2 text-[11px] text-slate-400 sm:grid-cols-3">
+		                            {compareLoadingSeconds !== null ? <p>{copy.compareLoadingFor}: {compareLoadingSeconds}s</p> : null}
+		                            {compareRecoveryBudgetSeconds !== null ? <p>{copy.compareRecoveryBudget}: {compareRecoveryBudgetSeconds}s</p> : null}
+		                            {compareProgress?.recoveryAction ? <p>{copy.compareLatestRecovery}: {compareProgress.recoveryAction}</p> : null}
+		                          </div>
+		                          <p className="mt-3 text-[10px] uppercase tracking-[0.16em] text-slate-500">{copy.compareRecoveryTimeline}</p>
+		                          {compareTimeline.length ? (
+		                            <div className="mt-2 max-h-36 space-y-2 overflow-auto pr-1">
+		                              {compareTimeline.map((entry: AgentCompareLaneTimelineEntry, index) => (
+		                                <div key={`${target.id}:${entry.at}:${index}`} className="rounded-lg border border-white/5 bg-white/[0.03] px-3 py-2">
+		                                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">
+		                                    {formatTimelineTime(locale, entry.at)} · {entry.phase}
+		                                  </p>
+		                                  <p className="mt-1 text-slate-200">{entry.detail}</p>
+		                                  {typeof entry.recoveryTriggerElapsedMs === "number" ? (
+		                                    <p className="mt-1 text-slate-400">
+		                                      {copy.compareLoadingFor}: {Math.max(1, Math.round(entry.recoveryTriggerElapsedMs / 1000))}s
+		                                    </p>
+		                                  ) : null}
+		                                  {entry.recoveryAction ? (
+		                                    <p className="mt-1 text-slate-400">{entry.recoveryAction}</p>
+		                                  ) : null}
+		                                </div>
+		                              ))}
+		                            </div>
+		                          ) : (
+		                            <p className="mt-2 text-slate-400">{copy.compareNoTimeline}</p>
+		                          )}
+		                        </div>
+		                      </details>
+		                    </article>
+		                  );
+	                })}
+	              </div>
+	            </section>
+
+	            <section className="rounded-3xl border border-white/10 bg-white/[0.035] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+	              <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">
+	                {locale.startsWith("en") ? "Execution handoff" : "执行交接"}
+	              </p>
+	              <div className="mt-4 space-y-3">
+	                <button
+	                  type="button"
+	                  disabled={!hasEnoughTargets || comparePending || pending}
+	                  onClick={onRunCompare}
+	                  className="w-full rounded-2xl border border-cyan-400/20 bg-cyan-400/10 px-4 py-3 text-left text-sm text-cyan-100 transition hover:bg-cyan-400/15 disabled:cursor-not-allowed disabled:opacity-60"
+	                >
+	                  <span className="block font-medium">{comparePending ? copy.runningCompare : copy.runCompare}</span>
+	                  <span className="mt-1 block text-xs leading-6 text-cyan-100/80">
+	                    {hasEnoughTargets ? copy.fairnessFingerprint : copy.needMoreTargets}
+	                  </span>
+	                </button>
+	                <button
+	                  type="button"
+	                  disabled={!compareResult || benchmarkPending || comparePending}
+	                  onClick={onSendToBenchmark}
+	                  className="w-full rounded-2xl border border-violet-400/20 bg-violet-400/10 px-4 py-3 text-left text-sm text-violet-100 transition hover:bg-violet-400/15 disabled:cursor-not-allowed disabled:opacity-60"
+	                >
+	                  <span className="block font-medium">{benchmarkPending ? copy.benchmarkPending : copy.benchmarkAction}</span>
+	                  <span className="mt-1 block text-xs leading-6 text-violet-100/80">{copy.benchmarkHint}</span>
+	                </button>
+	                <label className="flex items-start gap-3 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-slate-200">
+	                  <input
+	                    type="checkbox"
+	                    checked={compareBenchmarkUseOutputContract}
+	                    onChange={(event) => onCompareBenchmarkUseOutputContractChange(event.target.checked)}
+	                    className="mt-1 rounded border-white/20 bg-slate-950"
+	                  />
+	                  <span>
+	                    <span className="block font-medium">{copy.benchmarkContractToggle}</span>
+	                    <span className="mt-1 block text-xs leading-6 text-slate-400">{copy.benchmarkContractHint}</span>
+	                  </span>
+	                </label>
+	                <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3">
+	                  <div className="flex flex-wrap items-start justify-between gap-3">
+	                    <div>
+	                      <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">{copy.benchmarkPromptPreview}</p>
+	                      <p className="mt-2 text-xs leading-6 text-slate-400">{copy.benchmarkPromptPreviewHint}</p>
+	                    </div>
+	                    <div className="flex flex-wrap items-center gap-2">
+	                      <label className="flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11px] text-slate-200">
+	                        <input
+	                          type="checkbox"
+	                          checked={compareBenchmarkPreviewDiffOnly}
+	                          onChange={(event) => onCompareBenchmarkPreviewDiffOnlyChange(event.target.checked)}
+	                          className="rounded border-white/20 bg-slate-950"
+	                        />
+	                        {copy.benchmarkPromptDiffOnly}
+	                      </label>
+	                      <button
+	                        type="button"
+	                        onClick={() =>
+	                          onCopy(
+	                            compareBenchmarkPreviewDiffOnly
+	                              ? compareBenchmarkPromptDiffPreview
+	                              : compareBenchmarkPromptPreview,
+	                            "compare:benchmark-prompt"
+	                          )
+	                        }
+	                        className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:bg-white/10"
+	                      >
+	                        {copyState === "compare:benchmark-prompt" ? copy.copied : copy.benchmarkPromptCopy}
+	                      </button>
+	                    </div>
+	                  </div>
+	                  <textarea
+	                    readOnly
+	                    value={compareBenchmarkPreviewDiffOnly ? compareBenchmarkPromptDiffPreview : compareBenchmarkPromptPreview}
+	                    rows={6}
+	                    className="mt-3 w-full resize-none rounded-2xl border border-white/10 bg-slate-950/90 px-4 py-3 font-mono text-xs leading-6 text-slate-200 outline-none"
+	                  />
+	                </div>
+	                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+	                  <button
+	                    type="button"
+	                    disabled={!compareResult}
+	                    onClick={onExportMarkdown}
+	                    className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-left text-sm text-slate-200 transition hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-60"
+	                  >
+	                    <span className="block font-medium">{copy.exportMarkdown}</span>
+	                    <span className="mt-1 block text-xs leading-6 text-slate-400">{compareResult ? copy.resultReviewHint : copy.noResults}</span>
+	                  </button>
+	                  <button
+	                    type="button"
+	                    disabled={!compareResult}
+	                    onClick={onCopyMarkdown}
+	                    className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-left text-sm text-slate-200 transition hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-60"
+	                  >
+	                    <span className="block font-medium">{copyState === "compare:markdown" ? copy.copied : copy.copyMarkdown}</span>
+	                    <span className="mt-1 block text-xs leading-6 text-slate-400">{compareResult ? copy.resultReviewHint : copy.noResults}</span>
+	                  </button>
+	                </div>
+	                {pending ? (
+	                  <p className="text-xs leading-6 text-cyan-200">
+	                    {locale.startsWith("en")
+	                      ? "A chat run is already in flight. Compare execution will reuse the same runtime guardrails."
+	                      : "当前已有聊天请求进行中。compare 会继续复用同一套运行时保护逻辑。"}
+	                  </p>
+	                ) : null}
+	                {compareError ? (
+	                  <div className="rounded-2xl border border-rose-400/25 bg-rose-400/10 px-4 py-3 text-sm leading-6 text-rose-100">
+	                    {compareError}
+	                  </div>
+	                ) : null}
+	                {benchmarkError ? (
+	                  <div className="rounded-2xl border border-rose-400/25 bg-rose-400/10 px-4 py-3 text-sm leading-6 text-rose-100">
+	                    {benchmarkError}
+	                  </div>
+	                ) : null}
+	                {compareResult?.warning ? (
+	                  <div className="rounded-2xl border border-amber-300/25 bg-amber-300/10 px-4 py-3 text-sm leading-6 text-amber-100">
+	                    <p className="text-[11px] uppercase tracking-[0.22em] text-amber-50/80">{copy.compareWarning}</p>
+	                    <p className="mt-2">{compareResult.warning}</p>
+	                  </div>
+	                ) : null}
+	                {compareResult?.results.some((lane) => !lane.ok) ? (
+	                  <div className="rounded-2xl border border-amber-300/25 bg-amber-300/10 px-4 py-3 text-sm leading-6 text-amber-100">
+	                    {copy.partialRun}
+	                  </div>
+	                ) : null}
+	                {benchmarkResult?.runId ? (
+	                  <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 px-4 py-3 text-sm leading-6 text-emerald-100">
+	                    <p className="font-medium">{copy.benchmarkSuccess}</p>
+	                    <p className="mt-1 text-xs text-emerald-100/90">runId: {benchmarkResult.runId}</p>
+	                    {benchmarkResult.runNote ? (
+	                      <p className="mt-2 text-xs leading-6 text-emerald-100/85">{copy.benchmarkRunNoteAttached}</p>
+	                    ) : null}
+	                    <a href="/admin" className="mt-2 inline-flex text-xs font-semibold text-emerald-50 underline underline-offset-4">
+	                      {copy.benchmarkOpen}
+	                    </a>
+	                  </div>
+	                ) : null}
+	              </div>
+	            </section>
+	          </aside>
+	        </div>
+	      </div>
+	    </div>
   );
 }

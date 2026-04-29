@@ -1,0 +1,8 @@
+{"instruction":"审阅这段变更：新增了 adapter attach API，但没有 detach。请给出一条 PR 评论。","output":"建议同时补齐 detach API，否则 adapter 生命周期只能挂载不能卸载，第二次 compare 或 benchmark 可能留下运行时状态残留。"}
+{"instruction":"审阅这段变更：训练曲线只有趋势线，没有坐标轴和数值。请给出风险说明。","output":"当前曲线只能表达方向，无法判断 loss 的具体变化幅度；建议补充 step/loss 坐标轴、最新点数值和首尾 delta。"}
+{"instruction":"审阅这段 UI：参数输入框只显示 8192、4、3，没有字段名。请给出修复建议。","output":"这些数值缺少语义标签，新手很难知道它们分别代表序列长度、批大小还是 epoch；建议为每个参数补 label 和一行用途说明。"}
+{"instruction":"审阅这段逻辑：保存数据集前没有校验。请给出问题。","output":"如果允许未校验数据集直接保存，后续 stage job 才暴露格式错误，会让错误定位变慢；保存按钮应依赖最近一次校验通过。"}
+{"instruction":"审阅这段交互：社区数据集只能输入查询词，不能一键加载。请给出产品建议。","output":"建议提供常用社区数据集预设，新手可以先加载 starter 样例并保留上游查询词，再逐步替换为真实远端数据集。"}
+{"instruction":"审阅这段训练配置：batch size 默认过大且没有说明。请给出风险。","output":"在本地 Apple Silicon 上 batch size 过大可能快速推高共享内存占用；需要说明它控制每步样本数，并提示内存紧张时优先调小。"}
+{"instruction":"审阅这段 benchmark handoff：没有记录 recipe id。请给出影响。","output":"缺少 recipe id 会让后续报告难以追溯训练参数，建议在 run note 或 timeline 中保留 recipe、dataset 和 adapter 标识。"}
+{"instruction":"审阅这段模型加载策略：高风险模型仍可被一键预热。请给出修复建议。","output":"一键预热应自动跳过高风险模型，并在模型卡片上显示跳过原因，避免因为显存或共享内存压力导致系统卡死。"}

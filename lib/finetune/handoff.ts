@@ -63,8 +63,19 @@ function createRepresentativePrompt(context: HandoffContext) {
 
   const datasetLabel = context.dataset?.label || "the current fine-tune dataset";
   return [
-    `Summarize the main capability shift that adapter "${context.adapter.adapterName}" is trying to introduce on top of ${context.adapter.baseTargetLabel || context.recipe.baseTargetId}.`,
-    `Then give 3 concise checks you would run against ${datasetLabel} to validate whether the adapter is improving the right behavior.`
+    "Read the release note snippet below and produce a compact operator-facing summary.",
+    "",
+    "Requirements:",
+    "1. Return exactly three bullets.",
+    "2. Bullet 1: what changed.",
+    "3. Bullet 2: the main regression risk.",
+    "4. Bullet 3: the next validation step.",
+    "5. Keep each bullet concise.",
+    "6. Do not mention training, prompt setup, or internal reasoning.",
+    "",
+    `Context source: ${datasetLabel}`,
+    `Adapter: ${context.adapter.adapterName}`,
+    `Base target: ${context.adapter.baseTargetLabel || context.recipe.baseTargetId}`
   ].join("\n\n");
 }
 
@@ -214,7 +225,7 @@ export function buildFineTuneCompareHandoffPlan(input: {
     input: promptPreview,
     messages: [],
     systemPrompt:
-      "Run this as a fine-tune smoke prompt. Answer the user task directly, stay concise, and avoid discussing the training setup unless the prompt explicitly asks for it.",
+      "Run this as a post-fine-tune smoke check. Return only the final answer, keep it concise, do not narrate internal reasoning, and do not mention the training setup, prompt contract, or evaluation harness unless the user explicitly asks for them.",
     compareIntent: "model-vs-model",
     compareOutputShape: "freeform",
     enableTools: false,

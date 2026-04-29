@@ -6,7 +6,7 @@ import {
   clampContextWindowForTarget,
   normalizeContextWindow
 } from "@/lib/agent/metrics";
-import { ensureLocalGatewayAvailable } from "@/lib/agent/local-gateway";
+import { ensureLocalGatewayAvailable, getLocalGatewaySupervisorInfo } from "@/lib/agent/local-gateway";
 import { lookupPromptCache, savePromptCache } from "@/lib/agent/cache-store";
 import {
   buildOpenAICompatibleRequestShape,
@@ -33,6 +33,8 @@ import {
 import { buildSessionMemory, buildTaskPlan, composeOperationalSystemPrompt } from "@/lib/agent/session-intelligence";
 import { buildWorkspaceScoutEvidence } from "@/lib/agent/workspace-scout";
 import { beginTrackedRequest, finishTrackedRequest } from "@/lib/agent/runtime-state";
+import { readRuntimeProcessMetrics } from "@/lib/agent/runtime-process-metrics";
+import { buildRuntimeResourceGuardrail } from "@/lib/agent/runtime-safety";
 import type {
   AgentChatRequest,
   AgentGroundedVerification,
@@ -564,6 +566,20 @@ export async function POST(request: Request) {
 
         try {
           if (target.execution === "local") {
+            const supervisor = getLocalGatewaySupervisorInfo();
+            const processMetrics = readRuntimeProcessMetrics(supervisor.gatewayPid ?? supervisor.supervisorPid, {
+              modelSourcePath: target.sourcePath
+            });
+            const guardrail = buildRuntimeResourceGuardrail({
+              resolvedModel: target.resolvedModel,
+              loadedAlias: null,
+              processMetrics,
+              parameterScale: target.parameterScale,
+              quantizationLabel: target.quantizationLabel
+            });
+            if (guardrail.level === "blocked") {
+              throw new Error(`${guardrail.summary} ${guardrail.recommendations.join(" ")}`.trim());
+            }
             try {
               const ready = await ensureLocalGatewayAvailable(target.resolvedBaseUrl, {
                 waitMs: LOCAL_STREAM_WARMUP_WAIT_MS

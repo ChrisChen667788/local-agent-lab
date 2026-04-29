@@ -62,8 +62,11 @@ import type {
   AgentStudioRecipe,
   AgentTarget,
   AgentWorkbenchMode,
+  AgentWorkbenchSessionConflict,
   AgentToolDecisionResponse,
-  AgentToolRun
+  AgentToolRun,
+  AgentWorkbenchSessionSnapshot,
+  AgentWorkbenchStoredPreferences
 } from "@/lib/agent/types";
 
 type AgentTurn = {
@@ -236,6 +239,72 @@ const SESSIONS_STORAGE_KEY = "agent-workbench:sessions:v1";
 const MAX_STORED_SESSIONS = 12;
 const SERVER_SESSION_SYNC_DEBOUNCE_MS = 1200;
 
+function normalizeStoredWorkbenchPreferences(input: unknown) {
+  if (!input || typeof input !== "object") return null;
+  const candidate = input as Partial<AgentWorkbenchStoredPreferences>;
+  return {
+    updatedAt:
+      typeof candidate.updatedAt === "string" && candidate.updatedAt.trim()
+        ? candidate.updatedAt
+        : new Date(0).toISOString(),
+    selectedTargetId:
+      typeof candidate.selectedTargetId === "string" ? candidate.selectedTargetId : undefined,
+    workbenchMode:
+      candidate.workbenchMode === "chat" || candidate.workbenchMode === "compare"
+        ? candidate.workbenchMode
+        : undefined,
+    compareTargetIds: Array.isArray(candidate.compareTargetIds)
+      ? candidate.compareTargetIds.filter((value): value is string => typeof value === "string")
+      : undefined,
+    compareBaseTargetId:
+      typeof candidate.compareBaseTargetId === "string" ? candidate.compareBaseTargetId : undefined,
+    compareReviewSummaryTone:
+      candidate.compareReviewSummaryTone === "issue"
+      || candidate.compareReviewSummaryTone === "pr"
+      || candidate.compareReviewSummaryTone === "chat"
+        ? candidate.compareReviewSummaryTone
+        : undefined,
+    compareReviewSummaryDetail:
+      candidate.compareReviewSummaryDetail === "compact"
+      || candidate.compareReviewSummaryDetail === "strict-review"
+      || candidate.compareReviewSummaryDetail === "friendly-report"
+        ? candidate.compareReviewSummaryDetail
+        : undefined,
+    compareBenchmarkUseOutputContract:
+      typeof candidate.compareBenchmarkUseOutputContract === "boolean"
+        ? candidate.compareBenchmarkUseOutputContract
+        : undefined,
+    compareBenchmarkPreviewDiffOnly:
+      typeof candidate.compareBenchmarkPreviewDiffOnly === "boolean"
+        ? candidate.compareBenchmarkPreviewDiffOnly
+        : undefined,
+    compareIntent:
+      candidate.compareIntent === "model-vs-model"
+      || candidate.compareIntent === "preset-vs-preset"
+      || candidate.compareIntent === "template-vs-template"
+      || candidate.compareIntent === "before-vs-after"
+        ? candidate.compareIntent
+        : undefined,
+    compareOutputShape:
+      candidate.compareOutputShape === "freeform"
+      || candidate.compareOutputShape === "bullet-list"
+      || candidate.compareOutputShape === "strict-json"
+        ? candidate.compareOutputShape
+        : undefined,
+    enableTools: typeof candidate.enableTools === "boolean" ? candidate.enableTools : undefined,
+    enableRetrieval: typeof candidate.enableRetrieval === "boolean" ? candidate.enableRetrieval : undefined,
+    contextWindow: typeof candidate.contextWindow === "number" ? candidate.contextWindow : undefined,
+    providerProfile:
+      PROVIDER_PROFILE_OPTIONS.includes(candidate.providerProfile as AgentProviderProfile)
+        ? (candidate.providerProfile as AgentProviderProfile)
+        : undefined,
+    thinkingMode:
+      THINKING_MODE_OPTIONS.includes(candidate.thinkingMode as AgentThinkingMode)
+        ? (candidate.thinkingMode as AgentThinkingMode)
+        : undefined
+  } satisfies AgentWorkbenchStoredPreferences;
+}
+
 function clampUiContextWindow(
   targetId: string,
   contextWindow: number,
@@ -348,6 +417,18 @@ function buildSessionExportEnvelope(
     },
     sessions
   };
+}
+
+function buildStoredWorkbenchPreferences(
+  input: Omit<AgentWorkbenchStoredPreferences, "updatedAt" | "compareBaseTargetId"> & {
+    compareBaseTargetId?: string | null;
+  }
+) {
+  return {
+    updatedAt: new Date().toISOString(),
+    ...input,
+    compareBaseTargetId: input.compareBaseTargetId || undefined
+  } satisfies AgentWorkbenchStoredPreferences;
 }
 
 function createSessionTitle(turns: AgentTurn[], fallback = "New session") {
@@ -869,6 +950,31 @@ function getHealthBadge(check: AgentConnectionCheckResponse | null) {
   };
 }
 
+function getLoadRiskBadge(target: AgentTarget, locale: string) {
+  if (target.execution !== "local" || !target.loadGuardrailLevel) {
+    return null;
+  }
+
+  if (target.loadGuardrailLevel === "blocked") {
+    return {
+      label: locale.startsWith("en") ? "Blocked load" : "阻止加载",
+      className: "bg-rose-400/15 text-rose-200 border border-rose-400/20"
+    };
+  }
+
+  if (target.loadGuardrailLevel === "caution") {
+    return {
+      label: locale.startsWith("en") ? "Use with care" : "谨慎加载",
+      className: "bg-amber-400/15 text-amber-200 border border-amber-400/20"
+    };
+  }
+
+  return {
+    label: locale.startsWith("en") ? "Recommended" : "建议加载",
+    className: "bg-emerald-400/15 text-emerald-200 border border-emerald-400/20"
+  };
+}
+
 export function AgentWorkbench() {
   const { locale, dictionary } = useLocale();
   const starterPrompts = useMemo(() => getLocalizedStarterPrompts(locale), [locale]);
@@ -976,6 +1082,8 @@ export function AgentWorkbench() {
   const [scanTargetsMessageTone, setScanTargetsMessageTone] = useState<"success" | "error">("success");
   const [preferencesReady, setPreferencesReady] = useState(false);
   const [serverSessionSyncState, setServerSessionSyncState] = useState<"" | "syncing" | "synced" | "error">("");
+  const [serverSnapshotUpdatedAt, setServerSnapshotUpdatedAt] = useState<string | null>(null);
+  const [sessionSyncConflict, setSessionSyncConflict] = useState<AgentWorkbenchSessionConflict | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const lastObservedTurnCountRef = useRef(0);
@@ -1098,6 +1206,8 @@ export function AgentWorkbench() {
     runtimeStatus?.loadedAlias === selectedTargetId ? runtimeStatus.loadedAlias : null;
   const gatewayLoadedOtherAlias =
     runtimeStatus?.loadedAlias && runtimeStatus.loadedAlias !== selectedTargetId ? runtimeStatus.loadedAlias : null;
+  const runtimeGuardrailBlocked = runtimeStatus?.resourceGuardrailLevel === "blocked";
+  const runtimeGuardrailCaution = runtimeStatus?.resourceGuardrailLevel === "caution";
   const selectedTargetLastSwitchMs = runtimeLastSwitchMsByTarget[selectedTargetId] ?? null;
   const selectedTargetLastSwitchAt = runtimeLastSwitchAtByTarget[selectedTargetId] ?? null;
   const lastChatTurn = useMemo(
@@ -1160,6 +1270,9 @@ export function AgentWorkbench() {
   const connectionCheck = connectionChecksByTargetId[selectedTargetId] || null;
   const previousLocaleRef = useRef(locale);
   const sessionSyncLabel = useMemo(() => {
+    if (sessionSyncConflict) {
+      return locale.startsWith("en") ? "Server snapshot conflict detected" : "检测到服务端快照冲突";
+    }
     if (serverSessionSyncState === "syncing") {
       return locale.startsWith("en") ? "Syncing server copy" : "同步服务端快照中";
     }
@@ -1170,7 +1283,7 @@ export function AgentWorkbench() {
       return locale.startsWith("en") ? "Server snapshot unavailable" : "服务端快照暂不可用";
     }
     return locale.startsWith("en") ? "Local-first session storage" : "本地优先会话存储";
-  }, [locale, serverSessionSyncState]);
+  }, [locale, serverSessionSyncState, sessionSyncConflict]);
   const uiText = useMemo(() => {
     switch (locale) {
       case "zh-TW":
@@ -1965,6 +2078,109 @@ export function AgentWorkbench() {
     setToolDecisionStatusByToken({});
   }, [agentTargets, locale]);
 
+  const applyHydratedWorkbenchPreferences = useCallback((preferences: AgentWorkbenchStoredPreferences | null) => {
+    if (!preferences) return;
+    if (
+      typeof preferences.selectedTargetId === "string" &&
+      agentTargets.some((target) => target.id === preferences.selectedTargetId)
+    ) {
+      setSelectedTargetId(preferences.selectedTargetId);
+    }
+    if (preferences.workbenchMode === "chat" || preferences.workbenchMode === "compare") {
+      setWorkbenchMode(preferences.workbenchMode);
+    }
+    const storedComparePreferences = normalizeStoredComparePreferences(preferences, validTargetIds, MAX_COMPARE_LANES);
+    if (storedComparePreferences.compareTargetIds?.length) {
+      setCompareTargetIds(storedComparePreferences.compareTargetIds);
+    }
+    if (storedComparePreferences.compareBaseTargetId) {
+      setCompareBaseTargetId(storedComparePreferences.compareBaseTargetId);
+    }
+    if (storedComparePreferences.compareReviewSummaryTone) {
+      setCompareReviewSummaryTone(storedComparePreferences.compareReviewSummaryTone);
+    }
+    if (storedComparePreferences.compareReviewSummaryDetail) {
+      setCompareReviewSummaryDetail(storedComparePreferences.compareReviewSummaryDetail);
+    }
+    if (typeof storedComparePreferences.compareBenchmarkUseOutputContract === "boolean") {
+      setCompareBenchmarkUseOutputContract(storedComparePreferences.compareBenchmarkUseOutputContract);
+    }
+    if (typeof storedComparePreferences.compareBenchmarkPreviewDiffOnly === "boolean") {
+      setCompareBenchmarkPreviewDiffOnly(storedComparePreferences.compareBenchmarkPreviewDiffOnly);
+    }
+    if (storedComparePreferences.compareIntent) {
+      setCompareIntent(storedComparePreferences.compareIntent);
+    }
+    if (storedComparePreferences.compareOutputShape) {
+      setCompareOutputShape(storedComparePreferences.compareOutputShape);
+    }
+    if (typeof preferences.enableTools === "boolean") {
+      setEnableTools(preferences.enableTools);
+    }
+    if (typeof preferences.enableRetrieval === "boolean") {
+      setEnableRetrieval(preferences.enableRetrieval);
+    }
+    if (
+      typeof preferences.contextWindow === "number" &&
+      CONTEXT_WINDOW_OPTIONS.includes(preferences.contextWindow)
+    ) {
+      setContextWindow(preferences.contextWindow);
+    }
+    if (
+      typeof preferences.providerProfile === "string" &&
+      PROVIDER_PROFILE_OPTIONS.includes(preferences.providerProfile as AgentProviderProfile)
+    ) {
+      setProviderProfile(preferences.providerProfile as AgentProviderProfile);
+    }
+    if (
+      typeof preferences.thinkingMode === "string" &&
+      THINKING_MODE_OPTIONS.includes(preferences.thinkingMode as AgentThinkingMode)
+    ) {
+      setThinkingMode(preferences.thinkingMode as AgentThinkingMode);
+    }
+  }, [
+    agentTargets,
+    setCompareBaseTargetId,
+    setCompareBenchmarkPreviewDiffOnly,
+    setCompareBenchmarkUseOutputContract,
+    setCompareIntent,
+    setCompareOutputShape,
+    setCompareReviewSummaryDetail,
+    setCompareReviewSummaryTone,
+    setCompareTargetIds,
+    validTargetIds
+  ]);
+
+  const applyServerSessionSnapshot = useCallback((
+    payload: Partial<AgentWorkbenchSessionSnapshot> & {
+      sessions?: unknown;
+      preferences?: unknown;
+      activeSessionId?: unknown;
+      updatedAt?: unknown;
+    },
+    localSessions: StoredAgentSession[] = savedSessions
+  ) => {
+    const mergedSessions = mergeStoredSessions(localSessions, normalizeStoredSessions(payload.sessions || []));
+    const preferredPreferences = normalizeStoredWorkbenchPreferences(payload.preferences);
+    const activeSessionId = typeof payload.activeSessionId === "string" ? payload.activeSessionId : null;
+    setSavedSessions(mergedSessions);
+    window.localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(mergedSessions));
+    if (preferredPreferences) {
+      window.localStorage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(preferredPreferences));
+    }
+    setServerSnapshotUpdatedAt(
+      typeof payload.updatedAt === "string" && payload.updatedAt.trim() ? payload.updatedAt : null
+    );
+    setSessionSyncConflict(null);
+    applyHydratedWorkbenchPreferences(preferredPreferences);
+    if (mergedSessions.length) {
+      const preferredSession = activeSessionId
+        ? mergedSessions.find((session) => session.id === activeSessionId)
+        : null;
+      restoreSession(preferredSession || mergedSessions[0]);
+    }
+  }, [applyHydratedWorkbenchPreferences, restoreSession, savedSessions]);
+
   function updateSessions(updater: (current: StoredAgentSession[]) => StoredAgentSession[]) {
     setSavedSessions((current) => {
       const next = sortSessions(updater(current)).slice(0, MAX_STORED_SESSIONS);
@@ -2146,7 +2362,10 @@ export function AgentWorkbench() {
         const raw = window.localStorage.getItem(PREFERENCES_STORAGE_KEY);
         const rawSessions = window.localStorage.getItem(SESSIONS_STORAGE_KEY);
         const localSessions = rawSessions ? normalizeStoredSessions(JSON.parse(rawSessions)) : [];
+        const localPreferences = raw ? normalizeStoredWorkbenchPreferences(JSON.parse(raw)) : null;
         let mergedSessions = localSessions;
+        let activeSessionId: string | null = null;
+        let preferredPreferences = localPreferences;
 
         if (!cancelled && localSessions.length) {
           setSavedSessions(localSessions);
@@ -2154,102 +2373,40 @@ export function AgentWorkbench() {
 
         try {
           const response = await fetch("/api/agent/sessions", { cache: "no-store" });
-          const payload = (await response.json()) as { sessions?: unknown; error?: string };
+          const payload = (await response.json()) as Partial<AgentWorkbenchSessionSnapshot> & {
+            sessions?: unknown;
+            preferences?: unknown;
+            error?: string;
+          };
           if (!response.ok) {
             throw new Error(payload.error || "Failed to load server sessions.");
           }
           mergedSessions = mergeStoredSessions(localSessions, normalizeStoredSessions(payload.sessions || []));
+          preferredPreferences = normalizeStoredWorkbenchPreferences(payload.preferences) || localPreferences;
+          activeSessionId = typeof payload.activeSessionId === "string" ? payload.activeSessionId : null;
           if (!cancelled) {
+            setServerSnapshotUpdatedAt(typeof payload.updatedAt === "string" ? payload.updatedAt : null);
+            setSessionSyncConflict(null);
             setSavedSessions(mergedSessions);
             window.localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(mergedSessions));
+            if (preferredPreferences) {
+              window.localStorage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(preferredPreferences));
+            }
             setServerSessionSyncState("synced");
           }
         } catch {
           if (!cancelled) {
-            setServerSessionSyncState(localSessions.length ? "error" : "");
+            setServerSessionSyncState(localSessions.length || localPreferences ? "error" : "");
           }
         }
 
-        if (raw) {
-          const parsed = JSON.parse(raw) as {
-            selectedTargetId?: string;
-            workbenchMode?: AgentWorkbenchMode;
-            compareTargetIds?: string[];
-            compareBaseTargetId?: string;
-            compareReviewSummaryTone?: AgentCompareReviewSummaryTone;
-            compareReviewSummaryDetail?: AgentCompareReviewSummaryDetail;
-            compareBenchmarkUseOutputContract?: boolean;
-            compareBenchmarkPreviewDiffOnly?: boolean;
-            compareIntent?: AgentCompareIntent;
-            compareOutputShape?: AgentCompareOutputShape;
-            enableTools?: boolean;
-            enableRetrieval?: boolean;
-            contextWindow?: number;
-            providerProfile?: AgentProviderProfile;
-            thinkingMode?: AgentThinkingMode;
-          };
-          if (
-            typeof parsed.selectedTargetId === "string" &&
-            agentTargets.some((target) => target.id === parsed.selectedTargetId)
-          ) {
-            setSelectedTargetId(parsed.selectedTargetId);
-          }
-          if (parsed.workbenchMode === "chat" || parsed.workbenchMode === "compare") {
-            setWorkbenchMode(parsed.workbenchMode);
-          }
-          const storedComparePreferences = normalizeStoredComparePreferences(parsed, validTargetIds, MAX_COMPARE_LANES);
-          if (storedComparePreferences.compareTargetIds?.length) {
-            setCompareTargetIds(storedComparePreferences.compareTargetIds);
-          }
-          if (storedComparePreferences.compareBaseTargetId) {
-            setCompareBaseTargetId(storedComparePreferences.compareBaseTargetId);
-          }
-          if (storedComparePreferences.compareReviewSummaryTone) {
-            setCompareReviewSummaryTone(storedComparePreferences.compareReviewSummaryTone);
-          }
-          if (storedComparePreferences.compareReviewSummaryDetail) {
-            setCompareReviewSummaryDetail(storedComparePreferences.compareReviewSummaryDetail);
-          }
-          if (typeof storedComparePreferences.compareBenchmarkUseOutputContract === "boolean") {
-            setCompareBenchmarkUseOutputContract(storedComparePreferences.compareBenchmarkUseOutputContract);
-          }
-          if (typeof storedComparePreferences.compareBenchmarkPreviewDiffOnly === "boolean") {
-            setCompareBenchmarkPreviewDiffOnly(storedComparePreferences.compareBenchmarkPreviewDiffOnly);
-          }
-          if (storedComparePreferences.compareIntent) {
-            setCompareIntent(storedComparePreferences.compareIntent);
-          }
-          if (storedComparePreferences.compareOutputShape) {
-            setCompareOutputShape(storedComparePreferences.compareOutputShape);
-          }
-          if (typeof parsed.enableTools === "boolean") {
-            setEnableTools(parsed.enableTools);
-          }
-          if (typeof parsed.enableRetrieval === "boolean") {
-            setEnableRetrieval(parsed.enableRetrieval);
-          }
-          if (
-            typeof parsed.contextWindow === "number" &&
-            CONTEXT_WINDOW_OPTIONS.includes(parsed.contextWindow)
-          ) {
-            setContextWindow(parsed.contextWindow);
-          }
-          if (
-            typeof parsed.providerProfile === "string" &&
-            PROVIDER_PROFILE_OPTIONS.includes(parsed.providerProfile as AgentProviderProfile)
-          ) {
-            setProviderProfile(parsed.providerProfile as AgentProviderProfile);
-          }
-          if (
-            typeof parsed.thinkingMode === "string" &&
-            THINKING_MODE_OPTIONS.includes(parsed.thinkingMode as AgentThinkingMode)
-          ) {
-            setThinkingMode(parsed.thinkingMode as AgentThinkingMode);
-          }
-        }
+        applyHydratedWorkbenchPreferences(preferredPreferences);
 
         if (mergedSessions.length && !cancelled) {
-          restoreSession(mergedSessions[0]);
+          const preferredSession = activeSessionId
+            ? mergedSessions.find((session) => session.id === activeSessionId)
+            : null;
+          restoreSession(preferredSession || mergedSessions[0]);
         }
 
         if (typeof window !== "undefined") {
@@ -2289,6 +2446,7 @@ export function AgentWorkbench() {
     };
   }, [
     agentTargets,
+    applyHydratedWorkbenchPreferences,
     locale,
     restoreSession,
     setCompareBaseTargetId,
@@ -2304,27 +2462,28 @@ export function AgentWorkbench() {
 
   useEffect(() => {
     if (!preferencesReady) return;
+    const nextPreferences = buildStoredWorkbenchPreferences({
+      selectedTargetId,
+      workbenchMode,
+      ...buildStoredComparePreferences({
+        compareTargetIds,
+        compareBaseTargetId,
+        compareReviewSummaryTone,
+        compareReviewSummaryDetail,
+        compareBenchmarkUseOutputContract,
+        compareBenchmarkPreviewDiffOnly,
+        compareIntent,
+        compareOutputShape
+      }),
+      enableTools,
+      enableRetrieval,
+      contextWindow,
+      providerProfile,
+      thinkingMode
+    });
     window.localStorage.setItem(
       PREFERENCES_STORAGE_KEY,
-      JSON.stringify({
-        selectedTargetId,
-        workbenchMode,
-        ...buildStoredComparePreferences({
-          compareTargetIds,
-          compareBaseTargetId,
-          compareReviewSummaryTone,
-          compareReviewSummaryDetail,
-          compareBenchmarkUseOutputContract,
-          compareBenchmarkPreviewDiffOnly,
-          compareIntent,
-          compareOutputShape
-        }),
-        enableTools,
-        enableRetrieval,
-        contextWindow,
-        providerProfile,
-        thinkingMode
-      })
+      JSON.stringify(nextPreferences)
     );
   }, [
     compareIntent,
@@ -2402,15 +2561,51 @@ export function AgentWorkbench() {
     sessionSyncTimeoutRef.current = setTimeout(async () => {
       setServerSessionSyncState("syncing");
       try {
+        const preferences = buildStoredWorkbenchPreferences({
+          selectedTargetId,
+          workbenchMode,
+          ...buildStoredComparePreferences({
+            compareTargetIds,
+            compareBaseTargetId,
+            compareReviewSummaryTone,
+            compareReviewSummaryDetail,
+            compareBenchmarkUseOutputContract,
+            compareBenchmarkPreviewDiffOnly,
+            compareIntent,
+            compareOutputShape
+          }),
+          enableTools,
+          enableRetrieval,
+          contextWindow,
+          providerProfile,
+          thinkingMode
+        });
         const response = await fetch("/api/agent/sessions", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sessions: savedSessions })
+          body: JSON.stringify({
+            activeSessionId: sessionId,
+            baseUpdatedAt: serverSnapshotUpdatedAt,
+            force: false,
+            preferences,
+            sessions: savedSessions
+          })
         });
-        const payload = (await response.json()) as { error?: string };
+        const payload = (await response.json()) as Partial<AgentWorkbenchSessionSnapshot> & {
+          error?: string;
+          conflict?: AgentWorkbenchSessionConflict;
+        };
+        if (response.status === 409 && payload.conflict) {
+          setSessionSyncConflict(payload.conflict);
+          setServerSnapshotUpdatedAt(typeof payload.updatedAt === "string" ? payload.updatedAt : serverSnapshotUpdatedAt);
+          setServerSessionSyncState("error");
+          return;
+        }
         if (!response.ok) {
           throw new Error(payload.error || "Failed to sync server sessions.");
         }
+        setSessionSyncConflict(null);
+        setServerSnapshotUpdatedAt(typeof payload.updatedAt === "string" ? payload.updatedAt : new Date().toISOString());
         setServerSessionSyncState("synced");
       } catch {
         setServerSessionSyncState("error");
@@ -2423,7 +2618,27 @@ export function AgentWorkbench() {
         sessionSyncTimeoutRef.current = null;
       }
     };
-  }, [preferencesReady, savedSessions]);
+  }, [
+    compareIntent,
+    compareOutputShape,
+    compareBaseTargetId,
+    compareReviewSummaryTone,
+    compareReviewSummaryDetail,
+    compareBenchmarkUseOutputContract,
+    compareBenchmarkPreviewDiffOnly,
+    compareTargetIds,
+    contextWindow,
+    enableRetrieval,
+    enableTools,
+    preferencesReady,
+    providerProfile,
+    savedSessions,
+    selectedTargetId,
+    sessionId,
+    serverSnapshotUpdatedAt,
+    thinkingMode,
+    workbenchMode
+  ]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -2446,6 +2661,83 @@ export function AgentWorkbench() {
     if (!node) return;
     node.scrollTo({ top: node.scrollHeight, behavior });
   }, []);
+
+  const handleReloadServerSessionSnapshot = useCallback(async () => {
+    try {
+      const response = await fetch("/api/agent/sessions", { cache: "no-store" });
+      const payload = (await response.json()) as Partial<AgentWorkbenchSessionSnapshot> & { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error || "Failed to load server sessions.");
+      }
+      applyServerSessionSnapshot(payload, []);
+      setServerSessionSyncState("synced");
+    } catch {
+      setServerSessionSyncState("error");
+    }
+  }, [applyServerSessionSnapshot]);
+
+  const handleForceOverwriteServerSessionSnapshot = useCallback(async () => {
+    try {
+      const preferences = buildStoredWorkbenchPreferences({
+        selectedTargetId,
+        workbenchMode,
+        ...buildStoredComparePreferences({
+          compareTargetIds,
+          compareBaseTargetId,
+          compareReviewSummaryTone,
+          compareReviewSummaryDetail,
+          compareBenchmarkUseOutputContract,
+          compareBenchmarkPreviewDiffOnly,
+          compareIntent,
+          compareOutputShape
+        }),
+        enableTools,
+        enableRetrieval,
+        contextWindow,
+        providerProfile,
+        thinkingMode
+      });
+      const response = await fetch("/api/agent/sessions", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          activeSessionId: sessionId,
+          baseUpdatedAt: serverSnapshotUpdatedAt,
+          force: true,
+          preferences,
+          sessions: savedSessions
+        })
+      });
+      const payload = (await response.json()) as { updatedAt?: string; error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error || "Failed to overwrite server sessions.");
+      }
+      setSessionSyncConflict(null);
+      setServerSnapshotUpdatedAt(typeof payload.updatedAt === "string" ? payload.updatedAt : new Date().toISOString());
+      setServerSessionSyncState("synced");
+    } catch {
+      setServerSessionSyncState("error");
+    }
+  }, [
+    compareIntent,
+    compareOutputShape,
+    compareBaseTargetId,
+    compareReviewSummaryTone,
+    compareReviewSummaryDetail,
+    compareBenchmarkUseOutputContract,
+    compareBenchmarkPreviewDiffOnly,
+    compareTargetIds,
+    contextWindow,
+    enableRetrieval,
+    enableTools,
+    providerProfile,
+    savedSessions,
+    selectedTargetId,
+    serverSnapshotUpdatedAt,
+    sessionId,
+    thinkingMode,
+    workbenchMode
+  ]);
 
   const handleJumpToLatestTranscript = useCallback(() => {
     setTranscriptPinnedToBottom(true);
@@ -3651,6 +3943,10 @@ export function AgentWorkbench() {
 
   async function handlePrewarm() {
     if (selectedTarget.execution !== "local" || prewarmPending || pending) return;
+    if (runtimeStatus?.resourceGuardrailLevel === "blocked") {
+      setError(runtimeStatus.resourceGuardrailSummary || "Current memory pressure is too high for another local model load.");
+      return;
+    }
 
     setPrewarmPending(true);
     setPrewarmMessage("");
@@ -3668,7 +3964,7 @@ export function AgentWorkbench() {
       });
       const data = (await response.json()) as AgentRuntimePrewarmResponse & { error?: string };
       if (!response.ok) {
-        throw new Error(data.error || uiText.runtimeFailed);
+        throw new Error(data.error || data.message || uiText.runtimeFailed);
       }
       const details = [
         data.message || uiText.prewarmDone,
@@ -3699,6 +3995,10 @@ export function AgentWorkbench() {
 
   async function handlePrewarmAll() {
     if (selectedTarget.execution !== "local" || prewarmAllPending || prewarmPending || pending) return;
+    if (runtimeStatus?.resourceGuardrailLevel === "blocked") {
+      setError(runtimeStatus.resourceGuardrailSummary || "Current memory pressure is too high for prewarming local models.");
+      return;
+    }
 
     setPrewarmAllPending(true);
     setPrewarmMessage("");
@@ -3710,7 +4010,8 @@ export function AgentWorkbench() {
       });
       const data = (await response.json()) as AgentRuntimePrewarmAllResponse & { error?: string };
       if (!response.ok) {
-        throw new Error(data.error || uiText.runtimeFailed);
+        const failedSummary = data.results?.map((item) => item.message).filter(Boolean).join(" | ");
+        throw new Error(data.error || failedSummary || uiText.runtimeFailed);
       }
       const details = data.results
         .map((item) => {
@@ -3719,6 +4020,8 @@ export function AgentWorkbench() {
               ? "loading"
               : item.status === "queued"
                 ? "queued"
+                : item.status === "skipped"
+                  ? "skipped"
                 : item.status === "failed"
                   ? "failed"
                   : "ready";
@@ -3731,7 +4034,7 @@ export function AgentWorkbench() {
           return parts.join(" · ");
         })
         .join(" | ");
-      setPrewarmMessage(`${uiText.prewarmAllDone}${details ? ` ${details}` : ""}`);
+      setPrewarmMessage(`${data.message || uiText.prewarmAllDone}${details ? ` ${details}` : ""}`);
       setRuntimeLastSwitchMsByTarget((current) => {
         const next = { ...current };
         data.results.forEach((item) => {
@@ -3802,7 +4105,7 @@ export function AgentWorkbench() {
 
   return (
     <section className="min-h-[calc(100vh-4rem)] bg-[radial-gradient(circle_at_top,_rgba(14,165,233,0.14),_transparent_26%),radial-gradient(circle_at_bottom_right,_rgba(249,115,22,0.14),_transparent_28%),linear-gradient(180deg,_#020617_0%,_#0f172a_100%)] px-3 py-4 text-slate-100 sm:px-5 xl:px-6 2xl:px-8">
-      <div className="mx-auto grid w-full max-w-[1960px] gap-5 xl:grid-cols-[360px_minmax(0,1fr)] 2xl:grid-cols-[400px_minmax(0,1fr)]">
+      <div className="mx-auto grid w-full max-w-[2100px] gap-5 xl:grid-cols-[408px_minmax(0,1fr)] 2xl:grid-cols-[456px_minmax(0,1fr)]">
         <aside className="overflow-hidden rounded-[28px] border border-white/10 bg-slate-950/70 shadow-[0_30px_80px_rgba(2,6,23,0.55)] backdrop-blur xl:sticky xl:top-[5.25rem] xl:max-h-[calc(100vh-6.5rem)]">
           <div className="border-b border-white/10 px-5 py-4">
             <p className="text-[11px] uppercase tracking-[0.28em] text-cyan-300">{dictionary.agent.shell}</p>
@@ -3850,6 +4153,7 @@ export function AgentWorkbench() {
                   const active = target.id === selectedTargetId;
                   const targetConnectionCheck = connectionChecksByTargetId[target.id] || null;
                   const healthBadge = getHealthBadge(targetConnectionCheck);
+                  const loadRiskBadge = getLoadRiskBadge(target, locale);
                   return (
                     <button
                       key={target.id}
@@ -3892,11 +4196,21 @@ export function AgentWorkbench() {
                                     : dictionary.agent.healthUnknown}
                             </span>
                           ) : null}
+                          {loadRiskBadge ? (
+                            <span className={`rounded-full px-2 py-[3px] text-[10px] font-semibold tracking-[0.08em] ${loadRiskBadge.className}`}>
+                              {loadRiskBadge.label}
+                            </span>
+                          ) : null}
                         </div>
                       </div>
                       <p className="mt-2 line-clamp-2 text-[12.5px] leading-6 text-slate-400">
                         {getLocalizedTargetDescription(locale, target.id, target.description)}
                       </p>
+                      {target.execution === "local" && target.loadGuardrailSummary ? (
+                        <p className="mt-2 line-clamp-2 text-[11px] leading-5 text-slate-500">
+                          {target.loadGuardrailSummary}
+                        </p>
+                      ) : null}
                     </button>
                   );
                 })}
@@ -4091,6 +4405,48 @@ export function AgentWorkbench() {
                     {uiText.sessionSaved} · {currentSession?.updatedAt ? new Date(currentSession.updatedAt).toLocaleString() : "--"}
                   </p>
                   <p className="mt-1 text-[11px] text-cyan-100/70">{sessionSyncLabel}</p>
+                  {sessionSyncConflict ? (
+                    <div className="mt-3 rounded-2xl border border-amber-400/30 bg-amber-400/10 px-3 py-3 text-[11px] text-amber-50">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <p className="font-semibold text-amber-100">
+                            {locale.startsWith("en") ? "Server snapshot is newer than this tab" : "服务端快照比当前标签页更新"}
+                          </p>
+                          <p className="mt-1 leading-5 text-amber-100/85">
+                            {sessionSyncConflict.summary}
+                          </p>
+                          <div className="mt-2 flex flex-wrap gap-2 text-[10px] uppercase tracking-[0.18em] text-amber-100/80">
+                            <span className="rounded-full border border-amber-300/20 bg-black/20 px-2 py-1">
+                              {locale.startsWith("en") ? "Local sessions" : "本地会话"} · {sessionSyncConflict.localSessionCount}
+                            </span>
+                            <span className="rounded-full border border-amber-300/20 bg-black/20 px-2 py-1">
+                              {locale.startsWith("en") ? "Server sessions" : "服务端会话"} · {sessionSyncConflict.serverSessionCount}
+                            </span>
+                            <span className="rounded-full border border-amber-300/20 bg-black/20 px-2 py-1 normal-case tracking-normal">
+                              {locale.startsWith("en") ? "Server updated" : "服务端更新时间"} ·{" "}
+                              {new Date(sessionSyncConflict.serverUpdatedAt).toLocaleString()}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void handleReloadServerSessionSnapshot()}
+                            className="rounded-full border border-amber-300/30 bg-black/20 px-3 py-1.5 text-[11px] font-semibold text-amber-50 transition hover:bg-black/30"
+                          >
+                            {locale.startsWith("en") ? "Reload server copy" : "加载服务端副本"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleForceOverwriteServerSessionSnapshot()}
+                            className="rounded-full border border-amber-300/30 bg-amber-200/15 px-3 py-1.5 text-[11px] font-semibold text-amber-50 transition hover:bg-amber-200/25"
+                          >
+                            {locale.startsWith("en") ? "Overwrite server with local" : "用本地覆盖服务端"}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
                   {currentSession ? (
                     <div className="mt-3 flex flex-wrap gap-2">
                       <button
@@ -4466,7 +4822,7 @@ export function AgentWorkbench() {
             </div>
           </div>
 
-          <div className="grid gap-0 xl:grid-cols-[minmax(0,1.28fr)_400px] 2xl:grid-cols-[minmax(0,1.48fr)_480px]">
+          <div className="grid gap-0 xl:grid-cols-[minmax(0,1.4fr)_420px] 2xl:grid-cols-[minmax(0,1.62fr)_500px]">
             <div className="border-b border-white/10 xl:border-b-0 xl:border-r xl:border-white/10">
               <div className="border-b border-white/10 bg-black/20 px-5 py-2.5">
                 {workbenchMode === "chat" ? (
@@ -5371,6 +5727,20 @@ export function AgentWorkbench() {
                                   {uiText.retrievalHits}: {turn.retrieval.hitCount}
                                 </span>
                                 <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-200">
+                                  {turn.retrieval.strategy === "hybrid-rerank"
+                                    ? locale.startsWith("en")
+                                      ? "Hybrid rerank"
+                                      : "二阶段检索"
+                                    : locale.startsWith("en")
+                                      ? "Lexical"
+                                      : "词法检索"}
+                                </span>
+                                {typeof turn.retrieval.candidateCount === "number" ? (
+                                  <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-200">
+                                    {locale.startsWith("en") ? "Candidates" : "候选"}: {turn.retrieval.candidateCount}
+                                  </span>
+                                ) : null}
+                                <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-200">
                                   {turn.retrieval.bypassGrounding
                                     ? locale.startsWith("en")
                                       ? "General answer"
@@ -5428,21 +5798,50 @@ export function AgentWorkbench() {
                                       <p className="text-xs font-semibold text-white">
                                         {result.citationLabel} {result.title}
                                       </p>
-                                      <span className="text-[11px] uppercase tracking-[0.22em] text-slate-500">
-                                        {result.score.toFixed(1)}
-                                      </span>
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <span className="text-[11px] uppercase tracking-[0.22em] text-slate-500">
+                                          {result.score.toFixed(1)}
+                                        </span>
+                                        {result.scoring ? (
+                                          <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] text-slate-300">
+                                            R {result.scoring.rerank.toFixed(0)}
+                                          </span>
+                                        ) : null}
+                                      </div>
                                     </div>
                                     <p className="mt-1 text-xs leading-5 text-slate-400">
                                       {result.sectionPath.length ? result.sectionPath.join(" > ") : "--"}
                                       {result.source ? ` · ${result.source}` : ""}
                                     </p>
+                                    {result.matchedTerms?.length ? (
+                                      <div className="mt-2 flex flex-wrap gap-1.5">
+                                        {result.matchedTerms.slice(0, 5).map((term) => (
+                                          <span
+                                            key={`${result.chunkId}:${term}`}
+                                            className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2 py-0.5 text-[10px] text-cyan-100"
+                                          >
+                                            {term}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    ) : null}
                                     <p className="mt-2 text-xs leading-6 text-slate-200">
                                       {expandedCitationKey === `${turn.id}:${result.chunkId}`
-                                        ? result.content
-                                        : result.content.length > 220
-                                          ? `${result.content.slice(0, 220)}…`
-                                          : result.content}
+                                        ? result.evidencePreview || result.content
+                                        : (result.evidencePreview || result.content).length > 220
+                                          ? `${(result.evidencePreview || result.content).slice(0, 220)}…`
+                                          : (result.evidencePreview || result.content)}
                                     </p>
+                                    {expandedCitationKey === `${turn.id}:${result.chunkId}` && result.evidenceSpans?.length ? (
+                                      <div className="mt-2 space-y-2 rounded-xl border border-white/10 bg-black/20 px-3 py-2">
+                                        {result.evidenceSpans.map((span) => (
+                                          <div key={`${result.chunkId}:${span.label}`}>
+                                            <p className="text-[10px] uppercase tracking-[0.18em] text-cyan-200">{span.label}</p>
+                                            <p className="mt-1 text-xs leading-6 text-slate-200">{span.preview}</p>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    ) : null}
                                     <p className="mt-2 text-[11px] text-cyan-300">
                                       {expandedCitationKey === `${turn.id}:${result.chunkId}`
                                         ? locale.startsWith("en")
@@ -5463,6 +5862,18 @@ export function AgentWorkbench() {
                             ) : (
                               <p className="mt-2 text-xs leading-6 text-slate-400">{uiText.retrievalNoEvidence}</p>
                             )}
+                            {turn.retrieval.stageNotes?.length ? (
+                              <div className="mt-3 rounded-xl border border-white/10 bg-black/20 px-3 py-2">
+                                <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">
+                                  {locale.startsWith("en") ? "Retrieval stages" : "检索阶段"}
+                                </p>
+                                <ul className="mt-2 space-y-1 text-xs leading-6 text-slate-300">
+                                  {turn.retrieval.stageNotes.map((note) => (
+                                    <li key={`${turn.id}:${note}`}>- {note}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            ) : null}
                           </div>
                         ) : null}
 
@@ -5829,7 +6240,13 @@ export function AgentWorkbench() {
                       <div className="flex flex-wrap items-center gap-2">
                         <button
                           type="button"
-                          disabled={prewarmAllPending || prewarmPending || pending || Boolean(runtimeActionPending)}
+                          disabled={
+                            prewarmAllPending ||
+                            prewarmPending ||
+                            pending ||
+                            Boolean(runtimeActionPending) ||
+                            runtimeGuardrailBlocked
+                          }
                           onClick={handlePrewarmAll}
                           className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
                         >
@@ -5837,7 +6254,13 @@ export function AgentWorkbench() {
                         </button>
                         <button
                           type="button"
-                          disabled={prewarmAllPending || prewarmPending || pending || Boolean(runtimeActionPending)}
+                          disabled={
+                            prewarmAllPending ||
+                            prewarmPending ||
+                            pending ||
+                            Boolean(runtimeActionPending) ||
+                            runtimeGuardrailBlocked
+                          }
                           onClick={handlePrewarm}
                           className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1.5 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-400/20 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
                         >
@@ -5869,6 +6292,47 @@ export function AgentWorkbench() {
                     {runtimeStatus.loadingError ? (
                       <div className="mt-2 rounded-2xl border border-rose-400/20 bg-rose-400/10 px-3 py-2 text-xs leading-6 text-rose-100">
                         {uiText.runtimeLoadingError}: {runtimeStatus.loadingError}
+                      </div>
+                    ) : null}
+                    {runtimeStatus.resourceGuardrailSummary ? (
+                      <div
+                        className={`mt-2 rounded-2xl border px-3 py-2 text-xs leading-6 ${
+                          runtimeGuardrailBlocked
+                            ? "border-rose-400/20 bg-rose-400/10 text-rose-100"
+                            : runtimeGuardrailCaution
+                              ? "border-amber-400/20 bg-amber-400/10 text-amber-100"
+                              : "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
+                        }`}
+                      >
+                        <p>
+                          {runtimeGuardrailBlocked
+                            ? locale.startsWith("en")
+                              ? "High-risk load"
+                              : "高风险加载"
+                            : runtimeGuardrailCaution
+                              ? locale.startsWith("en")
+                                ? "Memory caution"
+                                : "内存风险提醒"
+                              : locale.startsWith("en")
+                                ? "Load budget looks healthy"
+                                : "加载预算健康"}
+                          : {runtimeStatus.resourceGuardrailSummary}
+                        </p>
+                        {typeof runtimeStatus.estimatedPeakMemoryMb === "number" &&
+                        typeof runtimeStatus.systemTotalMemoryMb === "number" ? (
+                          <p className="mt-1">
+                            {locale.startsWith("en") ? "Estimated peak" : "预估峰值"}{" "}
+                            {Math.round(runtimeStatus.estimatedPeakMemoryMb / 1024)} GB /{" "}
+                            {Math.round(runtimeStatus.systemTotalMemoryMb / 1024)} GB
+                          </p>
+                        ) : null}
+                        {runtimeStatus.resourceGuardrailRecommendations?.length ? (
+                          <ul className="mt-1 space-y-1 text-[11px] text-current/90">
+                            {runtimeStatus.resourceGuardrailRecommendations.slice(0, 3).map((item) => (
+                              <li key={item}>- {item}</li>
+                            ))}
+                          </ul>
+                        ) : null}
                       </div>
                     ) : null}
                     {prewarmMessage ? (
@@ -6252,7 +6716,13 @@ export function AgentWorkbench() {
                     <div className="mt-3 flex flex-wrap gap-2">
                       <button
                         type="button"
-                        disabled={prewarmAllPending || prewarmPending || pending || Boolean(runtimeActionPending)}
+                        disabled={
+                          prewarmAllPending ||
+                          prewarmPending ||
+                          pending ||
+                          Boolean(runtimeActionPending) ||
+                          runtimeGuardrailBlocked
+                        }
                         onClick={handlePrewarmAll}
                         className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
                       >
@@ -6260,7 +6730,13 @@ export function AgentWorkbench() {
                       </button>
                       <button
                         type="button"
-                        disabled={prewarmAllPending || prewarmPending || pending || Boolean(runtimeActionPending)}
+                        disabled={
+                          prewarmAllPending ||
+                          prewarmPending ||
+                          pending ||
+                          Boolean(runtimeActionPending) ||
+                          runtimeGuardrailBlocked
+                        }
                         onClick={handlePrewarm}
                         className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1.5 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-400/20 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-slate-400"
                       >
@@ -6288,6 +6764,27 @@ export function AgentWorkbench() {
                   {runtimeStatus?.loadingError ? (
                     <div className="mt-3 rounded-2xl border border-rose-400/20 bg-rose-400/10 px-3 py-2 text-xs leading-6 text-rose-100">
                       {uiText.runtimeLoadingError}: {runtimeStatus.loadingError}
+                    </div>
+                  ) : null}
+                  {runtimeStatus?.resourceGuardrailSummary ? (
+                    <div
+                      className={`mt-3 rounded-2xl border px-3 py-2 text-xs leading-6 ${
+                        runtimeGuardrailBlocked
+                          ? "border-rose-400/20 bg-rose-400/10 text-rose-100"
+                          : runtimeGuardrailCaution
+                            ? "border-amber-400/20 bg-amber-400/10 text-amber-100"
+                            : "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
+                      }`}
+                    >
+                      <p>{runtimeStatus.resourceGuardrailSummary}</p>
+                      {typeof runtimeStatus.estimatedPeakMemoryMb === "number" &&
+                      typeof runtimeStatus.systemTotalMemoryMb === "number" ? (
+                        <p className="mt-1">
+                          {locale.startsWith("en") ? "Estimated peak" : "预估峰值"}{" "}
+                          {Math.round(runtimeStatus.estimatedPeakMemoryMb / 1024)} GB /{" "}
+                          {Math.round(runtimeStatus.systemTotalMemoryMb / 1024)} GB
+                        </p>
+                      ) : null}
                     </div>
                   ) : null}
 

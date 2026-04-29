@@ -8,6 +8,7 @@ import {
   probeLocalGateway
 } from "@/lib/agent/local-gateway";
 import { readRuntimeProcessMetrics } from "@/lib/agent/runtime-process-metrics";
+import { buildRuntimeResourceGuardrail } from "@/lib/agent/runtime-safety";
 import { normalizeThinkingMode, resolveTargetWithMode } from "@/lib/agent/providers";
 import type { AgentRuntimeStatus } from "@/lib/agent/types";
 
@@ -147,6 +148,13 @@ export async function GET(request: Request) {
   const baseProcessMetrics = readRuntimeProcessMetrics(supervisor.gatewayPid ?? supervisor.supervisorPid, {
     modelSourcePath: target.sourcePath
   });
+  const baseGuardrail = buildRuntimeResourceGuardrail({
+    resolvedModel: resolvedTarget.resolvedModel,
+    loadedAlias: null,
+    processMetrics: baseProcessMetrics,
+    parameterScale: target.parameterScale,
+    quantizationLabel: target.quantizationLabel
+  });
 
   if (target.execution !== "local") {
     const phase = deriveRuntimePhase({
@@ -176,6 +184,13 @@ export async function GET(request: Request) {
       gatewayEnergySignalPct: baseProcessMetrics.gatewayEnergySignalPct,
       gatewayDiskUsedPct: baseProcessMetrics.gatewayDiskUsedPct,
       modelStorageFootprintMb: baseProcessMetrics.modelStorageFootprintMb,
+      resourceGuardrailLevel: baseGuardrail.level,
+      resourceGuardrailSummary: baseGuardrail.summary,
+      resourceGuardrailRecommendations: baseGuardrail.recommendations,
+      estimatedLoadMemoryMb: baseGuardrail.estimatedLoadMemoryMb,
+      estimatedPeakMemoryMb: baseGuardrail.estimatedPeakMemoryMb,
+      systemTotalMemoryMb: baseGuardrail.systemTotalMemoryMb,
+      systemFreeMemoryMb: baseGuardrail.systemFreeMemoryMb,
       loadedAlias: null,
       message: "Remote target. No local runtime queue."
     };
@@ -224,6 +239,13 @@ export async function GET(request: Request) {
           gatewayEnergySignalPct: baseProcessMetrics.gatewayEnergySignalPct,
           gatewayDiskUsedPct: baseProcessMetrics.gatewayDiskUsedPct,
           modelStorageFootprintMb: baseProcessMetrics.modelStorageFootprintMb,
+          resourceGuardrailLevel: baseGuardrail.level,
+          resourceGuardrailSummary: baseGuardrail.summary,
+          resourceGuardrailRecommendations: baseGuardrail.recommendations,
+          estimatedLoadMemoryMb: baseGuardrail.estimatedLoadMemoryMb,
+          estimatedPeakMemoryMb: baseGuardrail.estimatedPeakMemoryMb,
+          systemTotalMemoryMb: baseGuardrail.systemTotalMemoryMb,
+          systemFreeMemoryMb: baseGuardrail.systemFreeMemoryMb,
           loadedAlias: null,
           loadingAlias: null,
           loadingElapsedMs: null,
@@ -261,6 +283,13 @@ export async function GET(request: Request) {
       modelSourcePath: target.sourcePath,
       runtimeBusy: busy
     });
+    const guardrail = buildRuntimeResourceGuardrail({
+      resolvedModel: resolvedTarget.resolvedModel,
+      loadedAlias,
+      processMetrics,
+      parameterScale: target.parameterScale,
+      quantizationLabel: target.quantizationLabel
+    });
     const payload: AgentRuntimeStatus = {
       ...deriveRuntimePhase({
         execution: target.execution,
@@ -289,6 +318,13 @@ export async function GET(request: Request) {
       gatewayEnergySignalPct: processMetrics.gatewayEnergySignalPct,
       gatewayDiskUsedPct: processMetrics.gatewayDiskUsedPct,
       modelStorageFootprintMb: processMetrics.modelStorageFootprintMb,
+      resourceGuardrailLevel: guardrail.level,
+      resourceGuardrailSummary: guardrail.summary,
+      resourceGuardrailRecommendations: guardrail.recommendations,
+      estimatedLoadMemoryMb: guardrail.estimatedLoadMemoryMb,
+      estimatedPeakMemoryMb: guardrail.estimatedPeakMemoryMb,
+      systemTotalMemoryMb: guardrail.systemTotalMemoryMb,
+      systemFreeMemoryMb: guardrail.systemFreeMemoryMb,
       busy,
       queueDepth: typeof data.queue_depth === "number" ? data.queue_depth : 0,
       activeRequests: typeof data.active_requests === "number" ? data.active_requests : 0,
@@ -346,6 +382,13 @@ export async function GET(request: Request) {
       gatewayEnergySignalPct: baseProcessMetrics.gatewayEnergySignalPct,
       gatewayDiskUsedPct: baseProcessMetrics.gatewayDiskUsedPct,
       modelStorageFootprintMb: baseProcessMetrics.modelStorageFootprintMb,
+      resourceGuardrailLevel: baseGuardrail.level,
+      resourceGuardrailSummary: baseGuardrail.summary,
+      resourceGuardrailRecommendations: baseGuardrail.recommendations,
+      estimatedLoadMemoryMb: baseGuardrail.estimatedLoadMemoryMb,
+      estimatedPeakMemoryMb: baseGuardrail.estimatedPeakMemoryMb,
+      systemTotalMemoryMb: baseGuardrail.systemTotalMemoryMb,
+      systemFreeMemoryMb: baseGuardrail.systemFreeMemoryMb,
       loadedAlias: null,
       loadingAlias: null,
       loadingElapsedMs: null,

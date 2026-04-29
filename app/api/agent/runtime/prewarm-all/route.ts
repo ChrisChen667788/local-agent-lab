@@ -21,7 +21,8 @@ export async function POST() {
           baseUrl: resolvedTarget.resolvedBaseUrl,
           model: resolvedTarget.resolvedModel,
           targetId: target.id,
-          targetLabel: target.label
+          targetLabel: target.label,
+          blockedStatus: "skipped"
         });
         results.push(prewarmResult);
       } catch (error) {
@@ -36,14 +37,20 @@ export async function POST() {
       }
     }
 
+    const completed = results.filter((result) => result.status === "ready").length;
+    const skipped = results.filter((result) => result.status === "skipped").length;
+    const failed = results.filter((result) => result.status === "failed").length;
     const response: AgentRuntimePrewarmAllResponse = {
-      ok: results.every((result) => result.ok),
-      completed: results.filter((result) => result.status === "ready").length,
+      ok: failed === 0,
+      completed,
+      skipped,
+      failed,
       total: localTargets.length,
       results,
-      message: `Prewarm finished for ${
-        results.filter((result) => result.status === "ready").length
-      } of ${localTargets.length} local targets.`
+      message:
+        skipped > 0
+          ? `Prewarm finished for ${completed} of ${localTargets.length} local targets and skipped ${skipped} high-risk target${skipped === 1 ? "" : "s"}.`
+          : `Prewarm finished for ${completed} of ${localTargets.length} local targets.`
     };
 
     return NextResponse.json(response, { status: response.ok ? 200 : 503 });

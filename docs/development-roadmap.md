@@ -1,6 +1,6 @@
 # Agent Lab Development Roadmap
 
-Last updated: 2026-04-18
+Last updated: 2026-04-30
 
 ## Version snapshot
 
@@ -17,6 +17,7 @@ Last updated: 2026-04-18
 - Benchmark Markdown / JSON 导出
 - `p50 / p95 / p99` 分位数指标
 - 会话持久化与历史恢复
+- 服务端 workbench snapshot 持久化（preferences + active session + sessions）
 - 会话重命名 / 删除 / 固定
 - 会话搜索 / 按目标分组 / 批量清理
 - 会话按 target 过滤 / 批量导出
@@ -56,9 +57,24 @@ Last updated: 2026-04-18
 - `/agent` 已支持检索增强开关，并在 grounded 模式下注入证据与返回 citation 命中摘要
 - grounded generation 已补 citation enforcement / 低置信度保守回退 / answer verification 启发式校验
 - 检索链路已补 query-focused retrieval compression
+- 检索链路已补二阶段 `hybrid-rerank`、evidence spans、matched terms 和检索阶段摘要
 - 远端链路已补 prompt cache / semantic cache
 - 会话链路已补 planner + session memory 注入 MVP
 - provider 调用已补单次自动恢复策略
+- `/admin` 已补 Fine-tune workflow 第一批可执行切片：dataset validation、recipe persistence、staged job bundle
+- `/admin` 已补社区模型发现面板，可扫描 Hugging Face / GitHub / ModelScope 的近期模型候选
+- 社区模型发现已补硬件适配建议、推荐/有风险/不推荐 安装提示、来源页/说明页/论文链接
+- 社区模型发现已补一键安装队列，默认下到共享本地模型库，并在完成后自动尝试重扫本地 target
+- 社区模型安装已补安装预检、失败回滚、安装后校验与 target 暴露验证状态
+- Fine-tune 已升级到真实本地 MLX worker，可直接启动训练、回看日志与 loss 曲线
+- Fine-tune recipe 已扩到真实可生效的 MLX 参数：LoRA/DoRA、optimizer、numLayers、grad accumulation、saveEvery、seed
+- Fine-tune dataset 已支持上游社区数据集检查、刷新周期和最近候选快照
+- Fine-tune dataset 已补新手默认 384 条 starter、社区数据集 bootstrap slices，以及 preset 一键校验/保存/生成推荐配方的 quick start
+- Fine-tune dataset 候选源已补“导入计划”复制能力，明确上游仓库需要抽样、格式转换、去重、许可证复核和本地校验后才能进入训练
+- Fine-tune dataset 已补 960 条长轮次内置 starter，作为新手默认 800-1,000 step 本地微调路径，避免依赖外部社区下载和格式转换
+- `/agent` 已补服务端会话冲突提示，可加载服务端快照或用本地状态强制覆盖
+- `/admin` 已补 session / compare / benchmark / finetune 的统一 timeline 面板
+- 检索底座已补本地持久化 vector index，正式进入 lexical + vector 的 hybrid recall
 - `/agent` 与 `/admin` 已改成动态加载重型 client 模块，首屏不再被大 bundle 阻塞
 - 已新增 `scripts/dev-server.sh`，并改用 `screen` 稳定托管本地前端服务
 - Compare 中段已改成更接近 studio/workbench 的矩阵布局，`Compare targets` 与 `lane preview` 不再是长卡堆叠
@@ -96,6 +112,83 @@ Last updated: 2026-04-18
 2. Benchmark 指标可信度
 3. 会话与运维历史可追溯性
 4. Compare / benchmark 高信息密度下的可读性
+
+## Next release queue: 2026-04-30
+
+这一轮后续排期以“把已跑通的本地实验变成可复盘、可分享、可发布的工程产物”为主，不另起项目，继续沿用当前 `/agent`、`/admin`、timeline、benchmark、compare 与 fine-tune 数据结构。
+
+### 1. Fine-tune run artifacts / reports
+
+Status: planned
+
+Industry-aligned artifact set:
+
+- Training report Markdown
+  - 面向人阅读，包含基础模型、数据集、训练参数、loss 曲线摘要、关键 checkpoint、异常与结论。
+- Run manifest JSON
+  - 面向机器复现，包含 dataset hash、recipe id、adapter path、seed、worker version、依赖版本和硬件摘要。
+- Metrics JSONL / CSV
+  - 面向二次分析，完整保存 step、epoch、train loss、validation loss、learning rate、tokens/sec、memory pressure 等时间序列。
+- Adapter card
+  - 面向分享与发布，类似轻量 model card，说明 adapter 适用场景、限制、基准结果、compare/benchmark 入口。
+- Export bundle
+  - 一键导出 `.zip`，包含 report、manifest、metrics、adapter card 和可选 README，方便贴到 issue、PR、ModelScope/Hugging Face 项目页。
+
+### 2. Fine-tune full-range chart mode
+
+Status: planned
+
+- 训练曲线新增 `Full run` 视图，默认覆盖 `step 0 -> latest step`。
+- X 轴保留当前每 `100 step` 一个主刻度的阅读节奏，长训练自动做 tick thinning，避免标签挤爆。
+- 支持 `recent window / full range / selected range` 三种范围。
+- Tooltip 显示 step、epoch、normalized loss、raw loss、validation loss、learning rate 和时间戳。
+- 支持导出当前图表数据到 metrics CSV / JSONL。
+
+### 3. Compare layout repair and polish
+
+Status: planned
+
+Observed issue:
+
+- 当前 Compare 在窄宽度或右侧 rail 展开时，recipe cards 被压成竖排，标题、标签和正文断裂，主编辑区与 lane preview 互相挤压。
+
+Next layout direction:
+
+- 中央区改成 `primary editor + secondary configuration/result drawer`。
+- Recipe gallery 改成表格式 / compact list，默认只显示名称、场景、目标数、工具/检索/输出形态标签，详情放进 hover 或右侧 drawer。
+- Lane preview 默认折叠 diff 和 timeline，只保留 base lane、target lane、运行态和关键指标。
+- 当 viewport 宽度不足时，右侧 runtime rail 自动折叠成状态条，Compare 主区优先保留可读宽度。
+- 移除大面积空白列，避免主内容左侧挤、右侧空。
+
+### 4. Product-inspired backlog from Google AI Studio and LM Studio
+
+Status: planned
+
+参考同类产品后，适合 First LLM Studio 的下一批能力如下：
+
+1. Get code / reproduce request
+   - 从当前 chat、compare、benchmark、fine-tune recipe 直接生成可运行 SDK snippet 或 curl。
+   - 适合把实验迁移到脚本、CI 或团队文档。
+
+2. Prompt / recipe gallery v2
+   - 把 prompt 模板、schema、tools、retrieval、benchmark 套件合成“可执行 recipe”。
+   - 比单纯 prompt gallery 更贴合本项目的 compare / benchmark 主线。
+
+3. Structured output lab
+   - 独立测试 JSON schema、repair policy、validation failure 和 model-specific output contract。
+   - 可直接送入 compare 和 benchmark。
+
+4. Local server compatibility console
+   - 像 LM Studio 一样明确展示 OpenAI-compatible endpoint、已加载模型、API health、示例请求和工具调用能力。
+   - 适合新手确认“本地服务真的能被外部 app 调用”。
+
+5. Provider health and cost desk
+   - 统一展示 timeout、429、auth failure、重试、平均首字延时、用量和估算成本。
+   - 适合远端 API 多 provider 对比和日常运营。
+
+6. Dataset and adapter registry
+   - 把本地数据集、社区数据集、已训练 adapter、导出报告、compare/benchmark 结果串成统一 registry。
+   - 让新手能从“我训练了什么”一路追到“它到底有没有变好”。
 
 ## Completed in the current line
 
@@ -141,26 +234,26 @@ Last updated: 2026-04-18
    - Dataset 模式
    - 正式评测集（suite）模式
    - baseline / regression report / heatmap / prompt-set CRUD
-   下一步应继续补：
+     下一步应继续补：
    - dataset / suite 的趋势对照
    - 正式评测报告模板收敛
    - 数据集自动扩展与人工复核闭环
    - 报告预览 / 报告固定 / release evidence 视图
 
 4. benchmark 和会话历史还需更强管理
-   当前 benchmark 已支持 Markdown / JSON 导出、样本过滤、历史级成功/失败过滤、providerProfile / thinkingMode 过滤，并且回归报告导出已经支持精确 runId、最近窗口命中和全历史兜底；`/admin` 已补报告预览、release evidence 固定和 match source 徽标。会话已支持恢复、重命名、删除、固定、搜索、按 target 分组、按 target 过滤、批量清理、批量导出（当前筛选项 / 仅固定项），但还没有真正的服务端持久化与多设备连续性。
+   当前 benchmark 已支持 Markdown / JSON 导出、样本过滤、历史级成功/失败过滤、providerProfile / thinkingMode 过滤，并且回归报告导出已经支持精确 runId、最近窗口命中和全历史兜底；`/admin` 已补报告预览、release evidence 固定和 match source 徽标。会话已支持服务端 snapshot 持久化与恢复，但还没有账号级多设备同步、会话版本回溯和冲突解决策略。
 
 5. 产品结构仍有旧页面残留
    导航已收敛到 `/agent` 和 `/admin`，但仓库里还保留历史演示页面文件。
 
-6. RAG / 检索增强仍处于第一阶段
-   当前已经有文件型知识库、chunking、词法检索和 grounded prompt 注入，但还没有向量数据库、embedding、rerank、hybrid retrieval、answer verification、citation enforcement、低置信度 fallback 这一整套检索闭环。
+6. RAG / 检索增强已进入第二阶段，但还没完成最终形态
+   当前已经有文件型知识库、chunking、grounded prompt 注入、二阶段 `hybrid-rerank`、evidence spans、citation enforcement、低置信度 fallback 和 answer verification 启发式校验；下一步仍缺 embedding / vector store、真实 hybrid retrieval、rerank model、grounded verification 深化和更细粒度证据可视化。
 
 7. Agent 能力仍偏“工具型工作台”
-   当前已有 tool loop、profile、thinking、benchmark、baseline，但还没有 Planner、Memory System、状态持久化工作流、错误恢复策略、检索增强编排这些更接近生产级 Agent 的能力。
+   当前已有 tool loop、profile、thinking、benchmark、baseline、planner、session memory、服务端状态 snapshot，但还没有更完整的持久化工作流、错误恢复编排、任务级记忆治理这些更接近生产级 Agent 的能力。
 
 8. 成本优化仍偏请求级策略
-    当前已有上下文裁剪、短问答自动降档、按 profile 压 `max_tokens`，但还没有 prompt caching、semantic cache、任务级 token budget controller、route-to-small-model、retrieval compression、response compression、speculative decoding 等系统级降本能力。
+   当前已有上下文裁剪、短问答自动降档、按 profile 压 `max_tokens`，但还没有 prompt caching、semantic cache、任务级 token budget controller、route-to-small-model、retrieval compression、response compression、speculative decoding 等系统级降本能力。
 
 9. Compare 的阅读体验仍未完全收口
    当前 `Compare targets`、`lane preview` 和中段 composer 已矩阵化，主阅读负担已下降；base lane 优先阅读和次级 diff 抽屉也已经形成初版。下一步仍需继续补：
@@ -200,6 +293,92 @@ Last updated: 2026-04-18
 - Tool orchestration policy
 - 错误恢复策略
 - 检索增强
+
+### 5. Newly shipped on 2026-04-19
+
+- Server-side workbench snapshot
+  Scope:
+  - `/api/agent/sessions` 现在会一起持久化 `preferences + activeSessionId + sessions`
+  - `/agent` hydration 改成服务端 snapshot 优先，本地 localStorage 退化为离线兜底
+
+- Retrieval stage two
+  Scope:
+  - 候选召回从单层词法打分升级到 `candidate recall + rerank`
+  - 结果补 `matched terms / evidence spans / stage notes`
+  - `/agent` 和 `/admin` 都能直接看到更细证据摘要，而不是只看一整段压缩文本
+
+- Fine-tune workflow first executable slice
+  Scope:
+  - `/admin` 新增 fine-tune panel
+  - 支持本地 JSONL dataset validation
+  - 支持 recipe 持久化
+  - 支持 staged job bundle 落盘，为后续训练 worker 预留接入口
+
+### 6. Next recommended slices from here
+
+1. Server-side persistence phase two
+   - 服务端会话历史版本
+   - 冲突合并 / 最近修改提示
+   - benchmark / compare / session 的统一 run timeline
+
+2. Retrieval stage three
+   - embedding + vector index
+   - real hybrid retrieval
+   - rerank model
+   - grounded verification 深化
+   - 更细的引用链和证据差异展示
+
+3. Fine-tune workflow phase two
+   - 本地训练 worker
+   - 训练日志 / loss 曲线
+   - checkpoint / adapter registry
+   - before/after compare + benchmark handoff
+
+### 7. Newly shipped on 2026-04-21
+
+- Community model discovery
+  Scope:
+  - `/admin` 新增 community model radar
+  - 支持扫描 Hugging Face / GitHub / ModelScope 的近期模型
+  - 支持结合本机内存与本地友好格式做推荐/风险判断
+  - 支持安装队列、共享本地模型库落盘与安装后自动重扫 target
+
+- Fine-tune workflow phase two
+  Scope:
+  - 本地 MLX worker 已可直接启动
+  - `/admin` 已回显训练日志、loss 曲线、progress、heartbeat
+  - recipe 参数已与 MLX 当前真实支持项对齐，不再只是占位表单
+  - dataset 已支持上游数据集查询、刷新周期与最近候选快照
+
+- Persistence / retrieval line
+  Scope:
+  - 会话服务端冲突提示与手动覆盖入口已接入 `/agent`
+  - `/admin` 已补统一 timeline
+  - retrieval 已补本地 vector index，为 hybrid retrieval 的下一段做好持久化底座
+
+### 8. Beginner-friendly backlog
+
+这批功能专门面向“刚入行、边学边用、希望少踩坑”的用户，已纳入后续迭代计划：
+
+1. Guided model chooser
+   - 根据机器配置、用途、延时预算自动推荐模型
+   - 下载前先给出内存/磁盘/风险预估
+
+2. Task starter gallery
+   - 常见任务模板：聊天、总结、代码审阅、RAG 检查、Benchmark smoke、Compare 实验
+   - 每个模板带简短解释，告诉新手为什么要这样配
+
+3. Parameter glossary
+   - 对上下文、temperature、Top-K、LoRA、grad accumulation、saveEvery 等参数做内嵌解释
+   - 减少“看得见参数但不知道该怎么调”的阻力
+
+4. Learning mode for fine-tune / retrieval
+   - 把每一步训练/检索链路改成“做了什么 + 为什么这样做”的可展开解释
+   - 更适合自学和复盘
+
+5. Install safety rail
+   - 新模型安装前的磁盘、内存、格式兼容性检查
+   - 一键回滚或清理失败安装
 
 ### 4. Original backlog stays active
 

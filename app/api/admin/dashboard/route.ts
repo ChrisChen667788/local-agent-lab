@@ -83,6 +83,7 @@ export async function GET(request: Request) {
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);
+  const benchmarkHistorySourceFilter = searchParams.get("benchmarkHistorySource") || "all";
   const windowMinutesValue = Number(searchParams.get("windowMinutes") || "60");
   const windowMinutes = Number.isFinite(windowMinutesValue)
     ? Math.min(Math.max(windowMinutesValue, 5), 24 * 60)
@@ -160,8 +161,8 @@ export async function GET(request: Request) {
       )
     )
   ).sort();
-  const benchmarkHistoryFiltered = benchmarkHistoryRaw
-    .map((entry) => ({
+  const filterBenchmarkHistoryEntries = (entries: typeof allBenchmarkHistoryRaw) =>
+    entries.map((entry) => ({
       ...entry,
       results: entry.results
         .filter((result) =>
@@ -184,12 +185,26 @@ export async function GET(request: Request) {
     }))
     .filter((entry) => entry.results.length > 0)
     .filter((entry) => (normalizedContextWindow === null ? true : entry.contextWindow === normalizedContextWindow));
-  const benchmarkHistory = benchmarkHistoryFiltered.slice(-20).reverse();
+  const benchmarkHistoryFiltered = filterBenchmarkHistoryEntries(benchmarkHistoryRaw);
   const recentBenchmarkRunIds = new Set(
     benchmarkHistoryRaw
       .map((entry) => entry.runId)
       .filter((value): value is string => typeof value === "string" && value.length > 0)
   );
+  const normalizedBenchmarkHistorySource =
+    benchmarkHistorySourceFilter === "recent-window" || benchmarkHistorySourceFilter === "full-history"
+      ? benchmarkHistorySourceFilter
+      : "all";
+  const benchmarkHistory = filterBenchmarkHistoryEntries(allBenchmarkHistoryRaw)
+    .map((entry) => ({
+      ...entry,
+      matchSource: entry.runId && recentBenchmarkRunIds.has(entry.runId) ? "recent-window" : "full-history"
+    }))
+    .filter((entry) =>
+      normalizedBenchmarkHistorySource === "all" ? true : entry.matchSource === normalizedBenchmarkHistorySource
+    )
+    .sort((left, right) => right.generatedAt.localeCompare(left.generatedAt))
+    .slice(0, 20);
   const releaseEvidence = readBenchmarkReleaseEvidence()
     .map((entry) => {
       const matching = allBenchmarkHistoryRaw.find((row) => row.runId === entry.runId);

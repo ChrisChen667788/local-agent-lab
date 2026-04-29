@@ -36,6 +36,7 @@ type MetricPercentiles = AgentMetricPercentiles;
 type BenchmarkHeatmapMetricKey = "first-token" | "total-latency" | "throughput" | "success-rate";
 type BenchmarkBatchScope = "full-suite" | "comparison-subset";
 type BenchmarkBatchProfilePreset = "full-compare" | "tool-thinking-focus";
+type BenchmarkHistorySourceFilter = "all" | "recent-window" | "full-history";
 const KNOWLEDGE_IMPORT_HISTORY_KEY = "admin-knowledge-import-history-v1";
 const RUNTIME_SWITCH_HISTORY_STORAGE_KEY = "local-agent-runtime-switch-history-v1";
 
@@ -284,6 +285,7 @@ type DashboardResponse = {
   benchmarkHistory: Array<{
     id: string;
     runId?: string;
+    matchSource?: AgentBenchmarkReportPreview["matchSource"] | AgentBenchmarkReleaseEvidence["matchSource"];
     generatedAt: string;
     prompt: string;
     runNote?: string;
@@ -1199,6 +1201,8 @@ export function AdminDashboard() {
   const [providerFilter, setProviderFilter] = useState("all");
   const [providerProfileFilter, setProviderProfileFilter] = useState("all");
   const [benchmarkThinkingModeFilter, setBenchmarkThinkingModeFilter] = useState("all");
+  const [benchmarkHistorySourceFilter, setBenchmarkHistorySourceFilter] =
+    useState<BenchmarkHistorySourceFilter>("all");
   const [modelFilter, setModelFilter] = useState("all");
   const [contextWindowFilter, setContextWindowFilter] = useState("all");
   const [compareTargetIds, setCompareTargetIds] = useState<string[]>(["anthropic-claude"]);
@@ -3132,7 +3136,7 @@ export function AdminDashboard() {
     setError("");
     try {
       const response = await fetch(
-        `/api/admin/dashboard?targetId=${encodeURIComponent(selectedTargetId)}&windowMinutes=${windowMinutes}&provider=${encodeURIComponent(providerFilter)}&providerProfile=${encodeURIComponent(providerProfileFilter)}&benchmarkThinkingMode=${encodeURIComponent(benchmarkThinkingModeFilter)}&benchmarkHeatmapPromptScope=${encodeURIComponent(benchmarkHeatmapPromptScope)}&benchmarkHeatmapSampleStatus=${encodeURIComponent(benchmarkHeatmapSampleStatus)}&benchmarkHeatmapWindowMinutes=${benchmarkHeatmapWindowMinutes}&model=${encodeURIComponent(modelFilter)}&contextWindow=${encodeURIComponent(contextWindowFilter)}&compareTargetIds=${encodeURIComponent(compareTargetIds.join(","))}&benchmarkTargetIds=${encodeURIComponent(benchmarkTargetIds.join(","))}`,
+        `/api/admin/dashboard?targetId=${encodeURIComponent(selectedTargetId)}&windowMinutes=${windowMinutes}&provider=${encodeURIComponent(providerFilter)}&providerProfile=${encodeURIComponent(providerProfileFilter)}&benchmarkThinkingMode=${encodeURIComponent(benchmarkThinkingModeFilter)}&benchmarkHistorySource=${encodeURIComponent(benchmarkHistorySourceFilter)}&benchmarkHeatmapPromptScope=${encodeURIComponent(benchmarkHeatmapPromptScope)}&benchmarkHeatmapSampleStatus=${encodeURIComponent(benchmarkHeatmapSampleStatus)}&benchmarkHeatmapWindowMinutes=${benchmarkHeatmapWindowMinutes}&model=${encodeURIComponent(modelFilter)}&contextWindow=${encodeURIComponent(contextWindowFilter)}&compareTargetIds=${encodeURIComponent(compareTargetIds.join(","))}&benchmarkTargetIds=${encodeURIComponent(benchmarkTargetIds.join(","))}`,
         {
           cache: "no-store"
         }
@@ -3748,7 +3752,7 @@ export function AdminDashboard() {
 
   useEffect(() => {
     void loadDashboard();
-  }, [selectedTargetId, windowMinutes, providerFilter, providerProfileFilter, benchmarkThinkingModeFilter, benchmarkHeatmapPromptScope, benchmarkHeatmapSampleStatus, benchmarkHeatmapWindowMinutes, modelFilter, contextWindowFilter, compareTargetIds.join(","), benchmarkTargetIds.join(",")]);
+  }, [selectedTargetId, windowMinutes, providerFilter, providerProfileFilter, benchmarkThinkingModeFilter, benchmarkHistorySourceFilter, benchmarkHeatmapPromptScope, benchmarkHeatmapSampleStatus, benchmarkHeatmapWindowMinutes, modelFilter, contextWindowFilter, compareTargetIds.join(","), benchmarkTargetIds.join(",")]);
 
   useEffect(() => {
     void loadBenchmarkBaseline();
@@ -3783,7 +3787,7 @@ export function AdminDashboard() {
       void loadAllRuntimeStatuses();
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [autoRefresh, benchmarkPending, selectedTargetId, windowMinutes, providerFilter, providerProfileFilter, benchmarkThinkingModeFilter, benchmarkHeatmapPromptScope, benchmarkHeatmapSampleStatus, benchmarkHeatmapWindowMinutes, modelFilter, contextWindowFilter, compareTargetIds.join(","), benchmarkTargetIds.join(",")]);
+  }, [autoRefresh, benchmarkPending, selectedTargetId, windowMinutes, providerFilter, providerProfileFilter, benchmarkThinkingModeFilter, benchmarkHistorySourceFilter, benchmarkHeatmapPromptScope, benchmarkHeatmapSampleStatus, benchmarkHeatmapWindowMinutes, modelFilter, contextWindowFilter, compareTargetIds.join(","), benchmarkTargetIds.join(",")]);
 
   const latestTelemetry = data?.latestTelemetry;
   const selectedPromptSet = useMemo(
@@ -6281,9 +6285,23 @@ export function AdminDashboard() {
             <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3">
               <div className="flex items-center justify-between gap-3">
                 <p className="text-sm text-slate-300">{uiText.benchmarkHistory}</p>
-                <span className="text-[11px] text-slate-500">
-                  {uiText.benchmarkTrendTitle} · {data?.benchmarkHistory.length || 0}
-                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="text-[11px] text-slate-500">
+                    {locale.startsWith("en") ? "History source" : "历史来源"}
+                  </label>
+                  <select
+                    value={benchmarkHistorySourceFilter}
+                    onChange={(event) => setBenchmarkHistorySourceFilter(event.target.value as BenchmarkHistorySourceFilter)}
+                    className="rounded-full border border-white/10 bg-black/25 px-3 py-1.5 text-[11px] text-slate-100 outline-none"
+                  >
+                    <option value="all">{locale.startsWith("en") ? "All sources" : "全部来源"}</option>
+                    <option value="recent-window">{formatBenchmarkReportMatchSource(locale, "recent-window")}</option>
+                    <option value="full-history">{formatBenchmarkReportMatchSource(locale, "full-history")}</option>
+                  </select>
+                  <span className="text-[11px] text-slate-500">
+                    {uiText.benchmarkTrendTitle} · {data?.benchmarkHistory.length || 0}
+                  </span>
+                </div>
               </div>
               <div className="mt-3 space-y-3">
                 {data?.benchmarkHistory.length ? (
@@ -6362,8 +6380,10 @@ export function AdminDashboard() {
                               ) : null}
                             </div>
                             <div className="flex flex-wrap items-center gap-2">
-                              <span className="rounded-full border border-cyan-300/20 bg-cyan-400/10 px-2.5 py-1 text-[11px] text-cyan-100">
-                                {formatBenchmarkReportMatchSource(locale, "recent-window")}
+                              <span
+                                className={`rounded-full border px-2.5 py-1 text-[11px] ${buildBenchmarkReportMatchSourceClass(entry.matchSource)}`}
+                              >
+                                {formatBenchmarkReportMatchSource(locale, entry.matchSource)}
                               </span>
                               <span className="text-[11px] text-slate-500">{entry.results.length} results</span>
                               <button

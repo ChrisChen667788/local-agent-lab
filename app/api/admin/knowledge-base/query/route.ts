@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
 import { searchKnowledgeBase } from "@/lib/agent/retrieval-store";
+import type {
+  AgentRetrievalEvidenceMode,
+  AgentRetrievalScope,
+  AgentRetrievalSourcePreference
+} from "@/lib/agent/types";
 
 export const runtime = "nodejs";
 
@@ -8,6 +13,9 @@ export async function POST(request: Request) {
     const body = (await request.json()) as {
       query?: string;
       topK?: number;
+      scope?: AgentRetrievalScope;
+      sourcePreference?: AgentRetrievalSourcePreference;
+      evidenceMode?: AgentRetrievalEvidenceMode;
     };
 
     const query = typeof body.query === "string" ? body.query.trim() : "";
@@ -22,7 +30,11 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       ok: true,
-      retrieval: searchKnowledgeBase(query, topK)
+      retrieval: searchKnowledgeBase(query, topK, {
+        scope: body.scope,
+        sourcePreference: body.sourcePreference,
+        evidenceMode: body.evidenceMode
+      })
     });
   } catch (error) {
     return NextResponse.json(

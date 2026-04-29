@@ -8,6 +8,7 @@ import {
   restartLocalGateway
 } from "@/lib/agent/local-gateway";
 import { readRuntimeProcessMetrics } from "@/lib/agent/runtime-process-metrics";
+import { buildRuntimeResourceGuardrail } from "@/lib/agent/runtime-safety";
 import { resolveTarget } from "@/lib/agent/providers";
 import type { AgentRuntimeAction, AgentRuntimeActionResponse, AgentRuntimeStatus } from "@/lib/agent/types";
 
@@ -80,21 +81,32 @@ function buildRuntimeStatus(
   message?: string,
   options?: {
     modelSourcePath?: string;
+    resolvedModel?: string;
+    parameterScale?: string;
+    quantizationLabel?: string;
   }
 ): AgentRuntimeStatus {
   const supervisor = getLocalGatewaySupervisorInfo();
+  const loadedAlias =
+    typeof payload?.loaded_alias === "string" || payload?.loaded_alias === null
+      ? (payload.loaded_alias as string | null)
+      : null;
   const processMetrics = readRuntimeProcessMetrics(supervisor.gatewayPid ?? supervisor.supervisorPid, {
     modelSourcePath: options?.modelSourcePath,
     runtimeBusy: Boolean(payload?.busy)
+  });
+  const guardrail = buildRuntimeResourceGuardrail({
+    resolvedModel: options?.resolvedModel,
+    loadedAlias,
+    processMetrics,
+    parameterScale: options?.parameterScale,
+    quantizationLabel: options?.quantizationLabel
   });
   return {
     ...deriveRuntimePhase({
       available: Boolean(payload),
       busy: Boolean(payload?.busy),
-      loadedAlias:
-        typeof payload?.loaded_alias === "string" || payload?.loaded_alias === null
-          ? (payload.loaded_alias as string | null)
-          : null,
+      loadedAlias,
       loadingAlias:
         typeof payload?.loading_alias === "string" || payload?.loading_alias === null
           ? (payload.loading_alias as string | null)
@@ -118,10 +130,14 @@ function buildRuntimeStatus(
     gatewayEnergySignalPct: processMetrics.gatewayEnergySignalPct,
     gatewayDiskUsedPct: processMetrics.gatewayDiskUsedPct,
     modelStorageFootprintMb: processMetrics.modelStorageFootprintMb,
-    loadedAlias:
-      typeof payload?.loaded_alias === "string" || payload?.loaded_alias === null
-        ? (payload.loaded_alias as string | null)
-        : null,
+    resourceGuardrailLevel: guardrail.level,
+    resourceGuardrailSummary: guardrail.summary,
+    resourceGuardrailRecommendations: guardrail.recommendations,
+    estimatedLoadMemoryMb: guardrail.estimatedLoadMemoryMb,
+    estimatedPeakMemoryMb: guardrail.estimatedPeakMemoryMb,
+    systemTotalMemoryMb: guardrail.systemTotalMemoryMb,
+    systemFreeMemoryMb: guardrail.systemFreeMemoryMb,
+    loadedAlias,
     workspaceRoot: typeof payload?.workspace_root === "string" ? payload.workspace_root : undefined,
     supervisorPid: supervisor.supervisorPid ?? null,
     supervisorAlive: supervisor.supervisorAlive,
@@ -166,6 +182,12 @@ export async function POST(request: Request) {
 
     const resolvedTarget = resolveTarget(body.targetId);
     const baseUrl = resolvedTarget.resolvedBaseUrl;
+    const runtimeOptions = {
+      modelSourcePath: target.sourcePath,
+      resolvedModel: resolvedTarget.resolvedModel,
+      parameterScale: target.parameterScale,
+      quantizationLabel: target.quantizationLabel
+    };
 
     if (body.action === "read_log") {
       const query = typeof body.query === "string" ? body.query.trim() : "";
@@ -183,7 +205,7 @@ export async function POST(request: Request) {
             target.execution,
             await fetchHealth(baseUrl),
             "Loaded recent gateway log.",
-            { modelSourcePath: target.sourcePath }
+            runtimeOptions
           )
         : buildRuntimeStatus(
             body.targetId,
@@ -191,7 +213,7 @@ export async function POST(request: Request) {
             target.execution,
             null,
             `Gateway is unavailable. ${ensureResult.reason}`,
-            { modelSourcePath: target.sourcePath }
+            runtimeOptions
           );
       return NextResponse.json({
         ok: true,
@@ -221,7 +243,7 @@ export async function POST(request: Request) {
               target.execution,
               null,
               "Gateway restart timed out.",
-              { modelSourcePath: target.sourcePath }
+              runtimeOptions
             )
           } satisfies AgentRuntimeActionResponse,
           { status: 503 }
@@ -241,7 +263,7 @@ export async function POST(request: Request) {
           target.execution,
           health,
           "Gateway restarted successfully.",
-          { modelSourcePath: target.sourcePath }
+          runtimeOptions
         )
       } satisfies AgentRuntimeActionResponse);
     }
@@ -255,9 +277,7 @@ export async function POST(request: Request) {
           targetId: body.targetId,
           targetLabel: target.label,
           message: ensureResult.reason,
-          runtime: buildRuntimeStatus(body.targetId, target.label, target.execution, null, ensureResult.reason, {
-            modelSourcePath: target.sourcePath
-          })
+          runtime: buildRuntimeStatus(body.targetId, target.label, target.execution, null, ensureResult.reason, runtimeOptions)
         } satisfies AgentRuntimeActionResponse,
         { status: 503 }
       );
@@ -295,7 +315,7 @@ export async function POST(request: Request) {
         target.execution,
         health,
         payload.message || "Released the currently loaded model.",
-        { modelSourcePath: target.sourcePath }
+        runtimeOptions
       )
     } satisfies AgentRuntimeActionResponse);
   } catch (error) {

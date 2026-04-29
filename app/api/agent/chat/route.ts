@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import crypto from "crypto";
 import { DEFAULT_AGENT_SYSTEM_PROMPT } from "@/lib/agent/prompts";
+import { getLocalGatewaySupervisorInfo } from "@/lib/agent/local-gateway";
 import {
   calculateTokenThroughputTps,
   clampContextWindowForTarget,
@@ -24,6 +25,8 @@ import {
 import { buildSessionMemory, buildTaskPlan, composeOperationalSystemPrompt } from "@/lib/agent/session-intelligence";
 import { buildWorkspaceScoutEvidence } from "@/lib/agent/workspace-scout";
 import { beginTrackedRequest, finishTrackedRequest } from "@/lib/agent/runtime-state";
+import { readRuntimeProcessMetrics } from "@/lib/agent/runtime-process-metrics";
+import { buildRuntimeResourceGuardrail } from "@/lib/agent/runtime-safety";
 import type { AgentChatRequest, AgentChatResponse, AgentMessage } from "@/lib/agent/types";
 
 export const runtime = "nodejs";
@@ -68,6 +71,27 @@ export async function POST(request: Request) {
     const target = getServerAgentTarget(body.targetId);
     if (!target) {
       return NextResponse.json({ error: `Unknown target: ${body.targetId}` }, { status: 404 });
+    }
+    if (target.execution === "local") {
+      const supervisor = getLocalGatewaySupervisorInfo();
+      const processMetrics = readRuntimeProcessMetrics(supervisor.gatewayPid ?? supervisor.supervisorPid, {
+        modelSourcePath: target.sourcePath
+      });
+      const guardrail = buildRuntimeResourceGuardrail({
+        resolvedModel: target.modelDefault,
+        loadedAlias: null,
+        processMetrics,
+        parameterScale: target.parameterScale,
+        quantizationLabel: target.quantizationLabel
+      });
+      if (guardrail.level === "blocked") {
+        return NextResponse.json(
+          {
+            error: `${guardrail.summary} ${guardrail.recommendations.join(" ")}`.trim()
+          },
+          { status: 503 }
+        );
+      }
     }
 
     requestStartedAt = Date.now();

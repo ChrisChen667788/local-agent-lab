@@ -2,22 +2,50 @@ import { NextResponse } from "next/server";
 import { listServerAgentTargets, syncDiscoveredLocalTargetsFromGateway } from "@/lib/agent/server-targets";
 import { runRemoteConnectionCheck } from "@/lib/agent/connection-check";
 import { clearProviderEnvCache } from "@/lib/agent/providers";
+import { getLocalGatewaySupervisorInfo } from "@/lib/agent/local-gateway";
+import { readRuntimeProcessMetrics } from "@/lib/agent/runtime-process-metrics";
+import { buildRuntimeResourceGuardrail } from "@/lib/agent/runtime-safety";
 import type { AgentConnectionCheckResponse, AgentTarget } from "@/lib/agent/types";
 
 export const runtime = "nodejs";
+
+function decorateTargetsWithLoadGuardrails(targets: AgentTarget[]) {
+  const supervisor = getLocalGatewaySupervisorInfo();
+  const gatewayPid = supervisor.gatewayPid ?? supervisor.supervisorPid;
+  return targets.map((target) => {
+    if (target.execution !== "local") {
+      return target;
+    }
+    const processMetrics = readRuntimeProcessMetrics(gatewayPid, {
+      modelSourcePath: target.sourcePath
+    });
+    const guardrail = buildRuntimeResourceGuardrail({
+      resolvedModel: target.modelDefault,
+      loadedAlias: null,
+      processMetrics,
+      parameterScale: target.parameterScale,
+      quantizationLabel: target.quantizationLabel
+    });
+    return {
+      ...target,
+      loadGuardrailLevel: guardrail.level,
+      loadGuardrailSummary: guardrail.summary
+    } satisfies AgentTarget;
+  });
+}
 
 export async function GET() {
   try {
     const targets = await syncDiscoveredLocalTargetsFromGateway();
     return NextResponse.json({
       ok: true,
-      targets
+      targets: decorateTargetsWithLoadGuardrails(targets)
     });
   } catch (error) {
     return NextResponse.json({
       ok: false,
       error: error instanceof Error ? error.message : "Failed to load agent targets.",
-      targets: listServerAgentTargets()
+      targets: decorateTargetsWithLoadGuardrails(listServerAgentTargets())
     });
   }
 }
@@ -78,7 +106,7 @@ export async function POST() {
 
     return NextResponse.json({
       ok: true,
-      targets,
+      targets: decorateTargetsWithLoadGuardrails(targets),
       remoteChecks,
       summary: {
         scannedAt: new Date().toISOString(),
@@ -93,7 +121,7 @@ export async function POST() {
     return NextResponse.json({
       ok: false,
       error: error instanceof Error ? error.message : "Failed to scan agent targets.",
-      targets: listServerAgentTargets(),
+      targets: decorateTargetsWithLoadGuardrails(listServerAgentTargets()),
       remoteChecks: {},
       summary: {
         scannedAt: new Date().toISOString(),

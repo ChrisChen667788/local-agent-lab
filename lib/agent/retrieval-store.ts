@@ -3,10 +3,17 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import path from "path";
 import { benchmarkDatasets, benchmarkMilestoneSuites } from "@/lib/agent/benchmark-datasets";
 import { readManagedBenchmarkPromptSets } from "@/lib/agent/benchmark-prompt-set-store";
+import {
+  ensureRetrievalVectorIndex,
+  searchVectorIndex
+} from "@/lib/agent/retrieval-vector-store";
 import type {
   AgentGroundedVerification,
   AgentKnowledgeDocument,
   AgentKnowledgeHit,
+  AgentRetrievalEvidenceMode,
+  AgentRetrievalScope,
+  AgentRetrievalSourcePreference,
   AgentRetrievalSummary
 } from "@/lib/agent/types";
 import { getObservabilityPaths } from "@/lib/agent/log-store";
@@ -58,6 +65,74 @@ const UNCERTAINTY_PATTERN =
   /(insufficient|uncertain|not enough|can't verify|cannot verify|unable to verify|evidence is insufficient|不确定|无法确认|不能确认|证据不足|信息不足|暫時無法確認|證據不足|情報不足)/i;
 const BUILTIN_BENCHMARK_DOC_PREFIX = "builtin-benchmark";
 
+function normalizeRetrievalScope(value?: AgentRetrievalScope) {
+  return value === "knowledge-base" || value === "benchmark-builtins" ? value : "all";
+}
+
+function normalizeSourcePreference(value?: AgentRetrievalSourcePreference) {
+  return value === "knowledge-first" || value === "benchmark-first" ? value : "balanced";
+}
+
+function normalizeEvidenceMode(value?: AgentRetrievalEvidenceMode) {
+  return value === "expanded" ? "expanded" : "compact";
+}
+
+function filterChunksByScope(chunks: KnowledgeChunkRecord[], scope: AgentRetrievalScope) {
+  if (scope === "knowledge-base") {
+    return chunks.filter((chunk) => !chunk.documentId.startsWith(BUILTIN_BENCHMARK_DOC_PREFIX));
+  }
+  if (scope === "benchmark-builtins") {
+    return chunks.filter((chunk) => chunk.documentId.startsWith(BUILTIN_BENCHMARK_DOC_PREFIX));
+  }
+  return chunks;
+}
+
+function buildSourceBreakdown(chunks: KnowledgeChunkRecord[]) {
+  const counts = new Map<string, number>();
+  for (const chunk of chunks) {
+    const label = chunk.documentId.startsWith(BUILTIN_BENCHMARK_DOC_PREFIX)
+      ? "benchmark-builtins"
+      : "knowledge-base";
+    counts.set(label, (counts.get(label) || 0) + 1);
+  }
+  return [...counts.entries()].map(([label, count]) => ({ label, count }));
+}
+
+function classifyChunkSource(chunk: KnowledgeChunkRecord) {
+  return chunk.documentId.startsWith(BUILTIN_BENCHMARK_DOC_PREFIX) ? "benchmark-builtins" : "knowledge-base";
+}
+
+function sourcePreferenceBias(
+  chunk: KnowledgeChunkRecord,
+  sourcePreference: AgentRetrievalSourcePreference
+) {
+  const bucket = classifyChunkSource(chunk);
+  if (sourcePreference === "knowledge-first") {
+    return bucket === "knowledge-base" ? 1.12 : 0.92;
+  }
+  if (sourcePreference === "benchmark-first") {
+    return bucket === "benchmark-builtins" ? 1.12 : 0.92;
+  }
+  return 1;
+}
+
+function expandRetrievalQueries(query: string) {
+  const normalized = query.trim();
+  if (!normalized) return [];
+  const variants = [normalized];
+  if (isRepoPathQuestion(normalized)) {
+    variants.push(`${normalized} file path`);
+  }
+  if (isBenchmarkDefinitionQuery(normalized)) {
+    variants.push(`${normalized} benchmark dataset`);
+    variants.push(`${normalized} workload definition`);
+  }
+  if (/(rag|grounded|citation|evidence|证据|引用)/i.test(normalized)) {
+    variants.push(`${normalized} retrieval evidence`);
+  }
+  return Array.from(new Set(variants.map((value) => value.trim()).filter(Boolean))).slice(0, 4);
+}
+
 function ensureDataDir() {
   mkdirSync(getObservabilityPaths().dataDir, { recursive: true });
 }
@@ -80,7 +155,8 @@ function buildKnowledgePaths() {
   const paths = getObservabilityPaths();
   return {
     documentFile: paths.knowledgeDocumentFile,
-    chunkFile: paths.knowledgeChunkFile
+    chunkFile: paths.knowledgeChunkFile,
+    vectorFile: paths.knowledgeVectorIndexFile
   };
 }
 
@@ -231,6 +307,10 @@ function writeSnapshot(snapshot: KnowledgeBaseSnapshot) {
   writeJsonFile(chunkFile, snapshot.chunks);
 }
 
+function buildAllKnowledgeChunks(snapshot: KnowledgeBaseSnapshot) {
+  return snapshot.chunks.concat(buildBuiltinBenchmarkKnowledgeChunks());
+}
+
 function tokenizeLatin(text: string) {
   return text.toLowerCase().match(/[a-z0-9_]{2,}/g) || [];
 }
@@ -284,6 +364,60 @@ function countOverlap(queryTokens: string[], candidateTokens: Set<string>) {
     if (candidateTokens.has(token)) overlap += 1;
   }
   return overlap;
+}
+
+function countSubstringOccurrences(content: string, query: string) {
+  if (!query) return 0;
+  let start = 0;
+  let count = 0;
+  while (start < content.length) {
+    const index = content.indexOf(query, start);
+    if (index === -1) break;
+    count += 1;
+    start = index + query.length;
+  }
+  return count;
+}
+
+function buildEvidenceSpans(
+  query: string,
+  content: string,
+  options?: {
+    maxSpans?: number;
+    previewChars?: number;
+  }
+) {
+  const maxSpans = options?.maxSpans || 2;
+  const previewChars = options?.previewChars || 220;
+  const fragments = content
+    .split(/\n+/)
+    .map((fragment) => fragment.trim())
+    .filter(Boolean);
+  const queryTokens = tokenize(query);
+
+  const spans = fragments
+    .map((fragment, index) => {
+      const fragmentTokens = new Set(tokenize(fragment));
+      const overlap = countOverlap(queryTokens, fragmentTokens);
+      if (!overlap && !fragment.toLowerCase().includes(query.toLowerCase())) {
+        return null;
+      }
+      return {
+        label: `E${index + 1}`,
+        preview: compressChunkForQuery(query, fragment, previewChars),
+        overlap
+      };
+    })
+    .filter((entry): entry is { label: string; preview: string; overlap: number } => Boolean(entry))
+    .sort((a, b) => b.overlap - a.overlap)
+    .slice(0, maxSpans)
+    .map(({ label, preview }) => ({ label, preview }));
+
+  if (spans.length) return spans;
+  return [{
+    label: "E1",
+    preview: compressChunkForQuery(query, content, previewChars)
+  }];
 }
 
 function formatCitationLabel(index: number) {
@@ -346,9 +480,29 @@ function buildKnowledgeBaseStats(snapshot: KnowledgeBaseSnapshot): KnowledgeBase
 
 export function getKnowledgeBaseSnapshot() {
   const snapshot = readSnapshot();
+  const { vectorFile } = buildKnowledgePaths();
+  const vectorIndex = ensureRetrievalVectorIndex(
+    vectorFile,
+    buildAllKnowledgeChunks(snapshot).map((chunk) => ({
+      chunkId: chunk.id,
+      title: chunk.title,
+      source: chunk.source,
+      sectionPath: chunk.sectionPath,
+      tags: chunk.tags,
+      content: chunk.content,
+      order: chunk.order,
+      charCount: chunk.charCount
+    }))
+  );
   return {
     documents: snapshot.documents.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
-    stats: buildKnowledgeBaseStats(snapshot)
+    stats: buildKnowledgeBaseStats(snapshot),
+    vectorIndex: {
+      embeddingModel: vectorIndex.version,
+      generatedAt: vectorIndex.generatedAt,
+      chunkCount: vectorIndex.chunkCount,
+      dims: vectorIndex.dims
+    }
   };
 }
 
@@ -387,17 +541,29 @@ export function upsertKnowledgeDocument(input: UpsertKnowledgeDocumentInput) {
     .concat(nextDocument)
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   const otherChunks = snapshot.chunks.filter((chunk) => chunk.documentId !== documentId);
-  writeSnapshot({
+  const nextSnapshot = {
     documents: nextDocuments,
     chunks: [...otherChunks, ...nextChunks]
-  });
+  };
+  writeSnapshot(nextSnapshot);
+  const { vectorFile } = buildKnowledgePaths();
+  ensureRetrievalVectorIndex(
+    vectorFile,
+    buildAllKnowledgeChunks(nextSnapshot).map((chunk) => ({
+      chunkId: chunk.id,
+      title: chunk.title,
+      source: chunk.source,
+      sectionPath: chunk.sectionPath,
+      tags: chunk.tags,
+      content: chunk.content,
+      order: chunk.order,
+      charCount: chunk.charCount
+    }))
+  );
 
   return {
     document: nextDocument,
-    stats: buildKnowledgeBaseStats({
-      documents: nextDocuments,
-      chunks: [...otherChunks, ...nextChunks]
-    })
+    stats: buildKnowledgeBaseStats(nextSnapshot)
   };
 }
 
@@ -408,10 +574,25 @@ export function deleteKnowledgeDocument(documentId: string) {
     return false;
   }
   const nextChunks = snapshot.chunks.filter((chunk) => chunk.documentId !== documentId);
-  writeSnapshot({
+  const nextSnapshot = {
     documents: nextDocuments,
     chunks: nextChunks
-  });
+  };
+  writeSnapshot(nextSnapshot);
+  const { vectorFile } = buildKnowledgePaths();
+  ensureRetrievalVectorIndex(
+    vectorFile,
+    buildAllKnowledgeChunks(nextSnapshot).map((chunk) => ({
+      chunkId: chunk.id,
+      title: chunk.title,
+      source: chunk.source,
+      sectionPath: chunk.sectionPath,
+      tags: chunk.tags,
+      content: chunk.content,
+      order: chunk.order,
+      charCount: chunk.charCount
+    }))
+  );
   return true;
 }
 
@@ -420,9 +601,18 @@ function buildSearchResult(
   index: number,
   score: number,
   confidence: number,
-  query: string
+  query: string,
+  details?: {
+    matchedTerms?: string[];
+    evidenceSpans?: Array<{ label: string; preview: string }>;
+    lexicalScore?: number;
+    structuralScore?: number;
+    vectorScore?: number;
+    rerankScore?: number;
+  }
 ): AgentKnowledgeHit {
   const maxChars = chunk.source === "lib/agent/benchmark-datasets.ts" ? 1400 : 320;
+  const evidencePreview = details?.evidenceSpans?.[0]?.preview || compressChunkForQuery(query, chunk.content, maxChars);
   return {
     chunkId: chunk.id,
     documentId: chunk.documentId,
@@ -430,10 +620,20 @@ function buildSearchResult(
     source: chunk.source,
     sectionPath: chunk.sectionPath,
     order: chunk.order,
-    content: compressChunkForQuery(query, chunk.content, maxChars),
+    content: evidencePreview,
     citationLabel: formatCitationLabel(index + 1),
     score: Number(score.toFixed(2)),
-    confidence: Number(confidence.toFixed(3))
+    confidence: Number(confidence.toFixed(3)),
+    matchedTerms: details?.matchedTerms || [],
+    evidencePreview,
+    evidenceSpans: details?.evidenceSpans || [],
+    scoring: {
+      lexical: Number((details?.lexicalScore || 0).toFixed(2)),
+      structural: Number((details?.structuralScore || 0).toFixed(2)),
+      vector: Number((details?.vectorScore || 0).toFixed(2)),
+      rerank: Number((details?.rerankScore || 0).toFixed(2)),
+      final: Number(score.toFixed(2))
+    }
   };
 }
 
@@ -502,85 +702,270 @@ function buildBuiltinBenchmarkKnowledgeChunks() {
   return chunks;
 }
 
-export function searchKnowledgeBase(query: string, topK = DEFAULT_TOP_K): AgentRetrievalSummary {
+export function searchKnowledgeBase(
+  query: string,
+  topK = DEFAULT_TOP_K,
+  options?: {
+    scope?: AgentRetrievalScope;
+    sourcePreference?: AgentRetrievalSourcePreference;
+    evidenceMode?: AgentRetrievalEvidenceMode;
+  }
+): AgentRetrievalSummary {
   const normalizedQuery = query.trim();
+  const scope = normalizeRetrievalScope(options?.scope);
+  const sourcePreference = normalizeSourcePreference(options?.sourcePreference);
+  const evidenceMode = normalizeEvidenceMode(options?.evidenceMode);
+  const expandedQueries = expandRetrievalQueries(normalizedQuery);
   if (!normalizedQuery) {
     return {
       query: normalizedQuery,
+      scope,
+      sourcePreference,
+      evidenceMode,
       hitCount: 0,
       lowConfidence: true,
       topScore: 0,
       usedInPrompt: false,
+      strategy: "hybrid-rerank",
+      candidateCount: 0,
+      vectorCandidateCount: 0,
+      reranked: false,
+      embeddingModel: "local-hash-embedding-v1",
+      expandedQueries,
+      sourceBreakdown: [],
+      stageNotes: [],
       results: []
     };
   }
 
   const snapshot = readSnapshot();
-  const allChunks = snapshot.chunks.concat(buildBuiltinBenchmarkKnowledgeChunks());
-  const queryTokens = tokenize(normalizedQuery);
+  const allChunks = filterChunksByScope(buildAllKnowledgeChunks(snapshot), scope);
+  const queryTokens = Array.from(new Set(expandedQueries.flatMap((entry) => tokenize(entry))));
   const benchmarkDefinitionQuery = isBenchmarkDefinitionQuery(normalizedQuery);
   if (!queryTokens.length || !allChunks.length) {
     return {
       query: normalizedQuery,
+      scope,
+      sourcePreference,
+      evidenceMode,
       hitCount: 0,
       lowConfidence: true,
       topScore: 0,
       usedInPrompt: false,
+      strategy: "hybrid-rerank",
+      candidateCount: 0,
+      vectorCandidateCount: 0,
+      reranked: false,
+      embeddingModel: "local-hash-embedding-v1",
+      expandedQueries,
+      sourceBreakdown: buildSourceBreakdown(allChunks),
+      stageNotes: [],
       results: []
     };
   }
 
-  const ranked = allChunks
+  const { vectorFile } = buildKnowledgePaths();
+  const vectorIndex = ensureRetrievalVectorIndex(
+    vectorFile,
+    allChunks.map((chunk) => ({
+      chunkId: chunk.id,
+      title: chunk.title,
+      source: chunk.source,
+      sectionPath: chunk.sectionPath,
+      tags: chunk.tags,
+      content: chunk.content,
+      order: chunk.order,
+      charCount: chunk.charCount
+    }))
+  );
+
+  const candidateLimit = Math.min(allChunks.length, Math.max(topK * 4, 8));
+  const lexicalEntries = allChunks
     .map((chunk) => {
       const bodyTokens = new Set(tokenize(chunk.content));
       const titleTokens = new Set(tokenize(chunk.title));
       const sectionTokens = new Set(tokenize(chunk.sectionPath.join(" ")));
       const sourceTokens = new Set(tokenize(chunk.source || ""));
+      const tagTokens = new Set(tokenize(chunk.tags.join(" ")));
 
       const bodyOverlap = countOverlap(queryTokens, bodyTokens);
       const titleOverlap = countOverlap(queryTokens, titleTokens);
       const sectionOverlap = countOverlap(queryTokens, sectionTokens);
       const sourceOverlap = countOverlap(queryTokens, sourceTokens);
+      const tagOverlap = countOverlap(queryTokens, tagTokens);
       const normalizedOverlap = bodyOverlap / Math.max(1, queryTokens.length);
       const exactPhraseBonus = chunk.content.includes(normalizedQuery) || chunk.title.includes(normalizedQuery) ? 0.35 : 0;
       const benchmarkDefinitionBonus =
         benchmarkDefinitionQuery && chunk.source === "lib/agent/benchmark-datasets.ts"
           ? 120
           : 0;
-      const score =
-        normalizedOverlap * 100 +
-        titleOverlap * 18 +
-        sectionOverlap * 10 +
-        sourceOverlap * 6 +
-        exactPhraseBonus * 100 +
-        benchmarkDefinitionBonus;
-      const confidence = Math.min(
+      const sourceBias = sourcePreferenceBias(chunk, sourcePreference);
+      const lexicalScore =
+        (
+          normalizedOverlap * 100 +
+          titleOverlap * 18 +
+          sectionOverlap * 10 +
+          sourceOverlap * 6 +
+          exactPhraseBonus * 100 +
+          benchmarkDefinitionBonus
+        ) * sourceBias;
+      const structuralScore =
+        (
+          titleOverlap * 14 +
+          sectionOverlap * 12 +
+          sourceOverlap * 4 +
+          tagOverlap * 8 +
+          (chunk.sectionPath.length ? 4 : 0)
+        ) * sourceBias;
+      const candidateScore = lexicalScore + structuralScore;
+      const candidateConfidence = Math.min(
         1,
-        normalizedOverlap + titleOverlap * 0.12 + sectionOverlap * 0.05 + exactPhraseBonus + (benchmarkDefinitionBonus ? 0.35 : 0)
+        normalizedOverlap +
+          titleOverlap * 0.12 +
+          sectionOverlap * 0.05 +
+          tagOverlap * 0.04 +
+          exactPhraseBonus +
+          (benchmarkDefinitionBonus ? 0.35 : 0)
       );
 
       return {
         chunk,
-        score,
+        lexicalScore,
+        structuralScore,
+        candidateScore,
+        candidateConfidence,
+        vectorScore: 0,
+        matchedTerms: queryTokens.filter((token) =>
+          bodyTokens.has(token) || titleTokens.has(token) || sectionTokens.has(token) || sourceTokens.has(token) || tagTokens.has(token)
+        )
+      };
+    })
+    .sort((a, b) => b.candidateScore - a.candidateScore || a.chunk.order - b.chunk.order);
+
+  const lexicalMap = new Map(lexicalEntries.map((entry) => [entry.chunk.id, entry]));
+  const vectorScoreByChunkId = new Map<string, number>();
+  for (const queryVariant of expandedQueries.length ? expandedQueries : [normalizedQuery]) {
+    for (const entry of searchVectorIndex(vectorIndex, queryVariant, candidateLimit)) {
+      const current = vectorScoreByChunkId.get(entry.chunkId) || 0;
+      vectorScoreByChunkId.set(entry.chunkId, Math.max(current, Number((entry.score * 100).toFixed(2))));
+    }
+  }
+  const vectorMatches = [...vectorScoreByChunkId.entries()].map(([chunkId, score]) => ({
+    chunkId,
+    score: score / 100
+  }));
+  const candidateIds = Array.from(
+    new Set(
+      lexicalEntries
+        .filter((entry) => entry.candidateScore > 0)
+        .slice(0, candidateLimit)
+        .map((entry) => entry.chunk.id)
+        .concat(vectorMatches.map((entry) => entry.chunkId))
+    )
+  );
+  const candidatePool = candidateIds
+    .map((chunkId) => {
+      const entry = lexicalMap.get(chunkId);
+      if (!entry) return null;
+      const sourceBias = sourcePreferenceBias(entry.chunk, sourcePreference);
+      const evidenceSpans = buildEvidenceSpans(normalizedQuery, entry.chunk.content, {
+        maxSpans: evidenceMode === "expanded" ? 4 : 2,
+        previewChars: evidenceMode === "expanded" ? 320 : 220
+      });
+      const lowerChunk = `${entry.chunk.title}\n${entry.chunk.sectionPath.join(" ")}\n${entry.chunk.content}`.toLowerCase();
+      const phraseHits = countSubstringOccurrences(lowerChunk, normalizedQuery.toLowerCase());
+      const sectionPhraseHit = entry.chunk.sectionPath.some((section) => section.toLowerCase().includes(normalizedQuery.toLowerCase()));
+      const coverage = entry.matchedTerms.length / Math.max(1, queryTokens.length);
+      const vectorScore = vectorScoreByChunkId.get(entry.chunk.id) || 0;
+      const rerankScore =
+        (
+          coverage * 60 +
+          evidenceSpans.length * 18 +
+          phraseHits * 22 +
+          (sectionPhraseHit ? 12 : 0) +
+          vectorScore * 0.18
+        ) * sourceBias;
+      const finalScore =
+        entry.lexicalScore * 0.45 +
+        entry.structuralScore * 0.15 +
+        vectorScore * 0.15 +
+        rerankScore * 0.25;
+      const confidence = Math.min(
+        1,
+        entry.candidateConfidence * 0.55 +
+          coverage * 0.35 +
+          Math.min(0.1, evidenceSpans.length * 0.05) +
+          Math.min(0.1, vectorScore / 200)
+      );
+
+      return {
+        ...entry,
+        evidenceSpans,
+        vectorScore,
+        rerankScore,
+        finalScore,
         confidence
       };
     })
-    .filter((entry) => entry.score > 0)
-    .sort((a, b) => b.score - a.score || a.chunk.order - b.chunk.order)
-    .slice(0, Math.max(1, topK));
+    .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
+    .sort((a, b) => b.finalScore - a.finalScore || b.confidence - a.confidence || a.chunk.order - b.chunk.order);
 
-  const topScore = ranked[0]?.score || 0;
-  const lowConfidence = topScore < 24;
+  const ranked = candidatePool.slice(0, Math.max(1, topK));
+  const topScore = ranked[0]?.finalScore || 0;
+  const lowConfidence = topScore < 34 || (ranked[0]?.confidence || 0) < 0.36;
+  const stageNotes = [
+    scope === "all"
+      ? "scope: all retrieval sources"
+      : scope === "knowledge-base"
+        ? "scope: uploaded knowledge base only"
+        : "scope: built-in benchmark references only",
+    sourcePreference === "balanced"
+      ? "source-preference: balanced"
+      : sourcePreference === "knowledge-first"
+        ? "source-preference: uploaded knowledge preferred"
+        : "source-preference: benchmark references preferred",
+    evidenceMode === "expanded"
+      ? "evidence-mode: expanded multi-span review"
+      : "evidence-mode: compact reviewer preview",
+    expandedQueries.length > 1
+      ? `query-expansion: ${expandedQueries.length} variants`
+      : "query-expansion: original query only",
+    "candidate-recall: lexical + title/section/source/tag signals",
+    `vector-recall: ${vectorIndex.version} persisted cosine search`,
+    "rerank: evidence-span coverage + phrase-hit density + vector agreement"
+  ];
+  if (benchmarkDefinitionQuery) {
+    stageNotes.push("benchmark-definition boost applied");
+  }
   const results = ranked.map((entry, index) =>
-    buildSearchResult(entry.chunk, index, entry.score, entry.confidence, normalizedQuery)
+    buildSearchResult(entry.chunk, index, entry.finalScore, entry.confidence, normalizedQuery, {
+      matchedTerms: entry.matchedTerms.slice(0, 8),
+      evidenceSpans: entry.evidenceSpans,
+      lexicalScore: entry.lexicalScore,
+      structuralScore: entry.structuralScore,
+      vectorScore: entry.vectorScore,
+      rerankScore: entry.rerankScore
+    })
   );
 
   return {
     query: normalizedQuery,
+    scope,
+    sourcePreference,
+    evidenceMode,
     hitCount: results.length,
     lowConfidence,
     topScore: Number(topScore.toFixed(2)),
     usedInPrompt: results.length > 0,
+    strategy: "hybrid-rerank",
+    candidateCount: candidatePool.length,
+    vectorCandidateCount: vectorMatches.length,
+    reranked: candidatePool.length > results.length,
+    embeddingModel: vectorIndex.version,
+    indexGeneratedAt: vectorIndex.generatedAt,
+    expandedQueries,
+    sourceBreakdown: buildSourceBreakdown(allChunks),
+    stageNotes,
     results
   };
 }

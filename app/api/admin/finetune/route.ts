@@ -3,10 +3,12 @@ import {
   attachFineTuneAdapterRuntime,
   cancelFineTuneJob,
   checkFineTuneDatasetUpstream,
+  detachFineTuneAdapterRuntime,
   openFineTunePath,
   openFineTuneSourcePage,
   refreshDueFineTuneDatasetWatches,
   readFineTuneSummary,
+  rerunFineTuneJob,
   saveFineTuneDataset,
   saveFineTuneRecipe,
   saveFineTuneDatasetWatch,
@@ -157,6 +159,15 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true, job, summary: readFineTuneSummary() });
     }
 
+    if (body.action === "rerun-job") {
+      const jobId = typeof body.id === "string" ? body.id.trim() : "";
+      if (!jobId) {
+        return NextResponse.json({ error: "id is required for rerun-job." }, { status: 400 });
+      }
+      const job = rerunFineTuneJob({ jobId });
+      return NextResponse.json({ ok: true, job, summary: readFineTuneSummary() });
+    }
+
     if (body.action === "cancel-job") {
       const jobId = typeof body.id === "string" ? body.id.trim() : "";
       if (!jobId) {
@@ -198,6 +209,15 @@ export async function POST(request: Request) {
       }
       const attached = attachFineTuneAdapterRuntime({ adapterId });
       return NextResponse.json({ ok: true, attached, summary: readFineTuneSummary() });
+    }
+
+    if (body.action === "detach-runtime") {
+      const adapterId = typeof body.adapterId === "string" ? body.adapterId.trim() : "";
+      if (!adapterId) {
+        return NextResponse.json({ error: "adapterId is required for detach-runtime." }, { status: 400 });
+      }
+      const detached = await detachFineTuneAdapterRuntime({ adapterId });
+      return NextResponse.json({ ok: true, detached, summary: readFineTuneSummary() });
     }
 
     return NextResponse.json({ error: "Unsupported finetune action." }, { status: 400 });

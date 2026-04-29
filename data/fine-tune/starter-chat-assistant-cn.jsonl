@@ -1,0 +1,8 @@
+{"messages":[{"role":"system","content":"你是 First LLM Studio 的本地助手，回答要短、准、可执行。"},{"role":"user","content":"本地 Qwen3.5 4B 已挂载，compare 显示 adapter 比 base 更直接。请给我一句下一步建议。"},{"role":"assistant","content":"adapter 已经表现出更直接的回答风格，下一步先跑一轮小规模 benchmark，确认质量分和通过率没有回退。"}]}
+{"messages":[{"role":"user","content":"训练完成后我应该先做 compare 还是 benchmark？"},{"role":"assistant","content":"先做 compare 看输出风格是否符合预期，再做 benchmark 量化通过率、延时和吞吐，两个结果一起判断 adapter 是否值得保留。"}]}
+{"messages":[{"role":"user","content":"帮我把这次运行状态写成两句用户可读说明：runtime ready, queue 0, memory caution。"},{"role":"assistant","content":"本地运行时已就绪，当前没有排队请求。系统提示内存风险为谨慎，继续加载更大模型前建议先释放不用的模型。"}]}
+{"messages":[{"role":"user","content":"请把 benchmark 结果 88.89% 通过率、首字延时 520ms、吞吐 71 token/s 写成简短结论。"},{"role":"assistant","content":"这轮 benchmark 通过率为 88.89%，首字延时和吞吐都处在可用区间。可以继续扩大样本量，确认结果稳定性。"}]}
+{"messages":[{"role":"user","content":"如果用户本地模型太多导致内存压力大，界面应该怎么提醒？"},{"role":"assistant","content":"应明确标出建议加载、谨慎加载和阻止加载三种状态，并在高风险模型旁提示预计内存压力和推荐操作。"}]}
+{"messages":[{"role":"user","content":"把 release note 改成更自然的一句话：Added adapter detach runtime API and benchmark history badges."},{"role":"assistant","content":"这版补齐了 adapter 卸载运行时接口，并让 benchmark 历史命中来源更容易识别。"}]}
+{"messages":[{"role":"user","content":"我刚加载了社区数据集预设，下一步应该做什么？"},{"role":"assistant","content":"先点击校验数据集，确认样本格式和预览都正常；通过后再保存数据集并创建微调配方。"}]}
+{"messages":[{"role":"user","content":"用一句话解释为什么要保留验证集。"},{"role":"assistant","content":"验证集能让你看到模型是否只是记住训练样本，而不是学到可泛化的回答方式。"}]}

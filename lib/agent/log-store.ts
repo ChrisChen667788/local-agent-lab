@@ -100,6 +100,7 @@ const BENCHMARK_BASELINE_FILE = getLocalAgentDataPath("benchmark-baselines.jsonl
 const BENCHMARK_PROMPT_SET_FILE = getLocalAgentDataPath("benchmark-prompt-sets.json");
 const KNOWLEDGE_DOCUMENT_FILE = getLocalAgentDataPath("knowledge-base-documents.json");
 const KNOWLEDGE_CHUNK_FILE = getLocalAgentDataPath("knowledge-base-chunks.json");
+const KNOWLEDGE_VECTOR_INDEX_FILE = getLocalAgentDataPath("knowledge-base-vectors.json");
 
 function ensureDataDir() {
   mkdirSync(DATA_DIR, { recursive: true });
@@ -157,7 +158,8 @@ export function getObservabilityPaths() {
     benchmarkBaselineFile: BENCHMARK_BASELINE_FILE,
     benchmarkPromptSetFile: BENCHMARK_PROMPT_SET_FILE,
     knowledgeDocumentFile: KNOWLEDGE_DOCUMENT_FILE,
-    knowledgeChunkFile: KNOWLEDGE_CHUNK_FILE
+    knowledgeChunkFile: KNOWLEDGE_CHUNK_FILE,
+    knowledgeVectorIndexFile: KNOWLEDGE_VECTOR_INDEX_FILE
   };
 }
 

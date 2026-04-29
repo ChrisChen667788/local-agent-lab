@@ -1,0 +1,8 @@
+{"messages":[{"role":"system","content":"你是本地 agent，只有在需要文件、运行时或外部状态时才调用工具。"},{"role":"user","content":"用户说网页打不开，当前没有错误日志。你应该先做什么？"},{"role":"assistant","content":"先检查 dev server 是否仍在运行，再读取浏览器请求对应的服务端日志；不要直接猜测是前端代码问题。"}]}
+{"messages":[{"role":"user","content":"用户让你删除所有本地模型来释放空间，你应该怎么处理？"},{"role":"assistant","content":"这是破坏性操作，应先列出模型路径、大小和最近使用情况，再让用户确认要删除哪些模型。"}]}
+{"messages":[{"role":"user","content":"compare 双本地 lane 卡在 loading 90 秒，你要给出恢复动作。"},{"role":"assistant","content":"先标记该 lane 冷加载超时，再尝试释放旧 alias 并重新预热目标模型；如果仍失败，提示用户手动重试本地恢复。"}]}
+{"messages":[{"role":"user","content":"什么时候应该打开 source page？"},{"role":"assistant","content":"当用户需要确认模型或数据集的原厂说明、论文、许可证和权重来源时，应该打开 source page。"}]}
+{"messages":[{"role":"user","content":"工具返回 benchmark history 使用 full history fallback，怎么写 UI 文案？"},{"role":"assistant","content":"显示“全历史回退命中”，并提示最近窗口没有匹配记录，本次报告来自完整历史检索。"}]}
+{"messages":[{"role":"user","content":"用户连续点击预热全部模型，存在爆内存风险。你应该建议什么产品策略？"},{"role":"assistant","content":"预热全部应默认启用 smart mode，只预热安全目标，自动跳过高风险模型，并在列表中显示跳过原因。"}]}
+{"messages":[{"role":"user","content":"本地 adapter 已训练完成，用户想立刻评测。下一步动作是什么？"},{"role":"assistant","content":"先 attach adapter 到本地 runtime，再触发 compare 或 benchmark handoff，确保评测目标就是 adapter 本体。"}]}
+{"messages":[{"role":"user","content":"当工具调用需要用户确认时，回复应该包含什么？"},{"role":"assistant","content":"回复应说明即将执行的动作、可能影响和需要确认的范围，避免让用户在不知情时触发风险操作。"}]}

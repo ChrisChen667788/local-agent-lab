@@ -111,113 +111,121 @@ export function AgentRecipeGallery({
         </div>
       </div>
 
-      <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1.55fr)_minmax(320px,0.85fr)]">
+      <div className="mt-5 grid gap-4 2xl:grid-cols-[minmax(0,1.45fr)_minmax(320px,0.55fr)]">
         <div className="space-y-3">
           {error ? (
             <div className="rounded-2xl border border-rose-400/20 bg-rose-400/10 px-4 py-3 text-sm text-rose-100">{error}</div>
           ) : null}
-          <div className="overflow-x-auto pb-2">
-            <div className="grid grid-flow-col auto-cols-[minmax(292px,340px)] gap-3">
-            {recipes.map((recipe) => (
-              <article
-                key={recipe.id}
-                className={`h-full rounded-[24px] border px-4 py-4 transition ${
-                  activeRecipeId === recipe.id
-                    ? "border-cyan-400/30 bg-cyan-400/10"
-                    : "border-white/10 bg-black/20 hover:border-white/20"
-                }`}
-              >
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span
-                        className={`rounded-full px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] ${
-                          recipe.source === "builtin"
-                            ? "border border-cyan-400/20 bg-cyan-400/10 text-cyan-100"
-                            : "border border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
-                        }`}
-                      >
-                        {recipe.source === "builtin"
-                          ? isEn
-                            ? "Built in"
-                            : "内置"
-                          : isEn
-                            ? "Saved"
-                            : "已保存"}
-                      </span>
-                      <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">
-                        {formatContextWindowLabel(recipe.contextWindow)}
-                      </span>
+          <div className="space-y-3">
+            {recipes.map((recipe) => {
+              const recipeTags = [...recipe.tags, recipe.providerProfile, recipe.thinkingMode].filter(Boolean);
+              const visibleTags = recipeTags.slice(0, 6);
+              const hiddenTagCount = Math.max(0, recipeTags.length - visibleTags.length);
+              return (
+                <article
+                  key={recipe.id}
+                  className={`rounded-[24px] border px-4 py-4 transition ${
+                    activeRecipeId === recipe.id
+                      ? "border-cyan-400/35 bg-cyan-400/[0.09] shadow-[0_18px_60px_rgba(8,145,178,0.12)]"
+                      : "border-white/10 bg-slate-950/55 hover:border-white/20 hover:bg-white/[0.04]"
+                  }`}
+                >
+                  <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_220px]">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span
+                          className={`rounded-full px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] ${
+                            recipe.source === "builtin"
+                              ? "border border-cyan-400/20 bg-cyan-400/10 text-cyan-100"
+                              : "border border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
+                          }`}
+                        >
+                          {recipe.source === "builtin"
+                            ? isEn
+                              ? "Built in"
+                              : "内置"
+                            : isEn
+                              ? "Saved"
+                              : "已保存"}
+                        </span>
+                        <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">
+                          {formatContextWindowLabel(recipe.contextWindow)}
+                        </span>
+                        <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">
+                          {recipe.targetIds.length} {isEn ? "targets" : "目标"}
+                        </span>
+                        <span className={`rounded-full border px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] ${
+                          recipe.enableTools
+                            ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
+                            : "border-white/10 bg-white/[0.04] text-slate-400"
+                        }`}>
+                          {recipe.enableTools ? (isEn ? "Tools on" : "工具开") : isEn ? "Tools off" : "工具关"}
+                        </span>
+                      </div>
+                      <h4 className="mt-3 text-base font-semibold leading-snug text-white">{recipe.label}</h4>
+                      <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">{recipe.description}</p>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {visibleTags.map((tag) => (
+                          <span key={tag} className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.16em] text-slate-300">
+                            {tag}
+                          </span>
+                        ))}
+                        {hiddenTagCount ? (
+                          <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.16em] text-slate-500">
+                            +{hiddenTagCount}
+                          </span>
+                        ) : null}
+                      </div>
                     </div>
-                    <h4 className="mt-3 text-base font-semibold text-white">{recipe.label}</h4>
-                    <p className="mt-2 text-sm leading-6 text-slate-400">{recipe.description}</p>
+
+                    <div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-1">
+                      <button
+                        type="button"
+                        onClick={() => onApply(recipe.id)}
+                        className="rounded-2xl border border-cyan-400/30 bg-cyan-400/10 px-3 py-2 text-[11px] font-semibold text-cyan-100 transition hover:bg-cyan-400/20"
+                      >
+                        {isEn ? "Apply" : "应用配方"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onRunCompare(recipe.id)}
+                        disabled={executionPending}
+                        className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[11px] font-semibold text-slate-200 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {isEn ? "Run compare" : "直接对比"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onRunBenchmark(recipe.id)}
+                        disabled={executionPending}
+                        className="rounded-2xl border border-violet-400/25 bg-violet-400/10 px-3 py-2 text-[11px] font-semibold text-violet-100 transition hover:bg-violet-400/20 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {isEn ? "Benchmark" : "送入评测"}
+                      </button>
+                    </div>
                   </div>
-                  <div className="text-right text-[11px] leading-5 text-slate-500">
-                    <p>{recipe.targetIds.length} {isEn ? "targets" : "目标"}</p>
-                    <p>{recipe.enableTools ? (isEn ? "Tools on" : "工具开") : isEn ? "Tools off" : "工具关"}</p>
-                    <p>{recipe.enableRetrieval ? (isEn ? "RAG on" : "检索开") : isEn ? "RAG off" : "检索关"}</p>
+
+                  <div className="mt-4 grid gap-3 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
+                    <p className="line-clamp-2 rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-3 text-[13px] leading-6 text-slate-300">
+                      {recipe.input || (isEn ? "This recipe focuses on reusable controls more than prompt text." : "这个配方更强调控制项复用，而不是固定 prompt。")}
+                    </p>
+                    {recipe.source === "user" ? (
+                      <button
+                        type="button"
+                        onClick={() => onDelete(recipe.id)}
+                        className="justify-self-start rounded-full border border-rose-400/25 bg-rose-400/10 px-3 py-1.5 text-[11px] font-semibold text-rose-100 transition hover:bg-rose-400/20 xl:justify-self-end"
+                      >
+                        {isEn ? "Delete" : "删除"}
+                      </button>
+                    ) : null}
                   </div>
-                </div>
-
-                <div className="mt-4 flex flex-wrap gap-2">
-                  {recipe.tags.map((tag) => (
-                    <span key={tag} className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">
-                      {tag}
-                    </span>
-                  ))}
-                  <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">
-                    {recipe.providerProfile}
-                  </span>
-                  <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">
-                    {recipe.thinkingMode}
-                  </span>
-                </div>
-
-                <p className="mt-4 line-clamp-2 rounded-2xl border border-white/10 bg-slate-950/60 px-3 py-3 text-[13px] leading-6 text-slate-300">
-                  {recipe.input || (isEn ? "This recipe focuses on reusable controls more than prompt text." : "这个配方更强调控制项复用，而不是固定 prompt。")}
-                </p>
-
-                <div className="mt-4 flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => onApply(recipe.id)}
-                    className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1.5 text-[11px] font-semibold text-cyan-100 transition hover:bg-cyan-400/20"
-                  >
-                    {isEn ? "Apply recipe" : "应用配方"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onRunCompare(recipe.id)}
-                    disabled={executionPending}
-                    className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {isEn ? "Run compare" : "直接对比"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onRunBenchmark(recipe.id)}
-                    disabled={executionPending}
-                    className="rounded-full border border-violet-400/25 bg-violet-400/10 px-3 py-1.5 text-[11px] font-semibold text-violet-100 transition hover:bg-violet-400/20 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {isEn ? "Benchmark handoff" : "送入评测"}
-                  </button>
-                  {recipe.source === "user" ? (
-                    <button
-                      type="button"
-                      onClick={() => onDelete(recipe.id)}
-                      className="rounded-full border border-rose-400/25 bg-rose-400/10 px-3 py-1.5 text-[11px] font-semibold text-rose-100 transition hover:bg-rose-400/20"
-                    >
-                      {isEn ? "Delete" : "删除"}
-                    </button>
-                  ) : null}
-                </div>
-              </article>
-            ))}
-            </div>
+                </article>
+              );
+            })}
           </div>
         </div>
 
-        <div className="rounded-[24px] border border-white/10 bg-slate-950/65 p-4">
+        <div className="rounded-[24px] border border-white/10 bg-slate-950/65 p-4 2xl:sticky 2xl:top-24 2xl:self-start">
           <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">
             {isEn ? "Save current compare setup" : "保存当前 compare 配置"}
           </p>

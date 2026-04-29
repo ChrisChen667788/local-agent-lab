@@ -50,6 +50,7 @@ import {
   resolveRemoteBenchmarkPolicy
 } from "@/lib/agent/benchmark-remote-policy";
 import { appendBenchmarkLog, readBenchmarkLogs } from "@/lib/agent/log-store";
+import { appendTimelineEvent } from "@/lib/agent/timeline-store";
 import type {
   AgentBenchmarkResponse,
   AgentBenchmarkResult,
@@ -1851,6 +1852,7 @@ export async function POST(request: Request) {
     if (!selectedTargets.length) {
       return NextResponse.json({ error: "No benchmark targets selected." }, { status: 400 });
     }
+    const targetIds = selectedTargets.map((target) => target.id);
 
     const runId = requestRunId || crypto.randomUUID();
     registerBenchmarkRunController(runId);
@@ -1919,6 +1921,14 @@ export async function POST(request: Request) {
       totalGroups,
       totalSamples,
       pendingGroups: plannedGroups
+    });
+    appendTimelineEvent({
+      kind: "benchmark",
+      status: "started",
+      title: "Benchmark run started",
+      summary: `${plan.suiteLabel || plan.promptSetLabel || plan.datasetLabel || plan.prompt} · ${targetIds.length} target${targetIds.length === 1 ? "" : "s"}`,
+      relatedId: runId,
+      targetIds
     });
     markBenchmarkProgressRunning(runId);
     let workerPhase = "initializing-benchmark";
@@ -2319,6 +2329,14 @@ export async function POST(request: Request) {
       id: crypto.randomUUID(),
       ...payload
     });
+    appendTimelineEvent({
+      kind: "benchmark",
+      status: payload.ok ? "completed" : "failed",
+      title: payload.ok ? "Benchmark run completed" : "Benchmark run failed",
+      summary: `${payload.results.length} result groups · ${payload.benchmarkMode}`,
+      relatedId: runId,
+      targetIds
+    });
     completeBenchmarkProgress(runId);
     if (heartbeatTimer) {
       clearInterval(heartbeatTimer);
@@ -2329,6 +2347,13 @@ export async function POST(request: Request) {
   } catch (error) {
     if (error instanceof BenchmarkControlError && requestRunId) {
       finalizeBenchmarkProgressControl(requestRunId, error.action, error.message);
+      appendTimelineEvent({
+        kind: "benchmark",
+        status: error.action === "stop" ? "cancelled" : "failed",
+        title: error.action === "stop" ? "Benchmark run stopped" : "Benchmark run abandoned",
+        summary: error.message,
+        relatedId: requestRunId
+      });
       if (responseContext) {
         return NextResponse.json({
           ok: responseContext.results.some((result) => result.okRuns > 0),
@@ -2370,6 +2395,13 @@ export async function POST(request: Request) {
     const message = error instanceof Error ? error.message : "Benchmark failed.";
     if (requestRunId) {
       failBenchmarkProgress(requestRunId, message);
+      appendTimelineEvent({
+        kind: "benchmark",
+        status: "failed",
+        title: "Benchmark run failed",
+        summary: message,
+        relatedId: requestRunId
+      });
     }
     return NextResponse.json(
       { error: message },

@@ -5,12 +5,18 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   statSync,
-  writeFileSync
+  writeFileSync,
 } from "fs";
+import { homedir } from "os";
 import path from "path";
 import { getLocalAgentDataPath } from "@/lib/agent/data-dir";
-import { listServerAgentTargets, upsertDiscoveredLocalTarget } from "@/lib/agent/server-targets";
+import {
+  listServerAgentTargets,
+  removeDiscoveredLocalTarget,
+  upsertDiscoveredLocalTarget,
+} from "@/lib/agent/server-targets";
 import { appendTimelineEvent } from "@/lib/agent/timeline-store";
 import { discoverFineTuneUpstreamDatasets } from "@/lib/community/dataset-discovery";
 import type {
@@ -24,17 +30,32 @@ import type {
   AgentFineTuneJobProgress,
   AgentFineTuneRecipe,
   AgentFineTuneSummary,
-  AgentFineTuneTargetOption
+  AgentFineTuneTargetOption,
 } from "@/lib/agent/types";
 
 const FINETUNE_DIR = getLocalAgentDataPath("finetune");
 const DATASETS_FILE = path.join(FINETUNE_DIR, "datasets.json");
 const RECIPES_FILE = path.join(FINETUNE_DIR, "recipes.json");
 const JOBS_FILE = path.join(FINETUNE_DIR, "jobs.json");
-const RUNTIME_ATTACHMENTS_FILE = path.join(FINETUNE_DIR, "runtime-attachments.json");
+const RUNTIME_ATTACHMENTS_FILE = path.join(
+  FINETUNE_DIR,
+  "runtime-attachments.json",
+);
 const JOB_BUNDLES_DIR = path.join(FINETUNE_DIR, "jobs");
 const VENV_PYTHON = path.join(process.cwd(), ".venv", "bin", "python");
 const WORKER_SCRIPT = path.join(process.cwd(), "scripts", "finetune_worker.py");
+const LOCAL_GATEWAY_BASE_URL = (
+  process.env.LOCAL_AGENT_BASE_URL || "http://127.0.0.1:4000/v1"
+).replace(/\/$/, "");
+const BUNDLED_SMOKE_DATASET_ID = "ft-dataset-first-llm-studio-smoke-v2";
+const BUNDLED_SMOKE_DATASET_LABEL = "First LLM Studio smoke v2";
+const BUNDLED_SMOKE_DATASET_PATH = path.join(
+  process.cwd(),
+  "data",
+  "fine-tune",
+  "first-llm-studio-smoke-v2.jsonl",
+);
+const LEGACY_SMOKE_DATASET_PATH = "/tmp/first-llm-studio-ft-smoke.jsonl";
 const MAX_CURVE_POINTS = 120;
 const MAX_LOG_LINES = 14;
 
@@ -42,6 +63,7 @@ type FineTunePreparedDatasetSummary = {
   trainSamples: number;
   validSamples: number;
   testSamples: number;
+  validationDisabledReason?: string;
 };
 
 type FineTuneJobRuntimeState = Partial<AgentFineTuneJob> & {
@@ -100,6 +122,7 @@ type FineTuneJobBundle = {
     saveEvery: number;
     maxSeqLength: number;
     batchSize: number;
+    validationDisabledReason?: string;
     learningRate: number;
     fineTuneMethod: "lora" | "dora";
     optimizer: "adam" | "adamw" | "sgd" | "adafactor";
@@ -155,15 +178,58 @@ function truncatePreview(value: string, maxLength = 180) {
   return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 }
 
-function readLocalTextFile(sourcePath: string) {
-  const normalized = sourcePath.trim();
+function normalizeUserPathInput(sourcePath: string) {
+  const trimmed = sourcePath.trim();
+  if (trimmed.startsWith("file://")) {
+    try {
+      return decodeURIComponent(new URL(trimmed).pathname);
+    } catch {
+      return trimmed.replace(/^file:\/\//, "");
+    }
+  }
+  if (trimmed === "~") return homedir();
+  if (trimmed.startsWith("~/")) {
+    return path.join(homedir(), trimmed.slice(2));
+  }
+  return trimmed;
+}
+
+function resolveLocalDatasetPath(sourcePath: string) {
+  const normalized = normalizeUserPathInput(sourcePath);
   if (!normalized) {
     throw new Error("sourcePath is required.");
   }
-  if (!existsSync(normalized)) {
-    throw new Error(`Dataset path does not exist: ${normalized}`);
+
+  const candidates = new Set<string>();
+  candidates.add(
+    path.isAbsolute(normalized) ? normalized : path.join(process.cwd(), normalized),
+  );
+
+  const fineTuneMarker = `${path.sep}data${path.sep}fine-tune${path.sep}`;
+  const markerIndex = normalized.indexOf(fineTuneMarker);
+  if (markerIndex >= 0) {
+    const projectRelative = normalized.slice(markerIndex + 1);
+    candidates.add(path.join(process.cwd(), projectRelative));
   }
-  return readFileSync(normalized, "utf8");
+
+  const posixMarker = "/data/fine-tune/";
+  const posixMarkerIndex = normalized.indexOf(posixMarker);
+  if (posixMarkerIndex >= 0) {
+    candidates.add(path.join(process.cwd(), normalized.slice(posixMarkerIndex + 1)));
+  }
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+
+  throw new Error(
+    `Dataset path does not exist. Checked: ${Array.from(candidates).join(" | ")}`,
+  );
+}
+
+function readLocalTextFile(sourcePath: string) {
+  const resolvedPath = resolveLocalDatasetPath(sourcePath);
+  return readFileSync(resolvedPath, "utf8");
 }
 
 function normalizeChatMessageContent(content: unknown) {
@@ -172,7 +238,11 @@ function normalizeChatMessageContent(content: unknown) {
     return content
       .map((part) => {
         if (typeof part === "string") return part;
-        if (part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string") {
+        if (
+          part &&
+          typeof part === "object" &&
+          typeof (part as { text?: unknown }).text === "string"
+        ) {
           return (part as { text: string }).text;
         }
         return "";
@@ -190,14 +260,24 @@ function validateChatJsonl(lines: string[]) {
 
   lines.forEach((line, index) => {
     try {
-      const parsed = JSON.parse(line) as { messages?: Array<{ role?: unknown; content?: unknown }> };
+      const parsed = JSON.parse(line) as {
+        messages?: Array<{ role?: unknown; content?: unknown }>;
+      };
       const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
       const userMessage = messages.find((message) => message?.role === "user");
-      const assistantMessage = [...messages].reverse().find((message) => message?.role === "assistant");
-      const inputPreview = truncatePreview(normalizeChatMessageContent(userMessage?.content));
-      const outputPreview = truncatePreview(normalizeChatMessageContent(assistantMessage?.content));
+      const assistantMessage = [...messages]
+        .reverse()
+        .find((message) => message?.role === "assistant");
+      const inputPreview = truncatePreview(
+        normalizeChatMessageContent(userMessage?.content),
+      );
+      const outputPreview = truncatePreview(
+        normalizeChatMessageContent(assistantMessage?.content),
+      );
       if (!messages.length || !inputPreview || !outputPreview) {
-        errors.push(`Line ${index + 1}: chat-jsonl requires user and assistant messages.`);
+        errors.push(
+          `Line ${index + 1}: chat-jsonl requires user and assistant messages.`,
+        );
         return;
       }
       if (messages.length < 2) {
@@ -207,7 +287,7 @@ function validateChatJsonl(lines: string[]) {
         preview.push({
           index: index + 1,
           inputPreview,
-          outputPreview
+          outputPreview,
         });
       }
     } catch {
@@ -226,24 +306,28 @@ function validateInstructionJsonl(lines: string[]) {
   lines.forEach((line, index) => {
     try {
       const parsed = JSON.parse(line) as Record<string, unknown>;
-      const prompt = typeof parsed.prompt === "string"
-        ? parsed.prompt
-        : typeof parsed.instruction === "string"
-          ? parsed.instruction
-          : typeof parsed.input === "string"
-            ? parsed.input
-            : "";
-      const response = typeof parsed.response === "string"
-        ? parsed.response
-        : typeof parsed.completion === "string"
-          ? parsed.completion
-          : typeof parsed.output === "string"
-            ? parsed.output
-            : typeof parsed.answer === "string"
-              ? parsed.answer
+      const prompt =
+        typeof parsed.prompt === "string"
+          ? parsed.prompt
+          : typeof parsed.instruction === "string"
+            ? parsed.instruction
+            : typeof parsed.input === "string"
+              ? parsed.input
               : "";
+      const response =
+        typeof parsed.response === "string"
+          ? parsed.response
+          : typeof parsed.completion === "string"
+            ? parsed.completion
+            : typeof parsed.output === "string"
+              ? parsed.output
+              : typeof parsed.answer === "string"
+                ? parsed.answer
+                : "";
       if (!prompt.trim() || !response.trim()) {
-        errors.push(`Line ${index + 1}: instruction-jsonl requires prompt/instruction and response/output.`);
+        errors.push(
+          `Line ${index + 1}: instruction-jsonl requires prompt/instruction and response/output.`,
+        );
         return;
       }
       if (prompt.trim().length < 12) {
@@ -253,7 +337,7 @@ function validateInstructionJsonl(lines: string[]) {
         preview.push({
           index: index + 1,
           inputPreview: truncatePreview(prompt),
-          outputPreview: truncatePreview(response)
+          outputPreview: truncatePreview(response),
         });
       }
     } catch {
@@ -264,7 +348,10 @@ function validateInstructionJsonl(lines: string[]) {
   return { warnings, errors, preview };
 }
 
-export function validateFineTuneDatasetContent(content: string, format: AgentFineTuneDatasetFormat): AgentFineTuneDatasetValidation {
+export function validateFineTuneDatasetContent(
+  content: string,
+  format: AgentFineTuneDatasetFormat,
+): AgentFineTuneDatasetValidation {
   const lines = content
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -277,14 +364,19 @@ export function validateFineTuneDatasetContent(content: string, format: AgentFin
       sampleCount: 0,
       warnings: [],
       errors: ["Dataset file is empty."],
-      preview: []
+      preview: [],
     };
   }
 
-  const base = format === "chat-jsonl" ? validateChatJsonl(lines) : validateInstructionJsonl(lines);
+  const base =
+    format === "chat-jsonl"
+      ? validateChatJsonl(lines)
+      : validateInstructionJsonl(lines);
   const warnings = [...base.warnings];
   if (lines.length < 20) {
-    warnings.push("Sample count is still small. This is good for a smoke run, but not yet a stable adapter dataset.");
+    warnings.push(
+      "Sample count is still small. This is good for a smoke run, but not yet a stable adapter dataset.",
+    );
   }
 
   return {
@@ -293,29 +385,96 @@ export function validateFineTuneDatasetContent(content: string, format: AgentFin
     sampleCount: lines.length,
     warnings,
     errors: base.errors,
-    preview: base.preview
+    preview: base.preview,
   };
 }
 
+function normalizeDatasetRecord(
+  dataset: AgentFineTuneDataset,
+): AgentFineTuneDataset {
+  return {
+    ...dataset,
+    refreshCadenceHours:
+      typeof dataset.refreshCadenceHours === "number" &&
+      Number.isFinite(dataset.refreshCadenceHours)
+        ? dataset.refreshCadenceHours
+        : 24,
+    latestUpstreamCandidates: Array.isArray(dataset.latestUpstreamCandidates)
+      ? dataset.latestUpstreamCandidates
+      : [],
+  };
+}
+
+function isBundledSmokeDatasetCandidate(dataset: AgentFineTuneDataset) {
+  return (
+    dataset.id === BUNDLED_SMOKE_DATASET_ID ||
+    dataset.sourcePath === BUNDLED_SMOKE_DATASET_PATH ||
+    dataset.sourcePath === LEGACY_SMOKE_DATASET_PATH ||
+    dataset.label === "ft-smoke-dataset" ||
+    dataset.label === BUNDLED_SMOKE_DATASET_LABEL
+  );
+}
+
+function reconcileBundledSmokeDatasets(datasets: AgentFineTuneDataset[]) {
+  const normalized = datasets.map(normalizeDatasetRecord);
+  if (!existsSync(BUNDLED_SMOKE_DATASET_PATH)) {
+    return normalized;
+  }
+
+  const existing = normalized.find(isBundledSmokeDatasetCandidate);
+  const validation = validateFineTuneDatasetFromPath(
+    BUNDLED_SMOKE_DATASET_PATH,
+    "instruction-jsonl",
+  );
+  const now = new Date().toISOString();
+  const desired: AgentFineTuneDataset = {
+    id: existing?.id || BUNDLED_SMOKE_DATASET_ID,
+    label: existing?.label || BUNDLED_SMOKE_DATASET_LABEL,
+    format: "instruction-jsonl",
+    sourcePath: BUNDLED_SMOKE_DATASET_PATH,
+    sourceType: "local-path",
+    sampleCount: validation.sampleCount,
+    upstreamQuery:
+      existing?.upstreamQuery || "first llm studio fine-tune smoke dataset",
+    refreshCadenceHours: existing?.refreshCadenceHours || 24,
+    latestUpstreamCandidates: existing?.latestUpstreamCandidates || [],
+    lastUpstreamCheckedAt: existing?.lastUpstreamCheckedAt || now,
+    nextUpstreamCheckAt:
+      existing?.nextUpstreamCheckAt ||
+      new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+    createdAt: existing?.createdAt || now,
+    updatedAt: existing?.updatedAt || now,
+    validation,
+  };
+
+  const needsWrite =
+    !existing ||
+    existing.sourcePath !== desired.sourcePath ||
+    existing.format !== desired.format ||
+    existing.sampleCount !== desired.sampleCount ||
+    JSON.stringify(existing.validation) !== JSON.stringify(desired.validation);
+
+  if (!needsWrite) {
+    return normalized;
+  }
+
+  desired.updatedAt = now;
+  const next = [
+    desired,
+    ...normalized.filter((dataset) => !isBundledSmokeDatasetCandidate(dataset)),
+  ].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  writeDatasets(next);
+  return next;
+}
+
 function readDatasets() {
-  return readJsonFile<AgentFineTuneDataset[]>(DATASETS_FILE, [])
-    .map(normalizeDatasetRecord)
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return reconcileBundledSmokeDatasets(
+    readJsonFile<AgentFineTuneDataset[]>(DATASETS_FILE, []),
+  ).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
 function writeDatasets(datasets: AgentFineTuneDataset[]) {
   writeJsonFile(DATASETS_FILE, datasets);
-}
-
-function normalizeDatasetRecord(dataset: AgentFineTuneDataset): AgentFineTuneDataset {
-  return {
-    ...dataset,
-    refreshCadenceHours:
-      typeof dataset.refreshCadenceHours === "number" && Number.isFinite(dataset.refreshCadenceHours)
-        ? dataset.refreshCadenceHours
-        : 24,
-    latestUpstreamCandidates: Array.isArray(dataset.latestUpstreamCandidates) ? dataset.latestUpstreamCandidates : []
-  };
 }
 
 function readRecipes() {
@@ -328,33 +487,45 @@ function writeRecipes(recipes: AgentFineTuneRecipe[]) {
   writeJsonFile(RECIPES_FILE, recipes);
 }
 
-function normalizeRecipeRecord(recipe: AgentFineTuneRecipe): AgentFineTuneRecipe {
+function normalizeRecipeRecord(
+  recipe: AgentFineTuneRecipe,
+): AgentFineTuneRecipe {
   return {
     ...recipe,
     fineTuneMethod: recipe.fineTuneMethod === "dora" ? "dora" : "lora",
     optimizer:
-      recipe.optimizer === "adamw" || recipe.optimizer === "sgd" || recipe.optimizer === "adafactor"
+      recipe.optimizer === "adamw" ||
+      recipe.optimizer === "sgd" ||
+      recipe.optimizer === "adafactor"
         ? recipe.optimizer
         : "adam",
     numLayers: typeof recipe.numLayers === "number" ? recipe.numLayers : 16,
     gradientAccumulationSteps:
-      typeof recipe.gradientAccumulationSteps === "number" && Number.isFinite(recipe.gradientAccumulationSteps)
+      typeof recipe.gradientAccumulationSteps === "number" &&
+      Number.isFinite(recipe.gradientAccumulationSteps)
         ? recipe.gradientAccumulationSteps
         : 1,
     validationSplitPct:
-      typeof recipe.validationSplitPct === "number" && Number.isFinite(recipe.validationSplitPct)
+      typeof recipe.validationSplitPct === "number" &&
+      Number.isFinite(recipe.validationSplitPct)
         ? recipe.validationSplitPct
         : 10,
     saveEverySteps:
-      typeof recipe.saveEverySteps === "number" && Number.isFinite(recipe.saveEverySteps)
+      typeof recipe.saveEverySteps === "number" &&
+      Number.isFinite(recipe.saveEverySteps)
         ? recipe.saveEverySteps
         : 0,
-    seed: typeof recipe.seed === "number" && Number.isFinite(recipe.seed) ? recipe.seed : 42
+    seed:
+      typeof recipe.seed === "number" && Number.isFinite(recipe.seed)
+        ? recipe.seed
+        : 42,
   };
 }
 
 function readStoredJobs() {
-  return readJsonFile<AgentFineTuneJob[]>(JOBS_FILE, []).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return readJsonFile<AgentFineTuneJob[]>(JOBS_FILE, []).sort((a, b) =>
+    b.updatedAt.localeCompare(a.updatedAt),
+  );
 }
 
 function writeStoredJobs(jobs: AgentFineTuneJob[]) {
@@ -372,7 +543,7 @@ function getJobPaths(jobId: string) {
     readmeFile: path.join(bundlePath, "README.md"),
     stateFile: path.join(bundlePath, "state.json"),
     metricsFile: path.join(bundlePath, "metrics.jsonl"),
-    logFile: path.join(bundlePath, "worker.log")
+    logFile: path.join(bundlePath, "worker.log"),
   };
 }
 
@@ -396,7 +567,7 @@ function writeJobRuntimeState(jobId: string, patch: FineTuneJobRuntimeState) {
   writeJsonFile(stateFile, {
     ...current,
     ...patch,
-    updatedAt: patch.updatedAt || new Date().toISOString()
+    updatedAt: patch.updatedAt || new Date().toISOString(),
   });
 }
 
@@ -405,7 +576,9 @@ function mergeJobState(job: AgentFineTuneJob) {
   const runtime = readJobRuntimeState(job.id) || {};
   const curve = Array.isArray(runtime.curve)
     ? runtime.curve
-        .filter((entry): entry is AgentFineTuneCurvePoint => Boolean(entry && typeof entry.step === "number"))
+        .filter((entry): entry is AgentFineTuneCurvePoint =>
+          Boolean(entry && typeof entry.step === "number"),
+        )
         .slice(-MAX_CURVE_POINTS)
     : [];
 
@@ -421,7 +594,10 @@ function mergeJobState(job: AgentFineTuneJob) {
     stateFile: paths.stateFile,
     status: runtime.status || job.status,
     updatedAt: runtime.updatedAt || job.updatedAt,
-    launcherPid: typeof runtime.launcherPid === "number" ? runtime.launcherPid : job.launcherPid,
+    launcherPid:
+      typeof runtime.launcherPid === "number"
+        ? runtime.launcherPid
+        : job.launcherPid,
     workerHeartbeatAt: runtime.workerHeartbeatAt || job.workerHeartbeatAt,
     startedAt: runtime.startedAt || job.startedAt,
     completedAt: runtime.completedAt || job.completedAt,
@@ -430,12 +606,14 @@ function mergeJobState(job: AgentFineTuneJob) {
     baseModelRef: runtime.baseModelRef || job.baseModelRef,
     progress: runtime.progress as AgentFineTuneJobProgress | undefined,
     curve,
-    recentLogLines: tailLines(paths.logFile)
+    recentLogLines: tailLines(paths.logFile),
   } satisfies AgentFineTuneJob;
 }
 
 function readJobs() {
-  return readStoredJobs().map(mergeJobState).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return readStoredJobs()
+    .map(mergeJobState)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
 function readRuntimeAttachments() {
@@ -443,11 +621,11 @@ function readRuntimeAttachments() {
     .filter((entry) =>
       Boolean(
         entry &&
-          typeof entry.adapterId === "string" &&
-          typeof entry.alias === "string" &&
-          typeof entry.adapterPath === "string" &&
-          typeof entry.baseTargetId === "string"
-      )
+        typeof entry.adapterId === "string" &&
+        typeof entry.alias === "string" &&
+        typeof entry.adapterPath === "string" &&
+        typeof entry.baseTargetId === "string",
+      ),
     )
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
@@ -462,10 +640,13 @@ function buildFineTuneAdapterAlias(adapterName: string, jobId: string) {
   return `local-ft-${segment}-${suffix}`;
 }
 
-function buildAttachedAdapterTarget(entry: FineTuneRuntimeAttachment): AgentTarget {
+function buildAttachedAdapterTarget(
+  entry: FineTuneRuntimeAttachment,
+): AgentTarget {
   const envKeyBase = toEnvKey(entry.alias);
   const recommendedContextLabel =
-    typeof entry.baseRecommendedContextWindow === "number" && Number.isFinite(entry.baseRecommendedContextWindow)
+    typeof entry.baseRecommendedContextWindow === "number" &&
+    Number.isFinite(entry.baseRecommendedContextWindow)
       ? `${Math.max(1, Math.round(entry.baseRecommendedContextWindow / 1024))}K`
       : "Inherited";
 
@@ -480,19 +661,23 @@ function buildAttachedAdapterTarget(entry: FineTuneRuntimeAttachment): AgentTarg
     modelEnv: `LOCAL_${envKeyBase}_MODEL`,
     modelDefault: entry.alias,
     baseUrlEnv: "LOCAL_AGENT_BASE_URL",
-    baseUrlDefault: (process.env.LOCAL_AGENT_BASE_URL || "http://127.0.0.1:4000/v1").replace(/\/$/, ""),
+    baseUrlDefault: (
+      process.env.LOCAL_AGENT_BASE_URL || "http://127.0.0.1:4000/v1"
+    ).replace(/\/$/, ""),
     supportsTools: true,
-    recommendedContext: entry.baseRecommendedContext || `Adapter inherits the base model context. Recommended: ${recommendedContextLabel}.`,
+    recommendedContext:
+      entry.baseRecommendedContext ||
+      `Adapter inherits the base model context. Recommended: ${recommendedContextLabel}.`,
     memoryProfile: `${entry.baseMemoryProfile} Adapter weights still sit on top of the base model, so keep an eye on shared memory pressure.`,
     notes: [
       "This target was mounted from a fine-tune adapter artifact.",
       `Base target: ${entry.baseTargetLabel}`,
       `Adapter path: ${entry.adapterPath}`,
-      `Base model ref: ${entry.baseModelRef}`
+      `Base model ref: ${entry.baseModelRef}`,
     ],
     launchHints: [
       "Run compare to measure the adapter against its base lane immediately.",
-      "Run benchmark to validate whether the adapter improves the intended behavior before keeping it mounted."
+      "Run benchmark to validate whether the adapter improves the intended behavior before keeping it mounted.",
     ],
     parameterScale: entry.baseParameterScale,
     quantizationLabel: entry.baseQuantizationLabel,
@@ -500,7 +685,7 @@ function buildAttachedAdapterTarget(entry: FineTuneRuntimeAttachment): AgentTarg
     sourceLabel: "Fine-tune adapter runtime",
     sourcePath: entry.baseSourcePath,
     sourceRepoId: entry.baseSourceRepoId,
-    recommendedContextWindow: entry.baseRecommendedContextWindow
+    recommendedContextWindow: entry.baseRecommendedContextWindow,
   };
 }
 
@@ -532,8 +717,10 @@ function listArtifactFiles(rootDir: string, maxFiles = 24) {
 }
 
 function countCheckpointFiles(rootDir: string) {
-  return listArtifactFiles(rootDir, 200).filter((file) =>
-    /\.(safetensors|npz|bin|ckpt|pt)$/i.test(file) || /adapter|checkpoint|weights/i.test(file)
+  return listArtifactFiles(rootDir, 200).filter(
+    (file) =>
+      /\.(safetensors|npz|bin|ckpt|pt)$/i.test(file) ||
+      /adapter|checkpoint|weights/i.test(file),
   ).length;
 }
 
@@ -553,20 +740,27 @@ function getLatestArtifactTimestamp(rootDir: string, files: string[]) {
 function buildFineTuneAdapterArtifacts(
   jobs: AgentFineTuneJob[],
   recipes: AgentFineTuneRecipe[],
-  localTargets: AgentFineTuneTargetOption[]
+  localTargets: AgentFineTuneTargetOption[],
 ) {
   const recipeById = new Map(recipes.map((recipe) => [recipe.id, recipe]));
   const targetById = new Map(localTargets.map((target) => [target.id, target]));
-  const attachmentByAdapterId = new Map(readRuntimeAttachments().map((entry) => [entry.adapterId, entry]));
+  const attachmentByAdapterId = new Map(
+    readRuntimeAttachments().map((entry) => [entry.adapterId, entry]),
+  );
 
   return jobs
     .map((job) => {
       const files = listArtifactFiles(job.outputDir);
       const checkpointCount = countCheckpointFiles(job.outputDir);
       const recipe = recipeById.get(job.recipeId);
-      const baseTarget = recipe ? targetById.get(recipe.baseTargetId) : undefined;
+      const baseTarget = recipe
+        ? targetById.get(recipe.baseTargetId)
+        : undefined;
       const attachment = attachmentByAdapterId.get(`adapter:${job.id}`);
-      const latestCheckpointAt = getLatestArtifactTimestamp(job.outputDir, files);
+      const latestCheckpointAt = getLatestArtifactTimestamp(
+        job.outputDir,
+        files,
+      );
       const status: AgentFineTuneAdapterArtifact["status"] =
         checkpointCount > 0
           ? job.status === "running" || job.status === "queued"
@@ -591,13 +785,16 @@ function buildFineTuneAdapterArtifacts(
         attachedTargetId: attachment?.alias,
         attachedTargetLabel: attachment?.label,
         attachedAt: attachment?.attachedAt,
-        updatedAt: latestCheckpointAt || job.updatedAt
+        updatedAt: latestCheckpointAt || job.updatedAt,
       } satisfies AgentFineTuneAdapterArtifact;
     })
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
-function updateStoredJob(jobId: string, updater: (job: AgentFineTuneJob) => AgentFineTuneJob) {
+function updateStoredJob(
+  jobId: string,
+  updater: (job: AgentFineTuneJob) => AgentFineTuneJob,
+) {
   const jobs = readStoredJobs();
   const target = jobs.find((job) => job.id === jobId);
   if (!target) {
@@ -619,40 +816,50 @@ function resolveBaseModelRef(target: AgentFineTuneTargetOption) {
 
 function normalizeInstructionSample(line: string) {
   const parsed = JSON.parse(line) as Record<string, unknown>;
-  const prompt = typeof parsed.prompt === "string"
-    ? parsed.prompt
-    : typeof parsed.instruction === "string"
-      ? parsed.instruction
-      : typeof parsed.input === "string"
-        ? parsed.input
-        : "";
-  const completion = typeof parsed.completion === "string"
-    ? parsed.completion
-    : typeof parsed.response === "string"
-      ? parsed.response
-      : typeof parsed.output === "string"
-        ? parsed.output
-        : typeof parsed.answer === "string"
-          ? parsed.answer
+  const prompt =
+    typeof parsed.prompt === "string"
+      ? parsed.prompt
+      : typeof parsed.instruction === "string"
+        ? parsed.instruction
+        : typeof parsed.input === "string"
+          ? parsed.input
           : "";
+  const completion =
+    typeof parsed.completion === "string"
+      ? parsed.completion
+      : typeof parsed.response === "string"
+        ? parsed.response
+        : typeof parsed.output === "string"
+          ? parsed.output
+          : typeof parsed.answer === "string"
+            ? parsed.answer
+            : "";
   return {
     prompt: prompt.trim(),
-    completion: completion.trim()
+    completion: completion.trim(),
   };
 }
 
 function normalizeChatSample(line: string) {
   const parsed = JSON.parse(line) as { messages?: unknown };
   return {
-    messages: Array.isArray(parsed.messages) ? parsed.messages : []
+    messages: Array.isArray(parsed.messages) ? parsed.messages : [],
   };
 }
 
 function prepareFineTuneDataset(
   dataset: AgentFineTuneDataset,
   datasetDir: string,
-  validationSplitPct = 10
+  options: {
+    validationSplitPct?: number;
+    minEvalBatchSize?: number;
+  } = {},
 ) {
+  const validationSplitPct = options.validationSplitPct ?? 10;
+  const minEvalBatchSize = Math.max(
+    1,
+    Math.floor(options.minEvalBatchSize ?? 1),
+  );
   if (!dataset.sourcePath) {
     throw new Error("Dataset source path is missing.");
   }
@@ -666,59 +873,101 @@ function prepareFineTuneDataset(
   }
 
   const normalizedSamples = rawLines.map((line) =>
-    dataset.format === "chat-jsonl" ? normalizeChatSample(line) : normalizeInstructionSample(line)
+    dataset.format === "chat-jsonl"
+      ? normalizeChatSample(line)
+      : normalizeInstructionSample(line),
   );
   const total = normalizedSamples.length;
   const validRatio = Math.max(0.02, Math.min(validationSplitPct / 100, 0.3));
-  const validCount = total >= 10 ? Math.max(1, Math.round(total * validRatio)) : 0;
+  const validCount =
+    total >= 10 ? Math.max(1, Math.round(total * validRatio)) : 0;
   const testCount = total >= 40 ? Math.max(1, Math.round(total * 0.05)) : 0;
   const trainCount = Math.max(1, total - validCount - testCount);
-  const train = normalizedSamples.slice(0, trainCount);
-  const valid = normalizedSamples.slice(trainCount, trainCount + validCount);
+  let train = normalizedSamples.slice(0, trainCount);
+  let valid = normalizedSamples.slice(trainCount, trainCount + validCount);
   const test = normalizedSamples.slice(trainCount + validCount);
+  let validationDisabledReason: string | undefined;
+
+  if (valid.length > 0 && valid.length < minEvalBatchSize) {
+    train = [...train, ...valid];
+    validationDisabledReason = `Validation split had ${valid.length} sample(s), below batch size ${minEvalBatchSize}; merged it back into training to avoid MLX eval startup failure.`;
+    valid = [];
+  }
 
   const writeJsonl = (filePath: string, values: unknown[]) => {
     writeFileSync(
       filePath,
-      values.map((value) => JSON.stringify(value)).join("\n") + (values.length ? "\n" : ""),
-      "utf8"
+      values.map((value) => JSON.stringify(value)).join("\n") +
+        (values.length ? "\n" : ""),
+      "utf8",
     );
   };
 
-  writeJsonl(path.join(datasetDir, "train.jsonl"), train);
+  const trainPath = path.join(datasetDir, "train.jsonl");
+  const validPath = path.join(datasetDir, "valid.jsonl");
+  const testPath = path.join(datasetDir, "test.jsonl");
+
+  rmSync(validPath, { force: true });
+  rmSync(testPath, { force: true });
+
+  writeJsonl(trainPath, train);
   if (valid.length) {
-    writeJsonl(path.join(datasetDir, "valid.jsonl"), valid);
+    writeJsonl(validPath, valid);
   }
   if (test.length) {
-    writeJsonl(path.join(datasetDir, "test.jsonl"), test);
+    writeJsonl(testPath, test);
   }
 
   return {
     trainSamples: train.length,
     validSamples: valid.length,
-    testSamples: test.length
+    testSamples: test.length,
+    validationDisabledReason,
   } satisfies FineTunePreparedDatasetSummary;
 }
 
-function deriveTrainingPlan(recipe: AgentFineTuneRecipe, datasetStats: FineTunePreparedDatasetSummary) {
-  const effectiveBatchSize = Math.max(1, recipe.batchSize * Math.max(1, recipe.gradientAccumulationSteps));
-  const batchesPerEpoch = Math.max(1, Math.ceil(datasetStats.trainSamples / effectiveBatchSize));
+function deriveTrainingPlan(
+  recipe: AgentFineTuneRecipe,
+  datasetStats: FineTunePreparedDatasetSummary,
+) {
+  const effectiveBatchSize = Math.max(
+    1,
+    recipe.batchSize * Math.max(1, recipe.gradientAccumulationSteps),
+  );
+  const batchesPerEpoch = Math.max(
+    1,
+    Math.ceil(datasetStats.trainSamples / effectiveBatchSize),
+  );
   const totalSteps = Math.max(1, batchesPerEpoch * Math.max(1, recipe.epochs));
   return {
     totalSteps,
     stepsPerReport: Math.max(1, Math.min(10, Math.ceil(totalSteps / 20))),
-    stepsPerEval: datasetStats.validSamples > 0 ? Math.max(1, Math.min(totalSteps, Math.ceil(totalSteps / Math.max(1, recipe.epochs)))) : totalSteps,
+    stepsPerEval:
+      datasetStats.validSamples > 0
+        ? Math.max(
+            1,
+            Math.min(
+              totalSteps,
+              Math.ceil(totalSteps / Math.max(1, recipe.epochs)),
+            ),
+          )
+        : totalSteps,
     saveEvery:
       recipe.saveEverySteps > 0
         ? Math.max(1, Math.min(totalSteps, recipe.saveEverySteps))
-        : Math.max(1, Math.min(totalSteps, Math.ceil(totalSteps / 2)))
+        : Math.max(1, Math.min(totalSteps, Math.ceil(totalSteps / 2))),
   };
 }
 
-function buildFineTuneTargetSourceUrl(target: Pick<AgentFineTuneTargetOption, "sourceRepoId" | "sourceKind">) {
+function buildFineTuneTargetSourceUrl(
+  target: Pick<AgentFineTuneTargetOption, "sourceRepoId" | "sourceKind">,
+) {
   const repoId = target.sourceRepoId?.trim();
   if (!repoId || !repoId.includes("/")) return undefined;
-  if (target.sourceKind === "lm-studio" || target.sourceKind === "huggingface-cache") {
+  if (
+    target.sourceKind === "lm-studio" ||
+    target.sourceKind === "huggingface-cache"
+  ) {
     return `https://huggingface.co/${repoId}`;
   }
   return `https://huggingface.co/${repoId}`;
@@ -729,7 +978,7 @@ function buildJobBundle(
   dataset: AgentFineTuneDataset,
   target: AgentFineTuneTargetOption,
   paths: ReturnType<typeof getJobPaths>,
-  datasetStats: FineTunePreparedDatasetSummary
+  datasetStats: FineTunePreparedDatasetSummary,
 ): FineTuneJobBundle {
   const trainingPlan = deriveTrainingPlan(recipe, datasetStats);
   const modelRef = resolveBaseModelRef(target);
@@ -743,7 +992,7 @@ function buildJobBundle(
       format: dataset.format,
       sourcePath: dataset.sourcePath,
       sampleCount: dataset.sampleCount,
-      validation: dataset.validation
+      validation: dataset.validation,
     },
     baseTarget: target,
     plan: {
@@ -765,6 +1014,7 @@ function buildJobBundle(
       saveEvery: trainingPlan.saveEvery,
       maxSeqLength: recipe.sequenceLength,
       batchSize: recipe.batchSize,
+      validationDisabledReason: datasetStats.validationDisabledReason,
       learningRate: recipe.learningRate,
       fineTuneMethod: recipe.fineTuneMethod,
       optimizer: recipe.optimizer,
@@ -774,14 +1024,18 @@ function buildJobBundle(
       validationSplitPct: recipe.validationSplitPct,
       adapterPath: paths.outputDir,
       seed: recipe.seed,
-      nextStep: "Run the local MLX fine-tune worker and stream logs/curves back into /admin."
-    }
+      nextStep:
+        "Run the local MLX fine-tune worker and stream logs/curves back into /admin.",
+    },
   };
 }
 
 export function listFineTuneTargetOptions(): AgentFineTuneTargetOption[] {
   return listServerAgentTargets()
-    .filter((target) => target.execution === "local" && target.sourceKind !== "adapter-runtime")
+    .filter(
+      (target) =>
+        target.execution === "local" && target.sourceKind !== "adapter-runtime",
+    )
     .map((target) => {
       const option = {
         id: target.id,
@@ -794,11 +1048,11 @@ export function listFineTuneTargetOptions(): AgentFineTuneTargetOption[] {
         sourceKind: target.sourceKind,
         sourceLabel: target.sourceLabel,
         sourcePath: target.sourcePath,
-        sourceRepoId: target.sourceRepoId
+        sourceRepoId: target.sourceRepoId,
       } satisfies AgentFineTuneTargetOption;
       return {
         ...option,
-        sourceUrl: buildFineTuneTargetSourceUrl(option)
+        sourceUrl: buildFineTuneTargetSourceUrl(option),
       } satisfies AgentFineTuneTargetOption;
     });
 }
@@ -816,11 +1070,14 @@ export function readFineTuneSummary(): AgentFineTuneSummary {
     datasets,
     recipes,
     jobs,
-    adapters: buildFineTuneAdapterArtifacts(jobs, recipes, localTargets)
+    adapters: buildFineTuneAdapterArtifacts(jobs, recipes, localTargets),
   };
 }
 
-export function validateFineTuneDatasetFromPath(sourcePath: string, format: AgentFineTuneDatasetFormat) {
+export function validateFineTuneDatasetFromPath(
+  sourcePath: string,
+  format: AgentFineTuneDatasetFormat,
+) {
   return validateFineTuneDatasetContent(readLocalTextFile(sourcePath), format);
 }
 
@@ -843,7 +1100,12 @@ export function saveFineTuneDataset(input: {
   }
   const now = new Date().toISOString();
   const datasets = readDatasets();
-  const existing = input.id ? datasets.find((dataset) => dataset.id === input.id) : null;
+  const existing = input.id
+    ? datasets.find((dataset) => dataset.id === input.id)
+    : datasets.find(
+        (dataset) =>
+          dataset.sourcePath === sourcePath && dataset.format === input.format,
+      ) || datasets.find((dataset) => dataset.label === label);
   const dataset: AgentFineTuneDataset = {
     id: existing?.id || `ft-dataset-${crypto.randomUUID()}`,
     label,
@@ -853,7 +1115,8 @@ export function saveFineTuneDataset(input: {
     sampleCount: validation.sampleCount,
     upstreamQuery: input.upstreamQuery?.trim() || existing?.upstreamQuery,
     refreshCadenceHours:
-      typeof input.refreshCadenceHours === "number" && Number.isFinite(input.refreshCadenceHours)
+      typeof input.refreshCadenceHours === "number" &&
+      Number.isFinite(input.refreshCadenceHours)
         ? Math.max(6, Math.min(24 * 30, Math.round(input.refreshCadenceHours)))
         : existing?.refreshCadenceHours,
     lastUpstreamCheckedAt: existing?.lastUpstreamCheckedAt,
@@ -861,10 +1124,12 @@ export function saveFineTuneDataset(input: {
     latestUpstreamCandidates: existing?.latestUpstreamCandidates,
     createdAt: existing?.createdAt || now,
     updatedAt: now,
-    validation
+    validation,
   };
-  const next = [dataset, ...datasets.filter((entry) => entry.id !== dataset.id)]
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const next = [
+    dataset,
+    ...datasets.filter((entry) => entry.id !== dataset.id),
+  ].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   writeDatasets(next);
   return dataset;
 }
@@ -904,13 +1169,24 @@ export function saveFineTuneRecipe(input: {
   if (!dataset) {
     throw new Error("Selected dataset no longer exists.");
   }
-  const target = listFineTuneTargetOptions().find((entry) => entry.id === input.baseTargetId);
+  const target = listFineTuneTargetOptions().find(
+    (entry) => entry.id === input.baseTargetId,
+  );
   if (!target) {
-    throw new Error("Selected base target is not available for local fine-tune planning.");
+    throw new Error(
+      "Selected base target is not available for local fine-tune planning.",
+    );
   }
   const now = new Date().toISOString();
   const recipes = readRecipes();
-  const existing = input.id ? recipes.find((recipe) => recipe.id === input.id) : null;
+  const existing = input.id
+    ? recipes.find((recipe) => recipe.id === input.id)
+    : recipes.find(
+        (recipe) =>
+          recipe.datasetId === dataset.id &&
+          recipe.baseTargetId === target.id &&
+          recipe.adapterName === adapterName,
+      );
   const recipe: AgentFineTuneRecipe = {
     id: existing?.id || `ft-recipe-${crypto.randomUUID()}`,
     label,
@@ -923,11 +1199,16 @@ export function saveFineTuneRecipe(input: {
     learningRate: Math.max(0.000001, Math.min(input.learningRate, 0.01)),
     fineTuneMethod: input.fineTuneMethod === "dora" ? "dora" : "lora",
     optimizer:
-      input.optimizer === "adamw" || input.optimizer === "sgd" || input.optimizer === "adafactor"
+      input.optimizer === "adamw" ||
+      input.optimizer === "sgd" ||
+      input.optimizer === "adafactor"
         ? input.optimizer
         : "adam",
     numLayers: Math.max(-1, Math.min(input.numLayers, 96)),
-    gradientAccumulationSteps: Math.max(1, Math.min(input.gradientAccumulationSteps, 64)),
+    gradientAccumulationSteps: Math.max(
+      1,
+      Math.min(input.gradientAccumulationSteps, 64),
+    ),
     loraRank: Math.max(2, Math.min(input.loraRank, 128)),
     loraAlpha: Math.max(4, Math.min(input.loraAlpha, 256)),
     gradientCheckpointing: Boolean(input.gradientCheckpointing),
@@ -937,10 +1218,12 @@ export function saveFineTuneRecipe(input: {
     benchmarkSuiteId: input.benchmarkSuiteId?.trim() || undefined,
     notes: input.notes?.trim() || undefined,
     createdAt: existing?.createdAt || now,
-    updatedAt: now
+    updatedAt: now,
   };
-  const next = [recipe, ...recipes.filter((entry) => entry.id !== recipe.id)]
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const next = [
+    recipe,
+    ...recipes.filter((entry) => entry.id !== recipe.id),
+  ].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   writeRecipes(next);
   return recipe;
 }
@@ -954,7 +1237,9 @@ export function stageFineTuneJob(input: { recipeId: string; notes?: string }) {
   if (!dataset) {
     throw new Error("Recipe dataset no longer exists.");
   }
-  const target = listFineTuneTargetOptions().find((entry) => entry.id === recipe.baseTargetId);
+  const target = listFineTuneTargetOptions().find(
+    (entry) => entry.id === recipe.baseTargetId,
+  );
   if (!target) {
     throw new Error("Recipe base target is no longer available.");
   }
@@ -967,12 +1252,26 @@ export function stageFineTuneJob(input: { recipeId: string; notes?: string }) {
   mkdirSync(paths.datasetDir, { recursive: true });
 
   const baseModelRef = resolveBaseModelRef(target);
-  const bundle = buildJobBundle(recipe, dataset, target, paths, {
-    trainSamples: dataset.sampleCount,
-    validSamples: 0,
-    testSamples: 0
+  const datasetStats = prepareFineTuneDataset(dataset, paths.datasetDir, {
+    validationSplitPct: recipe.validationSplitPct,
+    minEvalBatchSize: recipe.batchSize,
   });
-  writeFileSync(paths.bundleFile, `${JSON.stringify(bundle, null, 2)}\n`, "utf8");
+  writeFileSync(
+    paths.configFile,
+    [
+      "lora_parameters:",
+      `  rank: ${recipe.loraRank}`,
+      "  dropout: 0.0",
+      `  scale: ${recipe.loraAlpha}`,
+    ].join("\n") + "\n",
+    "utf8",
+  );
+  const bundle = buildJobBundle(recipe, dataset, target, paths, datasetStats);
+  writeFileSync(
+    paths.bundleFile,
+    `${JSON.stringify(bundle, null, 2)}\n`,
+    "utf8",
+  );
   writeFileSync(
     paths.readmeFile,
     [
@@ -982,20 +1281,25 @@ export function stageFineTuneJob(input: { recipeId: string; notes?: string }) {
       `- Dataset: ${dataset.label}`,
       `- Base target: ${target.label}`,
       `- Adapter name: ${recipe.adapterName}`,
+      `- Train samples: ${datasetStats.trainSamples}`,
+      `- Validation samples: ${datasetStats.validSamples}`,
+      `- Test samples: ${datasetStats.testSamples}`,
       `- Output dir: ${paths.outputDir}`,
       "",
       "This bundle is ready for the local MLX fine-tune worker.",
-      "Use the admin panel to start training and stream logs plus loss curves."
+      "Use the admin panel to start training and stream logs plus loss curves.",
     ].join("\n"),
-    "utf8"
+    "utf8",
   );
 
   writeJobRuntimeState(jobId, {
     status: "staged",
     updatedAt: now,
-    latestMessage: "Job bundle staged. Start the local worker when ready.",
+    latestMessage: datasetStats.validationDisabledReason
+      ? `Job bundle staged. ${datasetStats.validationDisabledReason}`
+      : "Job bundle staged. Start the local worker when ready.",
     baseModelRef,
-    curve: []
+    curve: [],
   });
 
   const job: AgentFineTuneJob = {
@@ -1016,10 +1320,12 @@ export function stageFineTuneJob(input: { recipeId: string; notes?: string }) {
     stateFile: paths.stateFile,
     baseModelRef,
     benchmarkSuiteId: recipe.benchmarkSuiteId,
-    notes: input.notes?.trim() || undefined
+    notes: input.notes?.trim() || undefined,
   };
 
-  const jobs = [job, ...readStoredJobs()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const jobs = [job, ...readStoredJobs()].sort((a, b) =>
+    b.updatedAt.localeCompare(a.updatedAt),
+  );
   writeStoredJobs(jobs);
   appendTimelineEvent({
     kind: "finetune",
@@ -1027,7 +1333,7 @@ export function stageFineTuneJob(input: { recipeId: string; notes?: string }) {
     title: "Fine-tune job staged",
     summary: `${recipe.label} · ${dataset.label} · ${target.label}`,
     relatedId: jobId,
-    targetIds: [target.id]
+    targetIds: [target.id],
   });
   return mergeJobState(job);
 }
@@ -1042,7 +1348,9 @@ export function startFineTuneJob(input: { jobId: string }) {
   }
   const recipe = readRecipes().find((entry) => entry.id === job.recipeId);
   const dataset = readDatasets().find((entry) => entry.id === job.datasetId);
-  const target = listFineTuneTargetOptions().find((entry) => entry.id === recipe?.baseTargetId);
+  const target = listFineTuneTargetOptions().find(
+    (entry) => entry.id === recipe?.baseTargetId,
+  );
   if (!recipe || !dataset || !target) {
     throw new Error("Fine-tune job dependencies are no longer available.");
   }
@@ -1056,34 +1364,43 @@ export function startFineTuneJob(input: { jobId: string }) {
   const paths = getJobPaths(job.id);
   mkdirSync(paths.bundlePath, { recursive: true });
   mkdirSync(paths.outputDir, { recursive: true });
-  const datasetStats = prepareFineTuneDataset(dataset, paths.datasetDir, recipe.validationSplitPct);
+  const datasetStats = prepareFineTuneDataset(dataset, paths.datasetDir, {
+    validationSplitPct: recipe.validationSplitPct,
+    minEvalBatchSize: recipe.batchSize,
+  });
   writeFileSync(
     paths.configFile,
     [
       "lora_parameters:",
       `  rank: ${recipe.loraRank}`,
       "  dropout: 0.0",
-      `  scale: ${recipe.loraAlpha}`
+      `  scale: ${recipe.loraAlpha}`,
     ].join("\n") + "\n",
-    "utf8"
+    "utf8",
   );
   const bundle = buildJobBundle(recipe, dataset, target, paths, datasetStats);
-  writeFileSync(paths.bundleFile, `${JSON.stringify(bundle, null, 2)}\n`, "utf8");
+  writeFileSync(
+    paths.bundleFile,
+    `${JSON.stringify(bundle, null, 2)}\n`,
+    "utf8",
+  );
 
   const now = new Date().toISOString();
   writeJobRuntimeState(job.id, {
     status: "queued",
     startedAt: now,
     updatedAt: now,
-    latestMessage: "Queued local MLX fine-tune worker.",
+    latestMessage: datasetStats.validationDisabledReason
+      ? `Queued local MLX fine-tune worker. ${datasetStats.validationDisabledReason}`
+      : "Queued local MLX fine-tune worker.",
     errorMessage: undefined,
     progress: {
       currentStep: 0,
       totalSteps: bundle.plan.totalSteps,
-      percent: 0
+      percent: 0,
     },
     curve: [],
-    baseModelRef: bundle.plan.modelRef
+    baseModelRef: bundle.plan.modelRef,
   });
 
   updateStoredJob(job.id, (current) => ({
@@ -1096,29 +1413,35 @@ export function startFineTuneJob(input: { jobId: string }) {
     configFile: paths.configFile,
     metricsFile: paths.metricsFile,
     logFile: paths.logFile,
-    stateFile: paths.stateFile
+    stateFile: paths.stateFile,
   }));
 
-  const child = spawn(VENV_PYTHON, [WORKER_SCRIPT, "--job-bundle", paths.bundleFile], {
-    cwd: process.cwd(),
-    env: {
-      ...process.env,
-      PYTHONUNBUFFERED: "1"
+  const child = spawn(
+    VENV_PYTHON,
+    [WORKER_SCRIPT, "--job-bundle", paths.bundleFile],
+    {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        PYTHONUNBUFFERED: "1",
+      },
+      detached: true,
+      stdio: "ignore",
     },
-    detached: true,
-    stdio: "ignore"
-  });
+  );
   child.unref();
 
   writeJobRuntimeState(job.id, {
     launcherPid: child.pid ?? null,
     status: "queued",
-    latestMessage: "Local fine-tune worker started."
+    latestMessage: datasetStats.validationDisabledReason
+      ? `Local fine-tune worker started. ${datasetStats.validationDisabledReason}`
+      : "Local fine-tune worker started.",
   });
   updateStoredJob(job.id, (current) => ({
     ...current,
     updatedAt: new Date().toISOString(),
-    launcherPid: child.pid ?? null
+    launcherPid: child.pid ?? null,
   }));
 
   appendTimelineEvent({
@@ -1127,10 +1450,25 @@ export function startFineTuneJob(input: { jobId: string }) {
     title: "Fine-tune worker started",
     summary: `${recipe.label} · ${target.label} · ${bundle.plan.totalSteps} steps`,
     relatedId: job.id,
-    targetIds: [target.id]
+    targetIds: [target.id],
   });
 
   return readJobs().find((entry) => entry.id === job.id)!;
+}
+
+export function rerunFineTuneJob(input: { jobId: string }) {
+  const sourceJob = readJobs().find((entry) => entry.id === input.jobId);
+  if (!sourceJob) {
+    throw new Error("Fine-tune job not found.");
+  }
+  if (sourceJob.status === "queued" || sourceJob.status === "running") {
+    throw new Error("Fine-tune job is already running.");
+  }
+  const stagedJob = stageFineTuneJob({
+    recipeId: sourceJob.recipeId,
+    notes: `Rerun from ${sourceJob.id} using the latest dataset preparation strategy.`,
+  });
+  return startFineTuneJob({ jobId: stagedJob.id });
 }
 
 export function cancelFineTuneJob(input: { jobId: string }) {
@@ -1158,19 +1496,19 @@ export function cancelFineTuneJob(input: { jobId: string }) {
     updatedAt: now,
     completedAt: now,
     latestMessage: "Fine-tune job cancelled.",
-    errorMessage: undefined
+    errorMessage: undefined,
   });
   updateStoredJob(job.id, (current) => ({
     ...current,
     status: "cancelled",
-    updatedAt: now
+    updatedAt: now,
   }));
   appendTimelineEvent({
     kind: "finetune",
     status: "cancelled",
     title: "Fine-tune job cancelled",
     summary: `${job.adapterName} stopped before completion`,
-    relatedId: job.id
+    relatedId: job.id,
   });
   return readJobs().find((entry) => entry.id === job.id)!;
 }
@@ -1179,7 +1517,7 @@ function openExternalPath(targetPath: string) {
   const child = spawn("open", [targetPath], {
     cwd: process.cwd(),
     detached: true,
-    stdio: "ignore"
+    stdio: "ignore",
   });
   child.unref();
 }
@@ -1205,8 +1543,9 @@ export function openFineTunePath(input: {
     resolvedPath = adapter.outputDir;
   } else {
     const dataset = summary.datasets.find((entry) => entry.id === input.id);
-    if (!dataset?.sourcePath) throw new Error("Dataset source path is not available.");
-    resolvedPath = dataset.sourcePath;
+    if (!dataset?.sourcePath)
+      throw new Error("Dataset source path is not available.");
+    resolvedPath = resolveLocalDatasetPath(dataset.sourcePath);
   }
 
   if (!existsSync(resolvedPath)) {
@@ -1217,7 +1556,7 @@ export function openFineTunePath(input: {
     kind: input.kind,
     id: input.id,
     path: resolvedPath,
-    opened: true
+    opened: true,
   };
 }
 
@@ -1235,14 +1574,22 @@ export function openFineTuneSourcePage(input: {
     : undefined;
 
   if (!target && input.adapterId) {
-    const adapter = summary.adapters.find((entry) => entry.id === input.adapterId);
-    target = adapter?.baseTargetId ? targets.find((entry) => entry.id === adapter.baseTargetId) : undefined;
+    const adapter = summary.adapters.find(
+      (entry) => entry.id === input.adapterId,
+    );
+    target = adapter?.baseTargetId
+      ? targets.find((entry) => entry.id === adapter.baseTargetId)
+      : undefined;
   }
 
   if (!target && input.jobId) {
     const job = summary.jobs.find((entry) => entry.id === input.jobId);
-    const recipe = job ? recipes.find((entry) => entry.id === job.recipeId) : undefined;
-    target = recipe ? targets.find((entry) => entry.id === recipe.baseTargetId) : undefined;
+    const recipe = job
+      ? recipes.find((entry) => entry.id === job.recipeId)
+      : undefined;
+    target = recipe
+      ? targets.find((entry) => entry.id === recipe.baseTargetId)
+      : undefined;
   }
 
   if (!target?.sourceUrl) {
@@ -1253,13 +1600,15 @@ export function openFineTuneSourcePage(input: {
   return {
     targetId: target.id,
     sourceUrl: target.sourceUrl,
-    opened: true
+    opened: true,
   };
 }
 
 export function attachFineTuneAdapterRuntime(input: { adapterId: string }) {
   const summary = readFineTuneSummary();
-  const adapter = summary.adapters.find((entry) => entry.id === input.adapterId);
+  const adapter = summary.adapters.find(
+    (entry) => entry.id === input.adapterId,
+  );
   if (!adapter) {
     throw new Error("Fine-tune adapter not found.");
   }
@@ -1271,7 +1620,9 @@ export function attachFineTuneAdapterRuntime(input: { adapterId: string }) {
   }
 
   const job = summary.jobs.find((entry) => entry.id === adapter.jobId);
-  const recipe = job ? summary.recipes.find((entry) => entry.id === job.recipeId) : null;
+  const recipe = job
+    ? summary.recipes.find((entry) => entry.id === job.recipeId)
+    : null;
   const baseTargetOption = recipe
     ? summary.localTargets.find((entry) => entry.id === recipe.baseTargetId)
     : null;
@@ -1285,8 +1636,11 @@ export function attachFineTuneAdapterRuntime(input: { adapterId: string }) {
   const current = readRuntimeAttachments();
   const existing = current.find((entry) => entry.adapterId === adapter.id);
   const now = new Date().toISOString();
-  const alias = existing?.alias || buildFineTuneAdapterAlias(adapter.adapterName, adapter.jobId);
-  const label = existing?.label || `${baseTarget.label} · ${adapter.adapterName}`;
+  const alias =
+    existing?.alias ||
+    buildFineTuneAdapterAlias(adapter.adapterName, adapter.jobId);
+  const label =
+    existing?.label || `${baseTarget.label} · ${adapter.adapterName}`;
   const attachment: FineTuneRuntimeAttachment = {
     adapterId: adapter.id,
     jobId: adapter.jobId,
@@ -1304,13 +1658,14 @@ export function attachFineTuneAdapterRuntime(input: { adapterId: string }) {
     baseMemoryProfile: baseTarget.memoryProfile,
     adapterPath: adapter.outputDir,
     attachedAt: existing?.attachedAt || now,
-    updatedAt: now
+    updatedAt: now,
   };
 
   writeRuntimeAttachments(
-    [attachment, ...current.filter((entry) => entry.adapterId !== adapter.id)].sort((a, b) =>
-      b.updatedAt.localeCompare(a.updatedAt)
-    )
+    [
+      attachment,
+      ...current.filter((entry) => entry.adapterId !== adapter.id),
+    ].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
   );
 
   const target = buildAttachedAdapterTarget(attachment);
@@ -1322,16 +1677,95 @@ export function attachFineTuneAdapterRuntime(input: { adapterId: string }) {
     title: "Adapter mounted to local runtime",
     summary: `${adapter.adapterName} -> ${target.label}`,
     relatedId: adapter.id,
-    targetIds: [baseTarget.id, target.id]
+    targetIds: [baseTarget.id, target.id],
   });
 
   return {
     attachment,
-    target
+    target,
   };
 }
 
-function updateDatasetEntry(datasetId: string, updater: (dataset: AgentFineTuneDataset) => AgentFineTuneDataset) {
+async function detachLoadedRuntimeAlias(alias: string) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 2500);
+  try {
+    const baseUrl = LOCAL_GATEWAY_BASE_URL.replace(/\/v1$/, "");
+    const healthResponse = await fetch(`${baseUrl}/health`, {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    if (!healthResponse.ok) {
+      return { released: false, releasedAlias: null as string | null };
+    }
+    const health = (await healthResponse.json()) as {
+      loaded_alias?: string | null;
+    };
+    if (health.loaded_alias !== alias) {
+      return { released: false, releasedAlias: health.loaded_alias ?? null };
+    }
+
+    const releaseResponse = await fetch(`${baseUrl}/v1/models/release`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+    });
+    if (!releaseResponse.ok) {
+      return { released: false, releasedAlias: alias };
+    }
+    const payload = (await releaseResponse.json().catch(() => ({}))) as {
+      released_alias?: string | null;
+    };
+    return {
+      released: true,
+      releasedAlias: payload.released_alias ?? null,
+    };
+  } catch {
+    return { released: false, releasedAlias: null as string | null };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function detachFineTuneAdapterRuntime(input: {
+  adapterId: string;
+}) {
+  const current = readRuntimeAttachments();
+  const existing = current.find((entry) => entry.adapterId === input.adapterId);
+  if (!existing) {
+    throw new Error("Adapter runtime is not attached.");
+  }
+
+  const releaseResult = await detachLoadedRuntimeAlias(existing.alias);
+  writeRuntimeAttachments(
+    current.filter((entry) => entry.adapterId !== input.adapterId),
+  );
+  removeDiscoveredLocalTarget(existing.alias);
+
+  appendTimelineEvent({
+    kind: "finetune",
+    status: "saved",
+    title: releaseResult.released
+      ? "Adapter detached and runtime released"
+      : "Adapter detached from local runtime",
+    summary: releaseResult.released
+      ? `${existing.label} was detached and the loaded local runtime was released.`
+      : `${existing.label} was detached from the local target catalog.`,
+    relatedId: input.adapterId,
+    targetIds: [existing.baseTargetId, existing.alias],
+  });
+
+  return {
+    attachment: existing,
+    releasedRuntime: releaseResult.released,
+    releasedAlias: releaseResult.releasedAlias,
+  };
+}
+
+function updateDatasetEntry(
+  datasetId: string,
+  updater: (dataset: AgentFineTuneDataset) => AgentFineTuneDataset,
+) {
   const datasets = readDatasets();
   const dataset = datasets.find((entry) => entry.id === datasetId);
   if (!dataset) {
@@ -1351,7 +1785,8 @@ export function saveFineTuneDatasetWatch(input: {
 }) {
   const now = new Date().toISOString();
   const cadenceHours =
-    typeof input.refreshCadenceHours === "number" && Number.isFinite(input.refreshCadenceHours)
+    typeof input.refreshCadenceHours === "number" &&
+    Number.isFinite(input.refreshCadenceHours)
       ? Math.max(6, Math.min(24 * 30, Math.round(input.refreshCadenceHours)))
       : undefined;
   return updateDatasetEntry(input.datasetId, (dataset) => ({
@@ -1360,9 +1795,15 @@ export function saveFineTuneDatasetWatch(input: {
     refreshCadenceHours: cadenceHours ?? dataset.refreshCadenceHours,
     nextUpstreamCheckAt:
       cadenceHours || dataset.refreshCadenceHours
-        ? new Date(Date.now() + ((cadenceHours ?? dataset.refreshCadenceHours ?? 24) * 60 * 60 * 1000)).toISOString()
+        ? new Date(
+            Date.now() +
+              (cadenceHours ?? dataset.refreshCadenceHours ?? 24) *
+                60 *
+                60 *
+                1000,
+          ).toISOString()
         : dataset.nextUpstreamCheckAt,
-    updatedAt: now
+    updatedAt: now,
   }));
 }
 
@@ -1374,7 +1815,8 @@ export async function checkFineTuneDatasetUpstream(input: {
   if (!dataset) {
     throw new Error("Dataset not found.");
   }
-  const query = input.query?.trim() || dataset.upstreamQuery?.trim() || dataset.label;
+  const query =
+    input.query?.trim() || dataset.upstreamQuery?.trim() || dataset.label;
   if (!query) {
     throw new Error("Upstream dataset query is required.");
   }
@@ -1385,9 +1827,11 @@ export async function checkFineTuneDatasetUpstream(input: {
     ...current,
     upstreamQuery: query,
     lastUpstreamCheckedAt: checkedAt,
-    nextUpstreamCheckAt: new Date(Date.now() + refreshCadenceHours * 60 * 60 * 1000).toISOString(),
+    nextUpstreamCheckAt: new Date(
+      Date.now() + refreshCadenceHours * 60 * 60 * 1000,
+    ).toISOString(),
     latestUpstreamCandidates: matches,
-    updatedAt: checkedAt
+    updatedAt: checkedAt,
   }));
 }
 
@@ -1402,7 +1846,7 @@ export async function refreshDueFineTuneDatasetWatches() {
     try {
       await checkFineTuneDatasetUpstream({
         datasetId: dataset.id,
-        query: dataset.upstreamQuery
+        query: dataset.upstreamQuery,
       });
     } catch {
       // keep the last successful upstream snapshot
