@@ -895,7 +895,15 @@ export type AgentFineTuneDataset = {
   label: string;
   format: AgentFineTuneDatasetFormat;
   sourcePath?: string;
-  sourceType: "local-path";
+  sourceType:
+    | "local-path"
+    | "bundled-preset"
+    | "community-import"
+    | "community-preset";
+  sourceUrl?: string;
+  sourceLabel?: string;
+  license?: string;
+  qualityWarnings?: string[];
   sampleCount: number;
   upstreamQuery?: string;
   refreshCadenceHours?: number;
@@ -1031,6 +1039,25 @@ export type AgentFineTuneReportMetricsSummary = {
   valid: AgentFineTuneLossSummary;
 };
 
+export type AgentFineTuneExperimentEvidence = {
+  timelineEvents: AgentTimelineEvent[];
+  compareEvents: AgentTimelineEvent[];
+  benchmarkEvents: AgentTimelineEvent[];
+  benchmarkRuns: Array<{
+    runId?: string;
+    generatedAt: string;
+    label: string;
+    ok: boolean;
+    mode?: AgentBenchmarkMode;
+    runNote?: string;
+    targetIds: string[];
+    avgFirstTokenLatencyMs?: number | null;
+    avgLatencyMs?: number | null;
+    avgScore?: number | null;
+    passRate?: number | null;
+  }>;
+};
+
 export type AgentFineTuneReportExport = {
   jobId: string;
   format: AgentFineTuneReportFormat;
@@ -1038,6 +1065,7 @@ export type AgentFineTuneReportExport = {
   content: string;
   generatedAt: string;
   metricsSummary: AgentFineTuneReportMetricsSummary;
+  evidence?: AgentFineTuneExperimentEvidence;
 };
 
 export type AgentFineTuneBundleArchive = {

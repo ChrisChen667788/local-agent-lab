@@ -627,7 +627,19 @@ export async function POST(request: Request) {
       title: response.ok ? "Compare run completed" : "Compare run failed",
       summary: `${results.filter((lane) => lane.ok).length}/${results.length} lanes returned output`,
       relatedId: requestId,
-      targetIds
+      targetIds,
+      metadata: {
+        compareIntent,
+        compareOutputShape,
+        providerProfile,
+        thinkingMode,
+        contextWindow: requestedContextWindow,
+        enableTools,
+        enableRetrieval,
+        okLanes: results.filter((lane) => lane.ok).length,
+        laneCount: results.length,
+        warning: response.warning,
+      },
     });
 
     return NextResponse.json(response);

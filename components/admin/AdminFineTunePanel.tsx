@@ -33,6 +33,7 @@ type FineTuneResponse = {
   ok?: boolean;
   error?: string;
   summary?: AgentFineTuneSummary;
+  dataset?: AgentFineTuneDataset;
   validation?: AgentFineTuneDatasetValidation;
   attached?: {
     target?: {
@@ -62,6 +63,16 @@ const DEFAULT_DATASET_FORM = {
   format: "chat-jsonl" as AgentFineTuneDatasetFormat,
   upstreamQuery: "",
   refreshCadenceHours: 24,
+};
+
+const DEFAULT_COMMUNITY_IMPORT_FORM = {
+  label: "",
+  sourceUrl: "",
+  sourceLabel: "",
+  format: "instruction-jsonl" as AgentFineTuneDatasetFormat,
+  sampleLimit: 384,
+  license: "",
+  upstreamQuery: "",
 };
 
 const DEFAULT_RECIPE_FORM = {
@@ -995,6 +1006,21 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
         communityDatasetTitle: "Common open-source starters",
         communityDatasetHint:
           "Use a curated starter dataset now, then keep the upstream query for Hugging Face, ModelScope, or GitHub refresh checks.",
+        communityImportTitle: "Import community dataset URL",
+        communityImportHint:
+          "Paste a direct JSON, JSONL, or CSV file URL from Hugging Face, GitHub raw, or ModelScope. First LLM Studio samples, converts, saves, and validates it as project JSONL.",
+        communityImportGuardDirect: "Direct file URL only",
+        communityImportGuardSchema: "Auto-converts messages, instruction/output, prompt/response, and CSV rows",
+        communityImportGuardLimit: "Samples up to 5k rows / 8 MB",
+        communityImportGuardLicense: "Review license and private data before training",
+        communityImportLabel: "Imported dataset name",
+        communityImportUrl: "Source file URL",
+        communityImportSourceLabel: "Source label",
+        communityImportSampleLimit: "Sample limit",
+        communityImportLicense: "License note",
+        communityImportFormat: "Output schema",
+        communityImportAction: "Import and validate",
+        communityImportSuccess: "Community dataset imported and validated.",
         loadPreset: "Load preset",
         quickStartPreset: "Quick start",
         bestFor: "Best for",
@@ -1076,6 +1102,7 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
         copyPath: "Copy path",
         sendToBenchmark: "Send to benchmark",
         sendToCompare: "Send to compare",
+        runProofLoop: "Run proof loop",
         attachRuntime: "Attach runtime",
         detachRuntime: "Detach runtime",
         runtimeAttached: "Attached runtime",
@@ -1097,6 +1124,14 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
         reportPath: "Report path",
         reportPoints: "curve points",
         reportLatestStep: "latest step",
+        evidenceSummary: "Evidence summary",
+        evidenceTimeline: "timeline",
+        evidenceCompare: "compare",
+        evidenceBenchmark: "benchmark events",
+        evidenceBenchmarkRuns: "benchmark runs",
+        evidenceReady: "Proof evidence is attached to this report.",
+        evidenceMissing:
+          "No compare or benchmark evidence is linked yet. Run the proof loop before sharing this adapter.",
         copyReportPath: "Copy report path",
         openReports: "Open reports dir",
         previewReport: "Preview report",
@@ -1105,6 +1140,8 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
         reportCopySuccess: "Fine-tune report copied.",
         handoffBenchmarkSuccess: "Adapter benchmark handoff completed.",
         handoffCompareSuccess: "Adapter compare handoff completed.",
+        proofLoopSuccess:
+          "Adapter proof loop completed: attach, compare, and benchmark.",
         handoffMissingContext:
           "This adapter is missing its recipe or dataset context.",
         runtimeAttachSuccess: "Adapter runtime mounted.",
@@ -1163,6 +1200,21 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
       communityDatasetTitle: "常用开源社区入门数据集",
       communityDatasetHint:
         "先加载一份可直接校验的 starter 数据集，同时保留 Hugging Face、魔搭或 GitHub 的上游检索词，方便后续定期更新。",
+      communityImportTitle: "导入社区数据集 URL",
+      communityImportHint:
+        "粘贴 Hugging Face、GitHub raw 或魔搭上的 JSON / JSONL / CSV 直链。系统会抽样、转换、保存并按项目 JSONL 自动校验。",
+      communityImportGuardDirect: "只支持数据文件直链",
+      communityImportGuardSchema: "自动转换 messages、instruction/output、prompt/response 和 CSV 行",
+      communityImportGuardLimit: "最多抽样 5k 行 / 8 MB",
+      communityImportGuardLicense: "训练前确认许可证和隐私数据",
+      communityImportLabel: "导入后的数据集名称",
+      communityImportUrl: "来源文件 URL",
+      communityImportSourceLabel: "来源标签",
+      communityImportSampleLimit: "抽样上限",
+      communityImportLicense: "许可证备注",
+      communityImportFormat: "输出格式",
+      communityImportAction: "导入并校验",
+      communityImportSuccess: "社区数据集已导入并校验。",
       loadPreset: "加载预设",
       quickStartPreset: "快速开始",
       bestFor: "适合场景",
@@ -1244,6 +1296,7 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
       copyPath: "复制路径",
       sendToBenchmark: "送到 benchmark",
       sendToCompare: "送到 compare",
+      runProofLoop: "跑完整证据链",
       attachRuntime: "挂载到运行时",
       detachRuntime: "从运行时卸载",
       runtimeAttached: "已挂载运行时",
@@ -1264,6 +1317,14 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
       reportPath: "报告路径",
       reportPoints: "曲线点数",
       reportLatestStep: "最新轮次",
+      evidenceSummary: "证据摘要",
+      evidenceTimeline: "时间线",
+      evidenceCompare: "Compare",
+      evidenceBenchmark: "Benchmark 事件",
+      evidenceBenchmarkRuns: "Benchmark 运行",
+      evidenceReady: "这份报告已经带上证据链。",
+      evidenceMissing:
+        "还没有关联 Compare 或 Benchmark 证据。分享 adapter 前建议先跑完整证据链。",
       copyReportPath: "复制报告路径",
       openReports: "打开报告目录",
       previewReport: "预览报告",
@@ -1272,6 +1333,8 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
       reportCopySuccess: "Fine-tune 报告已复制。",
       handoffBenchmarkSuccess: "Adapter benchmark handoff 已完成。",
       handoffCompareSuccess: "Adapter compare handoff 已完成。",
+      proofLoopSuccess:
+        "Adapter 证据链已完成：挂载、compare 和 benchmark 均已触发。",
       handoffMissingContext:
         "这个 adapter 缺少配方或数据集上下文，暂时无法 handoff。",
       runtimeAttachSuccess: "Adapter 已挂载到本地运行时。",
@@ -1388,6 +1451,9 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
     "success",
   );
   const [datasetForm, setDatasetForm] = useState(DEFAULT_DATASET_FORM);
+  const [communityImportForm, setCommunityImportForm] = useState(
+    DEFAULT_COMMUNITY_IMPORT_FORM,
+  );
   const [datasetSourceMode, setDatasetSourceMode] =
     useState<DatasetSourceMode>("local");
   const [recipeForm, setRecipeForm] = useState(DEFAULT_RECIPE_FORM);
@@ -1888,6 +1954,76 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
     ],
   );
 
+  const runAdapterProofLoop = useCallback(
+    async (adapterId: string) => {
+      if (!summary) return;
+      const actionKey = `adapter-proof:${adapterId}`;
+      setActionPending((current) => ({ ...current, [actionKey]: true }));
+      setMessage("");
+      try {
+        const attached = await ensureAdapterRuntimeAttached(adapterId);
+        const comparePlan = buildFineTuneCompareHandoffPlan({
+          adapterId,
+          summary: attached.summary,
+          targetCatalog: attached.targetCatalog,
+        });
+        const benchmarkPlan = buildFineTuneBenchmarkHandoffPlan({
+          adapterId,
+          summary: attached.summary,
+          targetCatalog: attached.targetCatalog,
+        });
+        if (!comparePlan || !benchmarkPlan) {
+          throw new Error(text.handoffMissingContext);
+        }
+
+        const compareResponse = await fetch("/api/agent/compare", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...comparePlan.request,
+            requestId: crypto.randomUUID(),
+          }),
+        });
+        const comparePayload = (await compareResponse.json()) as
+          | (AgentCompareResponse & { error?: string })
+          | { error?: string };
+        if (!compareResponse.ok) {
+          throw new Error(comparePayload.error || "Compare handoff failed.");
+        }
+
+        const benchmarkResponse = await fetch("/api/admin/benchmark", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(benchmarkPlan.request),
+        });
+        const benchmarkPayload = (await benchmarkResponse.json()) as
+          | (AgentBenchmarkResponse & { error?: string })
+          | { error?: string };
+        if (!benchmarkResponse.ok) {
+          throw new Error(
+            benchmarkPayload.error || "Benchmark handoff failed.",
+          );
+        }
+
+        setMessage(text.proofLoopSuccess);
+        setMessageTone("success");
+      } catch (error) {
+        setMessage(
+          error instanceof Error ? error.message : "Adapter proof loop failed.",
+        );
+        setMessageTone("error");
+      } finally {
+        setActionPending((current) => ({ ...current, [actionKey]: false }));
+      }
+    },
+    [
+      ensureAdapterRuntimeAttached,
+      summary,
+      text.handoffMissingContext,
+      text.proofLoopSuccess,
+    ],
+  );
+
   const canSaveDataset = Boolean(
     datasetForm.label.trim() &&
     datasetForm.sourcePath.trim() &&
@@ -2048,6 +2184,50 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
     },
     [getPresetLabel, getPresetRecipeNotes, text.presetLoaded],
   );
+
+  async function importCommunityDatasetSource() {
+    const actionKey = "dataset-community-import";
+    setActionPending((current) => ({ ...current, [actionKey]: true }));
+    try {
+      const payload = await postAction(
+        {
+          action: "import-community-dataset",
+          label: communityImportForm.label,
+          sourceUrl: communityImportForm.sourceUrl,
+          sourceLabel: communityImportForm.sourceLabel,
+          sampleLimit: communityImportForm.sampleLimit,
+          license: communityImportForm.license,
+          format: communityImportForm.format,
+          upstreamQuery:
+            communityImportForm.upstreamQuery ||
+            communityImportForm.sourceLabel ||
+            communityImportForm.label,
+          refreshCadenceHours: datasetForm.refreshCadenceHours,
+        },
+        text.communityImportSuccess,
+      );
+      if (payload?.dataset) {
+        setDatasetSourceMode("community");
+        setDatasetValidation(payload.dataset.validation);
+        setDatasetForm({
+          label: payload.dataset.label,
+          sourcePath: payload.dataset.sourcePath || "",
+          format: payload.dataset.format,
+          upstreamQuery:
+            payload.dataset.upstreamQuery ||
+            communityImportForm.upstreamQuery ||
+            payload.dataset.label,
+          refreshCadenceHours: payload.dataset.refreshCadenceHours || 24,
+        });
+        setRecipeForm((current) => ({
+          ...current,
+          datasetId: payload.dataset?.id || current.datasetId,
+        }));
+      }
+    } finally {
+      setActionPending((current) => ({ ...current, [actionKey]: false }));
+    }
+  }
 
   async function quickStartCommunityDatasetPreset(
     preset: CommunityDatasetPreset,
@@ -2286,6 +2466,125 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
                     <p className="mt-1 max-w-xl text-xs leading-5 text-cyan-100/70">
                       {text.communityDatasetHint}
                     </p>
+                  </div>
+                </div>
+                <div className="mt-3 rounded-2xl border border-white/10 bg-slate-950/70 p-3">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-white">
+                        {text.communityImportTitle}
+                      </p>
+                      <p className="mt-1 max-w-xl text-xs leading-5 text-slate-400">
+                        {text.communityImportHint}
+                      </p>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {[
+                          text.communityImportGuardDirect,
+                          text.communityImportGuardSchema,
+                          text.communityImportGuardLimit,
+                          text.communityImportGuardLicense,
+                        ].map((item) => (
+                          <span
+                            key={item}
+                            className="rounded-full border border-cyan-300/15 bg-cyan-300/10 px-2.5 py-1 text-[10px] font-semibold text-cyan-50/80"
+                          >
+                            {item}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={
+                        !communityImportForm.label.trim() ||
+                        !communityImportForm.sourceUrl.trim() ||
+                        Boolean(actionPending["dataset-community-import"])
+                      }
+                      onClick={() => void importCommunityDatasetSource()}
+                      className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1.5 text-[11px] font-semibold text-cyan-100 transition enabled:hover:bg-cyan-400/15 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {actionPending["dataset-community-import"]
+                        ? text.loading
+                        : text.communityImportAction}
+                    </button>
+                  </div>
+                  <div className="mt-3 grid gap-2 lg:grid-cols-2">
+                    <input
+                      value={communityImportForm.label}
+                      onChange={(event) =>
+                        setCommunityImportForm((current) => ({
+                          ...current,
+                          label: event.target.value,
+                        }))
+                      }
+                      placeholder={text.communityImportLabel}
+                      className="rounded-2xl border border-white/10 bg-black/25 px-3 py-2 text-xs text-white outline-none focus:border-cyan-400/40"
+                    />
+                    <input
+                      value={communityImportForm.sourceLabel}
+                      onChange={(event) =>
+                        setCommunityImportForm((current) => ({
+                          ...current,
+                          sourceLabel: event.target.value,
+                        }))
+                      }
+                      placeholder={text.communityImportSourceLabel}
+                      className="rounded-2xl border border-white/10 bg-black/25 px-3 py-2 text-xs text-white outline-none focus:border-cyan-400/40"
+                    />
+                    <input
+                      value={communityImportForm.sourceUrl}
+                      onChange={(event) =>
+                        setCommunityImportForm((current) => ({
+                          ...current,
+                          sourceUrl: event.target.value,
+                        }))
+                      }
+                      placeholder={text.communityImportUrl}
+                      className="rounded-2xl border border-white/10 bg-black/25 px-3 py-2 text-xs text-white outline-none focus:border-cyan-400/40 lg:col-span-2"
+                    />
+                    <select
+                      value={communityImportForm.format}
+                      onChange={(event) =>
+                        setCommunityImportForm((current) => ({
+                          ...current,
+                          format: event.target
+                            .value as AgentFineTuneDatasetFormat,
+                        }))
+                      }
+                      className="rounded-2xl border border-white/10 bg-black/25 px-3 py-2 text-xs text-white outline-none focus:border-cyan-400/40"
+                    >
+                      <option value="instruction-jsonl">
+                        {text.communityImportFormat}: instruction-jsonl
+                      </option>
+                      <option value="chat-jsonl">
+                        {text.communityImportFormat}: chat-jsonl
+                      </option>
+                    </select>
+                    <input
+                      type="number"
+                      min={32}
+                      max={5000}
+                      value={communityImportForm.sampleLimit}
+                      onChange={(event) =>
+                        setCommunityImportForm((current) => ({
+                          ...current,
+                          sampleLimit: Number(event.target.value) || 384,
+                        }))
+                      }
+                      placeholder={text.communityImportSampleLimit}
+                      className="rounded-2xl border border-white/10 bg-black/25 px-3 py-2 text-xs text-white outline-none focus:border-cyan-400/40"
+                    />
+                    <input
+                      value={communityImportForm.license}
+                      onChange={(event) =>
+                        setCommunityImportForm((current) => ({
+                          ...current,
+                          license: event.target.value,
+                        }))
+                      }
+                      placeholder={text.communityImportLicense}
+                      className="rounded-2xl border border-white/10 bg-black/25 px-3 py-2 text-xs text-white outline-none focus:border-cyan-400/40 lg:col-span-2"
+                    />
                   </div>
                 </div>
                 <div className="mt-3 grid gap-3">
@@ -4068,6 +4367,63 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
                                         "--"}
                                     </span>
                                   </div>
+                                  {latestReport.evidence ? (
+                                    <div className="mt-3 rounded-2xl border border-emerald-200/15 bg-black/15 p-3">
+                                      <div className="flex flex-wrap items-center justify-between gap-2">
+                                        <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-50/70">
+                                          {text.evidenceSummary}
+                                        </p>
+                                        <span className="rounded-full border border-emerald-200/15 bg-emerald-200/10 px-2 py-0.5 text-[10px] text-emerald-50/70">
+                                          {latestReport.evidence.compareEvents
+                                            .length ||
+                                          latestReport.evidence.benchmarkRuns
+                                            .length
+                                            ? text.evidenceReady
+                                            : text.evidenceMissing}
+                                        </span>
+                                      </div>
+                                      <div className="mt-2 grid gap-2 sm:grid-cols-4">
+                                        {[
+                                          {
+                                            label: text.evidenceTimeline,
+                                            value:
+                                              latestReport.evidence
+                                                .timelineEvents.length,
+                                          },
+                                          {
+                                            label: text.evidenceCompare,
+                                            value:
+                                              latestReport.evidence
+                                                .compareEvents.length,
+                                          },
+                                          {
+                                            label: text.evidenceBenchmark,
+                                            value:
+                                              latestReport.evidence
+                                                .benchmarkEvents.length,
+                                          },
+                                          {
+                                            label: text.evidenceBenchmarkRuns,
+                                            value:
+                                              latestReport.evidence
+                                                .benchmarkRuns.length,
+                                          },
+                                        ].map((item) => (
+                                          <div
+                                            key={item.label}
+                                            className="rounded-xl border border-emerald-200/15 bg-emerald-200/[0.06] px-2 py-2"
+                                          >
+                                            <p className="text-[9px] uppercase tracking-[0.16em] text-emerald-50/50">
+                                              {item.label}
+                                            </p>
+                                            <p className="mt-1 text-sm font-semibold text-emerald-50">
+                                              {item.value}
+                                            </p>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  ) : null}
                                 </div>
                               ) : null}
 
@@ -4228,6 +4584,19 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
                       {actionPending[`adapter-compare:${adapter.id}`]
                         ? text.loading
                         : text.sendToCompare}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={
+                        adapter.status !== "ready" ||
+                        Boolean(actionPending[`adapter-proof:${adapter.id}`])
+                      }
+                      onClick={() => void runAdapterProofLoop(adapter.id)}
+                      className="rounded-full border border-sky-400/30 bg-sky-400/10 px-3 py-1.5 text-[11px] font-semibold text-sky-100 transition enabled:hover:bg-sky-400/15 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {actionPending[`adapter-proof:${adapter.id}`]
+                        ? text.loading
+                        : text.runProofLoop}
                     </button>
                     <button
                       type="button"

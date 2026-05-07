@@ -7,6 +7,7 @@ import {
   detachFineTuneAdapterRuntime,
   exportFineTuneJobBundleArchive,
   exportFineTuneJobReport,
+  importFineTuneCommunityDataset,
   openFineTunePath,
   openFineTuneSourcePage,
   refreshDueFineTuneDatasetWatches,
@@ -141,6 +142,10 @@ export async function POST(request: Request) {
       id?: string;
       label?: string;
       sourcePath?: string;
+      sourceUrl?: string;
+      sourceLabel?: string;
+      sampleLimit?: number;
+      license?: string;
       format?: AgentFineTuneDatasetFormat;
       upstreamQuery?: string;
       refreshCadenceHours?: number;
@@ -209,6 +214,33 @@ export async function POST(request: Request) {
       return NextResponse.json({
         ok: true,
         dataset,
+        summary: readFineTuneSummary(),
+      });
+    }
+
+    if (body.action === "import-community-dataset") {
+      const dataset = await importFineTuneCommunityDataset({
+        label: typeof body.label === "string" ? body.label : "",
+        sourceUrl: typeof body.sourceUrl === "string" ? body.sourceUrl : "",
+        sourceLabel:
+          typeof body.sourceLabel === "string" ? body.sourceLabel : undefined,
+        license: typeof body.license === "string" ? body.license : undefined,
+        sampleLimit:
+          typeof body.sampleLimit === "number" ? body.sampleLimit : undefined,
+        format: normalizeFormat(body.format),
+        upstreamQuery:
+          typeof body.upstreamQuery === "string"
+            ? body.upstreamQuery
+            : undefined,
+        refreshCadenceHours:
+          typeof body.refreshCadenceHours === "number"
+            ? body.refreshCadenceHours
+            : undefined,
+      });
+      return NextResponse.json({
+        ok: true,
+        dataset,
+        validation: dataset.validation,
         summary: readFineTuneSummary(),
       });
     }

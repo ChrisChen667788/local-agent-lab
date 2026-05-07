@@ -1928,7 +1928,19 @@ export async function POST(request: Request) {
       title: "Benchmark run started",
       summary: `${plan.suiteLabel || plan.promptSetLabel || plan.datasetLabel || plan.prompt} · ${targetIds.length} target${targetIds.length === 1 ? "" : "s"}`,
       relatedId: runId,
-      targetIds
+      targetIds,
+      metadata: {
+        benchmarkMode: plan.benchmarkMode,
+        suiteId: plan.suiteId,
+        suiteLabel: plan.suiteLabel,
+        promptSetId: plan.promptSetId,
+        datasetId: plan.datasetId,
+        runNote,
+        totalGroups,
+        totalSamples,
+        profileBatchScope:
+          profileModes.length > 1 ? profileBatchScope : "full-suite",
+      },
     });
     markBenchmarkProgressRunning(runId);
     let workerPhase = "initializing-benchmark";
@@ -2335,7 +2347,16 @@ export async function POST(request: Request) {
       title: payload.ok ? "Benchmark run completed" : "Benchmark run failed",
       summary: `${payload.results.length} result groups · ${payload.benchmarkMode}`,
       relatedId: runId,
-      targetIds
+      targetIds,
+      metadata: {
+        benchmarkMode: payload.benchmarkMode,
+        suiteId: payload.suiteId,
+        suiteLabel: payload.suiteLabel,
+        runNote: payload.runNote,
+        resultGroups: payload.results.length,
+        okGroups: payload.results.filter((result) => result.okRuns > 0).length,
+        generatedAt: payload.generatedAt,
+      },
     });
     completeBenchmarkProgress(runId);
     if (heartbeatTimer) {

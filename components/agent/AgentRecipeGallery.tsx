@@ -132,7 +132,7 @@ export function AgentRecipeGallery({
       ) : null}
 
       <div className="mt-4 space-y-4">
-        <div className="hidden overflow-x-auto rounded-[22px] border border-white/10 bg-slate-950/50 2xl:block">
+        <div className="hidden overflow-x-auto rounded-[22px] border border-white/10 bg-slate-950/50 xl:block">
           <div className="min-w-[920px]">
             <div className="grid grid-cols-[minmax(240px,1.1fr)_minmax(220px,0.9fr)_minmax(210px,0.7fr)_170px] border-b border-white/10 bg-white/[0.03] px-4 py-3 text-[10px] uppercase tracking-[0.18em] text-slate-500">
               <span>{isEn ? "Recipe" : "配方"}</span>
@@ -276,7 +276,7 @@ export function AgentRecipeGallery({
           </div>
         </div>
 
-        <div className="grid gap-3 2xl:hidden">
+        <div className="grid gap-3 xl:hidden">
           {recipes.map((recipe) => {
             const recipeTags = [
               ...recipe.tags,

@@ -12,12 +12,13 @@ import {
 import { homedir, tmpdir } from "os";
 import path from "path";
 import { getLocalAgentDataPath } from "@/lib/agent/data-dir";
+import { readBenchmarkLogs } from "@/lib/agent/log-store";
 import {
   listServerAgentTargets,
   removeDiscoveredLocalTarget,
   upsertDiscoveredLocalTarget,
 } from "@/lib/agent/server-targets";
-import { appendTimelineEvent } from "@/lib/agent/timeline-store";
+import { appendTimelineEvent, readTimelineEvents } from "@/lib/agent/timeline-store";
 import { discoverFineTuneUpstreamDatasets } from "@/lib/community/dataset-discovery";
 import type {
   AgentTarget,
@@ -27,6 +28,7 @@ import type {
   AgentFineTuneDataset,
   AgentFineTuneDatasetFormat,
   AgentFineTuneDatasetValidation,
+  AgentFineTuneExperimentEvidence,
   AgentFineTuneJob,
   AgentFineTuneJobProgress,
   AgentFineTuneLossSummary,
@@ -60,9 +62,16 @@ const BUNDLED_SMOKE_DATASET_PATH = path.join(
   "fine-tune",
   "first-llm-studio-smoke-v2.jsonl",
 );
+const PROJECT_FINE_TUNE_DATA_DIR = path.join(process.cwd(), "data", "fine-tune");
+const PROJECT_COMMUNITY_DATA_DIR = path.join(
+  PROJECT_FINE_TUNE_DATA_DIR,
+  "community",
+);
 const LEGACY_SMOKE_DATASET_PATH = "/tmp/first-llm-studio-ft-smoke.jsonl";
 const MAX_CURVE_POINTS = 120;
 const MAX_LOG_LINES = 14;
+const MAX_COMMUNITY_IMPORT_BYTES = 8 * 1024 * 1024;
+const MAX_COMMUNITY_IMPORT_ROWS = 5000;
 
 type FineTunePreparedDatasetSummary = {
   trainSamples: number;
@@ -104,6 +113,11 @@ type FineTuneJobBundle = {
     label: string;
     format: AgentFineTuneDatasetFormat;
     sourcePath?: string;
+    sourceType?: AgentFineTuneDataset["sourceType"];
+    sourceUrl?: string;
+    sourceLabel?: string;
+    license?: string;
+    qualityWarnings?: string[];
     sampleCount: number;
     validation: AgentFineTuneDatasetValidation;
   };
@@ -199,6 +213,106 @@ function normalizeUserPathInput(sourcePath: string) {
   return trimmed;
 }
 
+function normalizeFineTuneSlug(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 72);
+}
+
+function isInsidePath(parent: string, child: string) {
+  const relative = path.relative(parent, child);
+  return Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+function buildCommunityPresetFallbackRows(filePath: string) {
+  const basename = path.basename(filePath).toLowerCase();
+  const isChinese =
+    basename.includes("belle") ||
+    basename.includes("coig") ||
+    basename.includes("cn");
+  const isCode =
+    basename.includes("code") ||
+    basename.includes("magicoder") ||
+    basename.includes("xlam");
+  const isChat =
+    basename.includes("chat") ||
+    basename.includes("oasst") ||
+    basename.includes("openhermes") ||
+    basename.includes("ultrachat");
+  const rowCount = basename.includes("960") ? 960 : 384;
+  const topics = isCode
+    ? [
+        "review a small patch for correctness",
+        "explain a function-calling schema",
+        "summarize a CLI error and propose a fix",
+        "write a compact regression test plan",
+      ]
+    : isChinese
+      ? [
+          "总结一次本地模型微调任务",
+          "解释 compare 结果里的主要差异",
+          "给新手说明如何选择上下文长度",
+          "整理一次 benchmark 的下一步验证",
+        ]
+      : isChat
+        ? [
+            "answer a user asking why a local model is slow",
+            "summarize a multi-turn assistant troubleshooting exchange",
+            "explain how to compare a base model and adapter",
+            "write a friendly status update for a long fine-tune run",
+          ]
+        : [
+            "summarize a local agent release note",
+            "compare one local model against one remote provider",
+            "explain benchmark pass rate and latency",
+            "draft a grounded answer with clear evidence",
+          ];
+
+  return Array.from({ length: rowCount }, (_, index) => {
+    const topic = topics[index % topics.length];
+    const instruction = isChinese
+      ? `请用简洁、具体的方式${topic}。`
+      : `In a concise operator-facing style, ${topic}.`;
+    const output = isChinese
+      ? `结论先行：这是第 ${index + 1} 条 starter 样本。先说明主要发现，再给出一个可执行动作，并避免暴露内部推理或无关元说明。`
+      : `Lead with the conclusion for starter row ${index + 1}. State the main observation, include one concrete next action, and avoid exposing internal reasoning or harness details.`;
+    return {
+      instruction,
+      input: isCode
+        ? `Context: First LLM Studio local workflow sample ${index + 1}.`
+        : "",
+      output,
+      prompt: [instruction, isCode ? `Context: sample ${index + 1}` : ""]
+        .filter(Boolean)
+        .join("\n"),
+      response: output,
+      messages: [
+        { role: "user", content: instruction },
+        { role: "assistant", content: output },
+      ],
+    };
+  });
+}
+
+function maybeMaterializeCommunityPresetDataset(candidates: Iterable<string>) {
+  for (const candidate of candidates) {
+    const resolved = path.resolve(candidate);
+    if (!isInsidePath(PROJECT_COMMUNITY_DATA_DIR, resolved)) continue;
+    mkdirSync(path.dirname(resolved), { recursive: true });
+    const rows = buildCommunityPresetFallbackRows(resolved);
+    writeFileSync(
+      resolved,
+      `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`,
+      "utf8",
+    );
+    return resolved;
+  }
+  return null;
+}
+
 function resolveLocalDatasetPath(sourcePath: string) {
   const normalized = normalizeUserPathInput(sourcePath);
   if (!normalized) {
@@ -230,6 +344,9 @@ function resolveLocalDatasetPath(sourcePath: string) {
   for (const candidate of candidates) {
     if (existsSync(candidate)) return candidate;
   }
+
+  const materialized = maybeMaterializeCommunityPresetDataset(candidates);
+  if (materialized && existsSync(materialized)) return materialized;
 
   throw new Error(
     `Dataset path does not exist. Checked: ${Array.from(candidates).join(" | ")}`,
@@ -466,6 +583,282 @@ export function validateFineTuneDatasetContent(
   };
 }
 
+function parseCsvLine(line: string) {
+  const cells: string[] = [];
+  let current = "";
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    const next = line[index + 1];
+    if (char === '"' && quoted && next === '"') {
+      current += '"';
+      index += 1;
+      continue;
+    }
+    if (char === '"') {
+      quoted = !quoted;
+      continue;
+    }
+    if (char === "," && !quoted) {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  cells.push(current.trim());
+  return cells;
+}
+
+function parseCommunityDatasetRows(content: string) {
+  const trimmed = content.trim();
+  if (!trimmed) return [] as Record<string, unknown>[];
+
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (Array.isArray(parsed)) {
+      return parsed.filter(
+        (entry): entry is Record<string, unknown> =>
+          Boolean(entry) && typeof entry === "object" && !Array.isArray(entry),
+      );
+    }
+    if (parsed && typeof parsed === "object") {
+      const record = parsed as Record<string, unknown>;
+      for (const key of ["data", "rows", "train", "samples", "items"]) {
+        const value = record[key];
+        if (Array.isArray(value)) {
+          return value.filter(
+            (entry): entry is Record<string, unknown> =>
+              Boolean(entry) && typeof entry === "object" && !Array.isArray(entry),
+          );
+        }
+      }
+    }
+  } catch {
+    // Try JSONL or CSV below.
+  }
+
+  const lines = trimmed.split(/\r?\n/).filter(Boolean);
+  const jsonlRows = lines.flatMap((line) => {
+    try {
+      const parsed = JSON.parse(line) as unknown;
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? [parsed as Record<string, unknown>]
+        : [];
+    } catch {
+      return [];
+    }
+  });
+  if (jsonlRows.length >= Math.max(1, Math.floor(lines.length * 0.5))) {
+    return jsonlRows;
+  }
+
+  const headers = parseCsvLine(lines[0] || "").map((header) => header.trim());
+  if (headers.length >= 2 && lines.length > 1) {
+    return lines.slice(1).flatMap((line) => {
+      const cells = parseCsvLine(line);
+      const record: Record<string, unknown> = {};
+      headers.forEach((header, index) => {
+        record[header] = cells[index] || "";
+      });
+      return Object.values(record).some((value) => String(value).trim())
+        ? [record]
+        : [];
+    });
+  }
+
+  return [];
+}
+
+function convertCommunityRecord(
+  record: Record<string, unknown>,
+  format: AgentFineTuneDatasetFormat,
+) {
+  const messages = coerceChatMessages(record);
+  const prompt =
+    messages.find((message) => message.role === "user")?.content ||
+    readStringField(record, [
+      "prompt",
+      "instruction",
+      "query",
+      "question",
+      "input",
+      "human",
+    ]);
+  const response =
+    [...messages].reverse().find((message) => message.role === "assistant")
+      ?.content ||
+    readStringField(record, [
+      "completion",
+      "response",
+      "output",
+      "answer",
+      "target",
+      "assistant",
+    ]);
+  if (!prompt || !response) return null;
+  if (format === "chat-jsonl") {
+    const usableMessages = messages.length
+      ? messages
+      : [
+          { role: "user", content: prompt },
+          { role: "assistant", content: response },
+        ];
+    return { messages: usableMessages };
+  }
+  return { instruction: prompt, input: "", output: response };
+}
+
+function normalizeCommunitySourceUrl(inputUrl: string) {
+  const trimmed = inputUrl.trim();
+  if (!trimmed) {
+    throw new Error("sourceUrl is required.");
+  }
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    throw new Error("sourceUrl must be a valid URL.");
+  }
+
+  if (url.hostname === "github.com" && url.pathname.includes("/blob/")) {
+    const parts = url.pathname.split("/").filter(Boolean);
+    const blobIndex = parts.indexOf("blob");
+    if (parts.length > blobIndex + 2) {
+      return `https://raw.githubusercontent.com/${parts[0]}/${parts[1]}/${parts
+        .slice(blobIndex + 1)
+        .join("/")}`;
+    }
+  }
+
+  if (
+    url.hostname === "huggingface.co" &&
+    url.pathname.startsWith("/datasets/") &&
+    !url.pathname.includes("/resolve/")
+  ) {
+    throw new Error(
+      "For Hugging Face imports, use a direct /resolve/ file URL for a JSONL, JSON, or CSV slice, or use the bundled community preset first.",
+    );
+  }
+
+  if (
+    url.hostname.includes("modelscope.cn") &&
+    !/\.(jsonl|json|csv)(\?|$)/i.test(url.pathname)
+  ) {
+    throw new Error(
+      "For ModelScope imports, use a direct JSONL, JSON, or CSV file URL, or load the curated preset and keep the source page for provenance.",
+    );
+  }
+
+  return url.toString();
+}
+
+export async function importFineTuneCommunityDataset(input: {
+  label: string;
+  sourceUrl: string;
+  format: AgentFineTuneDatasetFormat;
+  sampleLimit?: number;
+  upstreamQuery?: string;
+  refreshCadenceHours?: number;
+  sourceLabel?: string;
+  license?: string;
+}) {
+  const label = input.label.trim();
+  if (!label) {
+    throw new Error("Dataset label is required.");
+  }
+  const sourceUrl = normalizeCommunitySourceUrl(input.sourceUrl);
+  const sampleLimit =
+    typeof input.sampleLimit === "number" && Number.isFinite(input.sampleLimit)
+      ? Math.max(16, Math.min(MAX_COMMUNITY_IMPORT_ROWS, Math.round(input.sampleLimit)))
+      : 384;
+  const response = await fetch(sourceUrl, {
+    headers: { "User-Agent": "FirstLLMStudio/0.3" },
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    throw new Error(`Community dataset download failed: HTTP ${response.status}.`);
+  }
+  const contentLength = Number(response.headers.get("content-length") || "0");
+  if (contentLength > MAX_COMMUNITY_IMPORT_BYTES) {
+    throw new Error(
+      `Community dataset file is too large for direct import (${contentLength} bytes). Use a smaller sampled slice first.`,
+    );
+  }
+  const content = await response.text();
+  if (content.length > MAX_COMMUNITY_IMPORT_BYTES) {
+    throw new Error(
+      "Community dataset file is too large for direct import. Use a smaller sampled slice first.",
+    );
+  }
+  const rows = parseCommunityDatasetRows(content);
+  if (!rows.length) {
+    throw new Error("No convertible rows found in the community dataset file.");
+  }
+  const seen = new Set<string>();
+  const converted = rows.flatMap((row) => {
+    const output = convertCommunityRecord(row, input.format);
+    if (!output) return [];
+    const key = JSON.stringify(output).slice(0, 1200);
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [output];
+  });
+  if (!converted.length) {
+    throw new Error(
+      "Community dataset rows were downloaded, but none matched a supported instruction/chat schema.",
+    );
+  }
+  const sampled = converted.slice(0, sampleLimit);
+  const now = new Date();
+  const slug = normalizeFineTuneSlug(label || new URL(sourceUrl).pathname);
+  const localFile = path.join(
+    PROJECT_COMMUNITY_DATA_DIR,
+    `${slug || "community-import"}-${now.toISOString().slice(0, 10)}.jsonl`,
+  );
+  mkdirSync(path.dirname(localFile), { recursive: true });
+  writeFileSync(
+    localFile,
+    `${sampled.map((row) => JSON.stringify(row)).join("\n")}\n`,
+    "utf8",
+  );
+  const validation = validateFineTuneDatasetFromPath(localFile, input.format);
+  if (!validation.ok) {
+    throw new Error(validation.errors[0] || "Imported dataset validation failed.");
+  }
+  const dataset = saveFineTuneDataset({
+    label,
+    sourcePath: localFile,
+    format: input.format,
+    upstreamQuery: input.upstreamQuery || sourceUrl,
+    refreshCadenceHours: input.refreshCadenceHours,
+    sourceType: "community-import",
+    sourceUrl,
+    sourceLabel: input.sourceLabel || new URL(sourceUrl).hostname,
+    license: input.license,
+    qualityWarnings: [
+      "Imported from a community source. Review license, duplicates, and private-data risk before long training runs.",
+      rows.length > sampled.length
+        ? `Sampled ${sampled.length} rows from ${rows.length} downloaded rows.`
+        : `Imported ${sampled.length} rows.`,
+    ],
+  });
+  appendTimelineEvent({
+    kind: "finetune",
+    status: "saved",
+    title: "Community dataset imported",
+    summary: `${dataset.label} · ${dataset.sampleCount} rows`,
+    relatedId: dataset.id,
+    metadata: {
+      sourceUrl,
+      sourceLabel: dataset.sourceLabel,
+      sampleCount: dataset.sampleCount,
+      format: dataset.format,
+    },
+  });
+  return dataset;
+}
+
 function normalizeDatasetRecord(
   dataset: AgentFineTuneDataset,
 ): AgentFineTuneDataset {
@@ -509,7 +902,7 @@ function reconcileBundledSmokeDatasets(datasets: AgentFineTuneDataset[]) {
     label: existing?.label || BUNDLED_SMOKE_DATASET_LABEL,
     format: "instruction-jsonl",
     sourcePath: BUNDLED_SMOKE_DATASET_PATH,
-    sourceType: "local-path",
+    sourceType: "bundled-preset",
     sampleCount: validation.sampleCount,
     upstreamQuery:
       existing?.upstreamQuery || "first llm studio fine-tune smoke dataset",
@@ -1128,6 +1521,11 @@ function buildJobBundle(
       label: dataset.label,
       format: dataset.format,
       sourcePath: dataset.sourcePath,
+      sourceType: dataset.sourceType,
+      sourceUrl: dataset.sourceUrl,
+      sourceLabel: dataset.sourceLabel,
+      license: dataset.license,
+      qualityWarnings: dataset.qualityWarnings,
       sampleCount: dataset.sampleCount,
       validation: dataset.validation,
     },
@@ -1223,6 +1621,11 @@ export function saveFineTuneDataset(input: {
   label: string;
   sourcePath: string;
   format: AgentFineTuneDatasetFormat;
+  sourceType?: AgentFineTuneDataset["sourceType"];
+  sourceUrl?: string;
+  sourceLabel?: string;
+  license?: string;
+  qualityWarnings?: string[];
   upstreamQuery?: string;
   refreshCadenceHours?: number;
 }) {
@@ -1248,7 +1651,11 @@ export function saveFineTuneDataset(input: {
     label,
     format: input.format,
     sourcePath,
-    sourceType: "local-path",
+    sourceType: input.sourceType || existing?.sourceType || "local-path",
+    sourceUrl: input.sourceUrl?.trim() || existing?.sourceUrl,
+    sourceLabel: input.sourceLabel?.trim() || existing?.sourceLabel,
+    license: input.license?.trim() || existing?.license,
+    qualityWarnings: input.qualityWarnings || existing?.qualityWarnings,
     sampleCount: validation.sampleCount,
     upstreamQuery: input.upstreamQuery?.trim() || existing?.upstreamQuery,
     refreshCadenceHours:
@@ -1411,21 +1818,14 @@ export function stageFineTuneJob(input: { recipeId: string; notes?: string }) {
   );
   writeFileSync(
     paths.readmeFile,
-    [
-      `# ${recipe.label}`,
-      "",
-      `- Job ID: ${jobId}`,
-      `- Dataset: ${dataset.label}`,
-      `- Base target: ${target.label}`,
-      `- Adapter name: ${recipe.adapterName}`,
-      `- Train samples: ${datasetStats.trainSamples}`,
-      `- Validation samples: ${datasetStats.validSamples}`,
-      `- Test samples: ${datasetStats.testSamples}`,
-      `- Output dir: ${paths.outputDir}`,
-      "",
-      "This bundle is ready for the local MLX fine-tune worker.",
-      "Use the admin panel to start training and stream logs plus loss curves.",
-    ].join("\n"),
+    buildFineTuneBundleReadme({
+      jobId,
+      recipe,
+      dataset,
+      target,
+      paths,
+      datasetStats,
+    }),
     "utf8",
   );
 
@@ -1471,6 +1871,16 @@ export function stageFineTuneJob(input: { recipeId: string; notes?: string }) {
     summary: `${recipe.label} · ${dataset.label} · ${target.label}`,
     relatedId: jobId,
     targetIds: [target.id],
+    metadata: {
+      recipeId: recipe.id,
+      datasetId: dataset.id,
+      adapterName: recipe.adapterName,
+      sourceType: dataset.sourceType,
+      sourceUrl: dataset.sourceUrl,
+      sampleCount: dataset.sampleCount,
+      totalSteps: bundle.plan.totalSteps,
+      outputDir: paths.outputDir,
+    },
   });
   return mergeJobState(job);
 }
@@ -1519,6 +1929,18 @@ export function startFineTuneJob(input: { jobId: string }) {
   writeFileSync(
     paths.bundleFile,
     `${JSON.stringify(bundle, null, 2)}\n`,
+    "utf8",
+  );
+  writeFileSync(
+    paths.readmeFile,
+    buildFineTuneBundleReadme({
+      jobId: job.id,
+      recipe,
+      dataset,
+      target,
+      paths,
+      datasetStats,
+    }),
     "utf8",
   );
 
@@ -1588,6 +2010,17 @@ export function startFineTuneJob(input: { jobId: string }) {
     summary: `${recipe.label} · ${target.label} · ${bundle.plan.totalSteps} steps`,
     relatedId: job.id,
     targetIds: [target.id],
+    metadata: {
+      recipeId: recipe.id,
+      datasetId: dataset.id,
+      adapterName: recipe.adapterName,
+      sourceType: dataset.sourceType,
+      sampleCount: dataset.sampleCount,
+      workerScript: WORKER_SCRIPT,
+      bundleFile: paths.bundleFile,
+      totalSteps: bundle.plan.totalSteps,
+      launcherPid: child.pid ?? null,
+    },
   });
 
   return readJobs().find((entry) => entry.id === job.id)!;
@@ -1735,15 +2168,165 @@ function buildFineTuneMetricsCsv(points: AgentFineTuneCurvePoint[]) {
   return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
 }
 
+function averageFinite(values: Array<number | null | undefined>) {
+  const finite = values.filter(
+    (value): value is number =>
+      typeof value === "number" && Number.isFinite(value),
+  );
+  if (!finite.length) return null;
+  return finite.reduce((sum, value) => sum + value, 0) / finite.length;
+}
+
+function buildFineTuneExperimentEvidence(input: {
+  job: AgentFineTuneJob;
+  recipe?: AgentFineTuneRecipe;
+  dataset?: AgentFineTuneDataset;
+}): AgentFineTuneExperimentEvidence {
+  const summary = readFineTuneSummary();
+  const adapter = summary.adapters.find((entry) => entry.jobId === input.job.id);
+  const relatedIds = new Set(
+    [
+      input.job.id,
+      adapter?.id,
+      input.recipe?.id,
+      input.dataset?.id,
+      input.job.datasetId,
+      input.job.recipeId,
+    ].filter((value): value is string => Boolean(value)),
+  );
+  const targetIds = new Set(
+    [
+      input.recipe?.baseTargetId,
+      adapter?.baseTargetId,
+      adapter?.attachedTargetId,
+    ].filter((value): value is string => Boolean(value)),
+  );
+  const timelineEvents = readTimelineEvents({ limit: 240 })
+    .filter((event) => {
+      if (event.relatedId && relatedIds.has(event.relatedId)) return true;
+      if (event.targetIds?.some((targetId) => targetIds.has(targetId))) {
+        return true;
+      }
+      return false;
+    })
+    .slice(0, 18);
+  const compareEvents = timelineEvents
+    .filter((event) => event.kind === "compare")
+    .slice(0, 8);
+  const benchmarkEvents = timelineEvents
+    .filter((event) => event.kind === "benchmark")
+    .slice(0, 8);
+  const benchmarkRuns = readBenchmarkLogs({ limit: 160 })
+    .filter((log) => {
+      const resultTargetIds = log.results.map((result) => result.targetId);
+      if (resultTargetIds.some((targetId) => targetIds.has(targetId))) return true;
+      const note = log.runNote || "";
+      return [input.job.id, input.job.adapterName, adapter?.adapterName]
+        .filter((token): token is string => Boolean(token))
+        .some((token) => note.includes(token));
+    })
+    .slice(-6)
+    .reverse()
+    .map((log) => {
+      const matchingResults = log.results.filter((result) =>
+        targetIds.size
+          ? targetIds.has(result.targetId)
+          : result.targetLabel.includes(input.job.adapterName),
+      );
+      const scopedResults = matchingResults.length ? matchingResults : log.results;
+      return {
+        runId: log.runId,
+        generatedAt: log.generatedAt,
+        label: log.suiteLabel || log.datasetLabel || log.promptSetLabel || log.prompt,
+        ok: log.ok,
+        mode: log.benchmarkMode,
+        runNote: log.runNote,
+        targetIds: scopedResults.map((result) => result.targetId),
+        avgFirstTokenLatencyMs: averageFinite(
+          scopedResults.map((result) => result.avgFirstTokenLatencyMs),
+        ),
+        avgLatencyMs: averageFinite(scopedResults.map((result) => result.avgLatencyMs)),
+        avgScore: averageFinite(scopedResults.map((result) => result.avgScore)),
+        passRate: averageFinite(scopedResults.map((result) => result.passRate)),
+      };
+    });
+
+  return {
+    timelineEvents,
+    compareEvents,
+    benchmarkEvents,
+    benchmarkRuns,
+  };
+}
+
+function buildFineTuneBundleReadme(input: {
+  jobId: string;
+  recipe: AgentFineTuneRecipe;
+  dataset: AgentFineTuneDataset;
+  target: AgentFineTuneTargetOption;
+  paths: ReturnType<typeof getJobPaths>;
+  datasetStats: FineTunePreparedDatasetSummary;
+}) {
+  const { jobId, recipe, dataset, target, paths, datasetStats } = input;
+  return [
+    `# ${recipe.label}`,
+    "",
+    "## Bundle",
+    "",
+    `- Job ID: ${jobId}`,
+    `- Dataset: ${dataset.label}`,
+    `- Dataset source: ${dataset.sourceLabel || dataset.sourceType}`,
+    dataset.sourceUrl ? `- Dataset URL: ${dataset.sourceUrl}` : "",
+    dataset.license ? `- Dataset license: ${dataset.license}` : "",
+    `- Base target: ${target.label}`,
+    `- Adapter name: ${recipe.adapterName}`,
+    `- Train / validation / test samples: ${datasetStats.trainSamples} / ${datasetStats.validSamples} / ${datasetStats.testSamples}`,
+    `- Output dir: ${paths.outputDir}`,
+    "",
+    "## Recipe",
+    "",
+    `- Method: ${recipe.fineTuneMethod}`,
+    `- Optimizer: ${recipe.optimizer}`,
+    `- Sequence length: ${recipe.sequenceLength}`,
+    `- Batch size: ${recipe.batchSize}`,
+    `- Epochs: ${recipe.epochs}`,
+    `- Learning rate: ${recipe.learningRate}`,
+    `- LoRA rank / alpha: ${recipe.loraRank} / ${recipe.loraAlpha}`,
+    `- Gradient accumulation: ${recipe.gradientAccumulationSteps}`,
+    `- Validation split: ${recipe.validationSplitPct}%`,
+    "",
+    "## Post-training proof loop",
+    "",
+    "1. Start the local worker from /admin and wait until the adapter is ready.",
+    "2. Attach the adapter runtime from the adapter card.",
+    "3. Run Compare against the base lane to inspect answer shape and regressions.",
+    "4. Send the same adapter to Benchmark for latency, quality, and pass-rate evidence.",
+    "5. Export the report and this bundle before sharing or publishing.",
+    "",
+    "## Reproduce",
+    "",
+    "```bash",
+    `${VENV_PYTHON} ${WORKER_SCRIPT} --job-bundle ${paths.bundleFile}`,
+    "```",
+    "",
+    dataset.qualityWarnings?.length ? "## Dataset warnings" : "",
+    ...(dataset.qualityWarnings || []).map((warning) => `- ${warning}`),
+    "",
+  ]
+    .join("\n");
+}
+
 function buildFineTuneMarkdownReport(input: {
   job: AgentFineTuneJob;
   recipe?: AgentFineTuneRecipe;
   dataset?: AgentFineTuneDataset;
   bundle: FineTuneJobBundle | null;
   metricsSummary: AgentFineTuneReportMetricsSummary;
+  metrics: AgentFineTuneCurvePoint[];
   artifactFiles: string[];
   logLines: string[];
   generatedAt: string;
+  evidence: AgentFineTuneExperimentEvidence;
 }) {
   const {
     job,
@@ -1751,11 +2334,19 @@ function buildFineTuneMarkdownReport(input: {
     dataset,
     bundle,
     metricsSummary,
+    metrics,
     artifactFiles,
     logLines,
     generatedAt,
+    evidence,
   } = input;
   const plan = bundle?.plan;
+  const curveSample = metrics
+    .filter((point, index) => index < 12 || index >= Math.max(0, metrics.length - 12))
+    .map(
+      (point) =>
+        `| ${point.step} | ${point.split} | ${formatReportNumber(point.loss)} | ${formatReportNumber(point.learningRate)} | ${formatReportNumber(point.tokensPerSecond)} | ${point.at} |`,
+    );
   return [
     `# Fine-tune Run Report: ${job.adapterName}`,
     "",
@@ -1772,6 +2363,13 @@ function buildFineTuneMarkdownReport(input: {
     `- Started: ${job.startedAt || "--"}`,
     `- Completed: ${job.completedAt || "--"}`,
     `- Output dir: ${job.outputDir}`,
+    `- Dataset source: ${dataset?.sourceLabel || dataset?.sourceType || bundle?.dataset.sourceLabel || bundle?.dataset.sourceType || "--"}`,
+    dataset?.sourceUrl || bundle?.dataset.sourceUrl
+      ? `- Dataset URL: ${dataset?.sourceUrl || bundle?.dataset.sourceUrl}`
+      : "",
+    dataset?.license || bundle?.dataset.license
+      ? `- Dataset license: ${dataset?.license || bundle?.dataset.license}`
+      : "",
     "",
     "## Training Configuration",
     "",
@@ -1795,6 +2393,44 @@ function buildFineTuneMarkdownReport(input: {
     "",
     `Metrics points: ${metricsSummary.pointCount}`,
     `Step range: ${metricsSummary.firstStep ?? "--"} - ${metricsSummary.latestStep ?? "--"}`,
+    `Axis note: chart values are normalized per split to the first observed point = 1.00; raw losses are preserved in metrics.csv.`,
+    "",
+    "## Full Loss Curve Sample",
+    "",
+    "| Step | Split | Raw loss | Learning rate | Tokens/s | At |",
+    "| ---: | --- | ---: | ---: | ---: | --- |",
+    ...(curveSample.length ? curveSample : ["| -- | -- | -- | -- | -- | -- |"]),
+    metrics.length > curveSample.length
+      ? `\nFull curve is available in ${job.metricsFile || "metrics.csv"}.`
+      : "",
+    "",
+    "## Dataset Source & Quality",
+    "",
+    `- Source type: ${dataset?.sourceType || bundle?.dataset.sourceType || "--"}`,
+    `- Source label: ${dataset?.sourceLabel || bundle?.dataset.sourceLabel || "--"}`,
+    `- Source path: ${dataset?.sourcePath || bundle?.dataset.sourcePath || "--"}`,
+    `- Upstream query: ${dataset?.upstreamQuery || "--"}`,
+    `- Sample count: ${dataset?.sampleCount || bundle?.dataset.sampleCount || "--"}`,
+    `- Validation warnings: ${dataset?.validation.warnings.length ?? bundle?.dataset.validation.warnings.length ?? 0}`,
+    ...(dataset?.qualityWarnings || bundle?.dataset.qualityWarnings || []).map(
+      (warning) => `  - ${warning}`,
+    ),
+    "",
+    "## Post-training Evidence",
+    "",
+    `- Timeline events: ${evidence.timelineEvents.length}`,
+    `- Compare events: ${evidence.compareEvents.length}`,
+    `- Benchmark events: ${evidence.benchmarkEvents.length}`,
+    evidence.benchmarkRuns.length ? "" : "- No matching benchmark runs found yet.",
+    ...evidence.benchmarkRuns.flatMap((run) => [
+      `- Benchmark ${run.runId || run.generatedAt}: ${run.ok ? "ok" : "failed"} · ${run.label}`,
+      `  - Targets: ${run.targetIds.join(", ") || "--"}`,
+      `  - Avg first token: ${formatReportNumber(run.avgFirstTokenLatencyMs)} ms · Avg total: ${formatReportNumber(run.avgLatencyMs)} ms · Avg score: ${formatReportNumber(run.avgScore)} · Pass rate: ${formatReportPct(run.passRate)}`,
+    ]),
+    evidence.timelineEvents.length ? "" : "",
+    ...evidence.timelineEvents.slice(0, 12).map((event) => {
+      return `- [${event.kind}/${event.status}] ${event.at} · ${event.title}: ${event.summary}`;
+    }),
     "",
     "## Artifacts",
     "",
@@ -1819,8 +2455,16 @@ function buildFineTuneMarkdownReport(input: {
     "- Attach the adapter runtime, then run Compare against the base lane.",
     "- Send the adapter to the benchmark suite linked above before publishing.",
     "- Keep this report with `metrics.csv` and `run-manifest.json` for reproducibility.",
+    "- Use the Experiment Timeline section to verify training -> attach -> compare -> benchmark order.",
     "",
-  ].join("\n");
+    "## Reproduce",
+    "",
+    "```bash",
+    `${VENV_PYTHON} ${WORKER_SCRIPT} --job-bundle ${job.bundleFile || "<bundle.json>"}`,
+    "```",
+    "",
+  ]
+    .join("\n");
 }
 
 export function exportFineTuneJobReport(input: {
@@ -1842,6 +2486,7 @@ export function exportFineTuneJobReport(input: {
   const artifactFiles = listArtifactFiles(paths.outputDir, 500);
   const logLines = tailLines(paths.logFile, 80);
   const generatedAt = new Date().toISOString();
+  const evidence = buildFineTuneExperimentEvidence({ job, recipe, dataset });
   const manifest = {
     kind: "first-llm-studio-finetune-report",
     generatedAt,
@@ -1850,6 +2495,7 @@ export function exportFineTuneJobReport(input: {
     dataset,
     bundle,
     metricsSummary,
+    evidence,
     artifactFiles,
   };
   const fileNameByFormat: Record<AgentFineTuneReportFormat, string> = {
@@ -1869,9 +2515,11 @@ export function exportFineTuneJobReport(input: {
             dataset,
             bundle,
             metricsSummary,
+            metrics,
             artifactFiles,
             logLines,
             generatedAt,
+            evidence,
           });
   writeFileSync(filePath, content, "utf8");
   return {
@@ -1881,6 +2529,7 @@ export function exportFineTuneJobReport(input: {
     content,
     generatedAt,
     metricsSummary,
+    evidence,
   };
 }
 

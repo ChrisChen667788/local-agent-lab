@@ -760,27 +760,48 @@ export function AgentCompareLab({
 
         <div className="grid gap-5">
           <div className="space-y-5">
-            <AgentRecipeGallery
-              locale={locale}
-              recipes={recipes}
-              pending={recipesPending}
-              executionPending={recipesExecutionPending}
-              error={recipesError}
-              activeRecipeId={activeRecipeId}
-              draftLabel={recipeDraftLabel}
-              draftDescription={recipeDraftDescription}
-              selectedTargetCount={compareTargets.length}
-              onDraftLabelChange={onRecipeDraftLabelChange}
-              onDraftDescriptionChange={onRecipeDraftDescriptionChange}
-              onRefresh={onRefreshRecipes}
-              onApply={onApplyRecipe}
-              onRunCompare={onRunRecipeCompare}
-              onRunBenchmark={onRunRecipeBenchmark}
-              onDelete={onDeleteRecipe}
-              onSaveCurrent={onSaveCurrentRecipe}
-              onExportJson={onExportRecipesJson}
-              onImportJson={onImportRecipesJson}
-            />
+            <details className="group rounded-[28px] border border-white/10 bg-white/[0.025] p-3">
+              <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-3 rounded-3xl border border-white/10 bg-slate-950/70 px-4 py-3 transition hover:bg-white/[0.04]">
+                <div>
+                  <p className="text-[10px] uppercase tracking-[0.24em] text-cyan-300/80">
+                    {locale.startsWith("en")
+                      ? "Reusable compare recipes"
+                      : "可复用 Compare 配方"}
+                  </p>
+                  <p className="mt-1 text-sm text-slate-300">
+                    {locale.startsWith("en")
+                      ? `${recipes.length} setups. Expand only when you need preset management.`
+                      : `${recipes.length} 个配置。只有管理预设时再展开。`}
+                  </p>
+                </div>
+                <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11px] font-semibold text-slate-200">
+                  {locale.startsWith("en") ? "Expand" : "展开"}
+                </span>
+              </summary>
+              <div className="mt-3">
+                <AgentRecipeGallery
+                  locale={locale}
+                  recipes={recipes}
+                  pending={recipesPending}
+                  executionPending={recipesExecutionPending}
+                  error={recipesError}
+                  activeRecipeId={activeRecipeId}
+                  draftLabel={recipeDraftLabel}
+                  draftDescription={recipeDraftDescription}
+                  selectedTargetCount={compareTargets.length}
+                  onDraftLabelChange={onRecipeDraftLabelChange}
+                  onDraftDescriptionChange={onRecipeDraftDescriptionChange}
+                  onRefresh={onRefreshRecipes}
+                  onApply={onApplyRecipe}
+                  onRunCompare={onRunRecipeCompare}
+                  onRunBenchmark={onRunRecipeBenchmark}
+                  onDelete={onDeleteRecipe}
+                  onSaveCurrent={onSaveCurrentRecipe}
+                  onExportJson={onExportRecipesJson}
+                  onImportJson={onImportRecipesJson}
+                />
+              </div>
+            </details>
 
             <section className="rounded-3xl border border-white/10 bg-white/[0.03] p-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -816,7 +837,7 @@ export function AgentCompareLab({
                 </div>
               </div>
 
-              <div className="mt-4 grid gap-4">
+              <div className="mt-4 grid gap-4 2xl:grid-cols-[minmax(520px,1fr)_minmax(380px,0.72fr)] 2xl:items-start">
                 <div className="space-y-4">
                   <section className="rounded-3xl border border-white/10 bg-black/20 p-4">
                     <div className="flex flex-wrap items-start justify-between gap-3">
@@ -903,7 +924,7 @@ export function AgentCompareLab({
                         {MAX_COMPARE_LANES}
                       </span>
                     </div>
-                    <div className="mt-4 overflow-x-auto rounded-2xl border border-white/10 bg-slate-950/60">
+                    <div className="mt-4 max-h-[420px] overflow-auto rounded-2xl border border-white/10 bg-slate-950/60">
                       <div className="min-w-[760px]">
                         <div className="hidden grid-cols-[40px_minmax(280px,1.5fr)_132px_118px] items-center gap-3 border-b border-white/10 bg-white/[0.03] px-4 py-3 text-[11px] uppercase tracking-[0.18em] text-slate-500 md:grid">
                           <span />
