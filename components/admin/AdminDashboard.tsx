@@ -6140,9 +6140,9 @@ export function AdminDashboard() {
                           </div>
                         </div>
                       </div>
-                      <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
-                        <span className="rounded-full border border-amber-300/20 bg-amber-300/10 px-2.5 py-1 text-amber-100">
-                          timeout {entry.timeoutCount}
+                        <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
+                          <span className="rounded-full border border-amber-300/20 bg-amber-300/10 px-2.5 py-1 text-amber-100">
+                            timeout {entry.timeoutCount}
                         </span>
                         <span className="rounded-full border border-rose-300/20 bg-rose-400/10 px-2.5 py-1 text-rose-100">
                           429 {entry.rateLimitCount}
@@ -6150,11 +6150,34 @@ export function AdminDashboard() {
                         <span className="rounded-full border border-violet-300/20 bg-violet-400/10 px-2.5 py-1 text-violet-100">
                           auth {entry.authFailureCount}
                         </span>
-                        <span className="rounded-full border border-cyan-300/20 bg-cyan-400/10 px-2.5 py-1 text-cyan-100">
-                          network {entry.networkFailureCount}
-                        </span>
-                      </div>
-                      {entry.lastFailureSummary || entry.lastConnectionSummary ? (
+                          <span className="rounded-full border border-cyan-300/20 bg-cyan-400/10 px-2.5 py-1 text-cyan-100">
+                            network {entry.networkFailureCount}
+                          </span>
+                        </div>
+                        <div className="mt-3 rounded-2xl border border-cyan-300/15 bg-cyan-400/[0.06] px-3 py-3 text-xs leading-6 text-cyan-50/80">
+                          <span className="font-semibold text-cyan-100">
+                            {locale.startsWith("en")
+                              ? "Active provider strategy"
+                              : "当前 provider 策略"}
+                            :{" "}
+                          </span>
+                          {entry.authFailureCount
+                            ? locale.startsWith("en")
+                              ? "Auth-gated. Validate credentials before retrying expensive runs."
+                              : "认证优先。先校验密钥，再重试高成本任务。"
+                            : entry.rateLimitCount
+                              ? locale.startsWith("en")
+                                ? "429 backoff. Prefer lower concurrency and slower retry cadence."
+                                : "429 退避。建议降低并发并放慢重试节奏。"
+                              : entry.timeoutCount
+                                ? locale.startsWith("en")
+                                  ? "Timeout recovery. Use shorter first-token budget and retry with provider-specific total timeout."
+                                  : "超时恢复。使用更短首字预算，并按 provider 专属总超时重试。"
+                                : locale.startsWith("en")
+                                  ? "Standard policy. Current retry and timeout budget can stay unchanged."
+                                  : "标准策略。当前重试与超时预算可保持不变。"}
+                        </div>
+                        {entry.lastFailureSummary || entry.lastConnectionSummary ? (
                         <div className="mt-3 rounded-2xl border border-white/10 bg-black/20 px-3 py-3 text-xs leading-6 text-slate-400">
                           {entry.lastFailureSummary ? (
                             <div>

@@ -27,6 +27,8 @@ import type {
   AgentFineTuneCurvePoint,
   AgentFineTuneDataset,
   AgentFineTuneDatasetFormat,
+  AgentFineTuneDatasetLicenseRisk,
+  AgentFineTuneDatasetQuality,
   AgentFineTuneDatasetValidation,
   AgentFineTuneExperimentEvidence,
   AgentFineTuneJob,
@@ -36,6 +38,7 @@ import type {
   AgentFineTuneReportExport,
   AgentFineTuneReportFormat,
   AgentFineTuneReportMetricsSummary,
+  AgentFineTuneRunComparisonSummary,
   AgentFineTuneSummary,
   AgentFineTuneTargetOption,
 } from "@/lib/agent/types";
@@ -118,6 +121,7 @@ type FineTuneJobBundle = {
     sourceLabel?: string;
     license?: string;
     qualityWarnings?: string[];
+    quality?: AgentFineTuneDatasetQuality;
     sampleCount: number;
     validation: AgentFineTuneDatasetValidation;
   };
@@ -709,7 +713,141 @@ function convertCommunityRecord(
   return { instruction: prompt, input: "", output: response };
 }
 
-function normalizeCommunitySourceUrl(inputUrl: string) {
+type CommunitySourceResolution = {
+  downloadUrl: string;
+  sourcePageUrl: string;
+  sourceLabel: string;
+  resolutionNote?: string;
+};
+
+const COMMUNITY_DATASET_FILE_RE = /\.(jsonl|json|csv)(?:[?#]|$)/i;
+
+function encodePathSegments(value: string) {
+  return value.split("/").map(encodeURIComponent).join("/");
+}
+
+function isDirectDatasetFileUrl(url: URL) {
+  return (
+    COMMUNITY_DATASET_FILE_RE.test(url.pathname) ||
+    url.hostname === "raw.githubusercontent.com" ||
+    (url.hostname === "huggingface.co" && url.pathname.includes("/resolve/"))
+  );
+}
+
+function githubBlobToRawUrl(url: URL) {
+  if (url.hostname !== "github.com" || !url.pathname.includes("/blob/")) {
+    return null;
+  }
+  const parts = url.pathname.split("/").filter(Boolean);
+  const blobIndex = parts.indexOf("blob");
+  if (parts.length <= blobIndex + 2) return null;
+  return `https://raw.githubusercontent.com/${parts[0]}/${parts[1]}/${parts
+    .slice(blobIndex + 1)
+    .join("/")}`;
+}
+
+function huggingFaceBlobToResolveUrl(url: URL) {
+  if (
+    url.hostname !== "huggingface.co" ||
+    !url.pathname.startsWith("/datasets/") ||
+    !url.pathname.includes("/blob/")
+  ) {
+    return null;
+  }
+  return url.toString().replace("/blob/", "/resolve/");
+}
+
+function normalizeDatasetHref(rawHref: string, baseUrl: URL) {
+  const cleaned = rawHref.replace(/&amp;/g, "&").replace(/^['"]|['"]$/g, "");
+  try {
+    return new URL(cleaned, baseUrl).toString();
+  } catch {
+    return null;
+  }
+}
+
+function pickDatasetCandidateFromHtml(html: string, baseUrl: URL) {
+  const candidates = new Set<string>();
+  const hrefRe = /href=["']([^"']+)["']/gi;
+  let match: RegExpExecArray | null;
+  while ((match = hrefRe.exec(html))) {
+    const href = match[1];
+    if (!COMMUNITY_DATASET_FILE_RE.test(href) && !href.includes("/resolve/")) {
+      continue;
+    }
+    const normalized = normalizeDatasetHref(href, baseUrl);
+    if (normalized) candidates.add(normalized);
+  }
+  const scored = [...candidates].sort((a, b) => {
+    const score = (value: string) => {
+      const lower = value.toLowerCase();
+      return (
+        (lower.includes("train") ? 20 : 0) +
+        (lower.includes("sample") ? 12 : 0) +
+        (lower.includes("sft") ? 10 : 0) +
+        (lower.endsWith(".jsonl") ? 8 : 0) +
+        (lower.includes("jsonl") ? 5 : 0) -
+        (lower.includes("README".toLowerCase()) ? 20 : 0)
+      );
+    };
+    return score(b) - score(a);
+  });
+  return scored[0] || null;
+}
+
+async function resolveHuggingFaceDatasetFile(url: URL) {
+  const parts = url.pathname.split("/").filter(Boolean);
+  if (parts[0] !== "datasets" || parts.length < 3) return null;
+  const repoId = `${parts[1]}/${parts[2]}`;
+  const apiUrl = `https://huggingface.co/api/datasets/${repoId}/tree/main?recursive=true`;
+  try {
+    const response = await fetch(apiUrl, {
+      headers: { "User-Agent": "FirstLLMStudio/0.3" },
+      cache: "no-store",
+    });
+    if (!response.ok) return null;
+    const tree = (await response.json()) as Array<{
+      path?: string;
+      type?: string;
+      size?: number;
+    }>;
+    const files = tree
+      .filter(
+        (entry) =>
+          entry.type === "file" &&
+          entry.path &&
+          COMMUNITY_DATASET_FILE_RE.test(entry.path),
+      )
+      .sort((a, b) => {
+        const score = (entry: { path?: string; size?: number }) => {
+          const lower = (entry.path || "").toLowerCase();
+          const size = entry.size || 0;
+          return (
+            (lower.includes("train") ? 40 : 0) +
+            (lower.includes("sft") ? 24 : 0) +
+            (lower.includes("sample") ? 18 : 0) +
+            (lower.endsWith(".jsonl") ? 14 : 0) +
+            (size > 0 && size <= MAX_COMMUNITY_IMPORT_BYTES ? 8 : 0) -
+            (lower.includes("test") ? 10 : 0) -
+            (size > MAX_COMMUNITY_IMPORT_BYTES * 8 ? 18 : 0)
+          );
+        };
+        return score(b) - score(a);
+      });
+    const picked = files[0]?.path;
+    return picked
+      ? `https://huggingface.co/datasets/${repoId}/resolve/main/${encodePathSegments(
+          picked,
+        )}`
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveCommunitySourceUrl(
+  inputUrl: string,
+): Promise<CommunitySourceResolution> {
   const trimmed = inputUrl.trim();
   if (!trimmed) {
     throw new Error("sourceUrl is required.");
@@ -721,36 +859,239 @@ function normalizeCommunitySourceUrl(inputUrl: string) {
     throw new Error("sourceUrl must be a valid URL.");
   }
 
-  if (url.hostname === "github.com" && url.pathname.includes("/blob/")) {
-    const parts = url.pathname.split("/").filter(Boolean);
-    const blobIndex = parts.indexOf("blob");
-    if (parts.length > blobIndex + 2) {
-      return `https://raw.githubusercontent.com/${parts[0]}/${parts[1]}/${parts
-        .slice(blobIndex + 1)
-        .join("/")}`;
+  const githubRawUrl = githubBlobToRawUrl(url);
+  if (githubRawUrl) {
+    return {
+      downloadUrl: githubRawUrl,
+      sourcePageUrl: url.toString(),
+      sourceLabel: "github",
+      resolutionNote: "Resolved GitHub blob page to raw file.",
+    };
+  }
+
+  const hfResolveUrl = huggingFaceBlobToResolveUrl(url);
+  if (hfResolveUrl) {
+    return {
+      downloadUrl: hfResolveUrl,
+      sourcePageUrl: url.toString(),
+      sourceLabel: "huggingface",
+      resolutionNote: "Resolved Hugging Face blob page to /resolve/ file.",
+    };
+  }
+
+  if (isDirectDatasetFileUrl(url)) {
+    return {
+      downloadUrl: url.toString(),
+      sourcePageUrl: url.toString(),
+      sourceLabel: url.hostname.replace(/^www\./, ""),
+    };
+  }
+
+  if (url.hostname === "huggingface.co" && url.pathname.startsWith("/datasets/")) {
+    const resolved = await resolveHuggingFaceDatasetFile(url);
+    if (resolved) {
+      return {
+        downloadUrl: resolved,
+        sourcePageUrl: url.toString(),
+        sourceLabel: "huggingface",
+        resolutionNote: "Resolved Hugging Face dataset page to the best matching train/sample file.",
+      };
     }
   }
 
-  if (
-    url.hostname === "huggingface.co" &&
-    url.pathname.startsWith("/datasets/") &&
-    !url.pathname.includes("/resolve/")
-  ) {
-    throw new Error(
-      "For Hugging Face imports, use a direct /resolve/ file URL for a JSONL, JSON, or CSV slice, or use the bundled community preset first.",
-    );
+  try {
+    const response = await fetch(url.toString(), {
+      headers: { "User-Agent": "FirstLLMStudio/0.3" },
+      cache: "no-store",
+    });
+    if (response.ok) {
+      const html = await response.text();
+      const candidate = pickDatasetCandidateFromHtml(html, url);
+      if (candidate) {
+        return {
+          downloadUrl: candidate,
+          sourcePageUrl: url.toString(),
+          sourceLabel: url.hostname.replace(/^www\./, ""),
+          resolutionNote: "Resolved source page to a linked JSONL/JSON/CSV file.",
+        };
+      }
+    }
+  } catch {
+    // Fall through to the explicit error below.
   }
 
+  throw new Error(
+    "Could not find a downloadable JSONL, JSON, or CSV file from this community page. Use a direct file URL or load one of the curated beginner presets.",
+  );
+}
+
+function estimateFineTuneLicenseRisk(
+  license?: string,
+): AgentFineTuneDatasetLicenseRisk {
+  const value = (license || "").toLowerCase();
+  if (!value.trim()) return "unknown";
   if (
-    url.hostname.includes("modelscope.cn") &&
-    !/\.(jsonl|json|csv)(\?|$)/i.test(url.pathname)
+    value.includes("gpl") ||
+    value.includes("non-commercial") ||
+    value.includes("nc") ||
+    value.includes("research only") ||
+    value.includes("gated")
   ) {
-    throw new Error(
-      "For ModelScope imports, use a direct JSONL, JSON, or CSV file URL, or load the curated preset and keep the source page for provenance.",
+    return "high";
+  }
+  if (
+    value.includes("verify") ||
+    value.includes("custom") ||
+    value.includes("unknown") ||
+    value.includes("card terms")
+  ) {
+    return "medium";
+  }
+  return "low";
+}
+
+function containsPotentialSensitiveData(value: unknown) {
+  const text = JSON.stringify(value);
+  return [
+    /sk-[a-zA-Z0-9_-]{20,}/,
+    /hf_[a-zA-Z0-9]{20,}/,
+    /ms-[a-zA-Z0-9-]{20,}/,
+    /AKIA[0-9A-Z]{16}/,
+    /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+    /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i,
+    /(?:\+?86[- ]?)?1[3-9]\d{9}/,
+  ].some((pattern) => pattern.test(text));
+}
+
+function buildImportedDatasetQuality(input: {
+  downloadedRows: number;
+  convertedRows: number;
+  sampledRows: number;
+  duplicateRows: number;
+  piiRiskRows: number;
+  format: AgentFineTuneDatasetFormat;
+  license?: string;
+}): AgentFineTuneDatasetQuality {
+  const licenseRisk = estimateFineTuneLicenseRisk(input.license);
+  const skippedRows = Math.max(0, input.downloadedRows - input.convertedRows);
+  const duplicateRatio =
+    input.convertedRows > 0 ? input.duplicateRows / input.convertedRows : 0;
+  const skippedRatio =
+    input.downloadedRows > 0 ? skippedRows / input.downloadedRows : 0;
+  const piiRatio =
+    input.sampledRows > 0 ? input.piiRiskRows / input.sampledRows : 0;
+  const recommended =
+    input.sampledRows < 100
+      ? { min: 50, max: 200, label: "short smoke only" }
+      : input.sampledRows < 500
+        ? { min: 200, max: 600, label: "beginner adapter" }
+        : input.sampledRows < 1500
+          ? { min: 600, max: 1200, label: "long beginner run" }
+          : { min: 1000, max: 3000, label: "long local run" };
+  const score = Math.max(
+    0,
+    Math.min(
+      100,
+      Math.round(
+        100 -
+          skippedRatio * 25 -
+          duplicateRatio * 18 -
+          piiRatio * 35 -
+          (input.sampledRows < 64 ? 15 : 0) -
+          (licenseRisk === "high"
+            ? 15
+            : licenseRisk === "medium"
+              ? 8
+              : licenseRisk === "unknown"
+                ? 5
+                : 0),
+      ),
+    ),
+  );
+  return {
+    score,
+    licenseRisk,
+    downloadedRows: input.downloadedRows,
+    convertedRows: input.convertedRows,
+    sampledRows: input.sampledRows,
+    duplicateRows: input.duplicateRows,
+    skippedRows,
+    piiRiskRows: input.piiRiskRows,
+    schemaConversion:
+      input.format === "chat-jsonl"
+        ? "community rows converted to messages[] chat JSONL"
+        : "community rows converted to instruction/input/output JSONL",
+    recommendedSteps: recommended,
+  };
+}
+
+function buildCommunityQualityWarnings(input: {
+  quality: AgentFineTuneDatasetQuality;
+  resolutionNote?: string;
+  truncatedDownload?: boolean;
+}) {
+  const warnings = [
+    "Imported from a community source. Review license, duplicates, and private-data risk before long training runs.",
+  ];
+  if (input.resolutionNote) warnings.push(input.resolutionNote);
+  if (input.truncatedDownload) {
+    warnings.push(
+      "Only the first import window was read from a large upstream file. Increase sample coverage by using a smaller exported slice when needed.",
     );
   }
+  warnings.push(
+    `Converted ${input.quality.convertedRows ?? 0}/${input.quality.downloadedRows ?? 0} downloaded rows and kept ${input.quality.sampledRows ?? 0} sampled rows.`,
+  );
+  if (input.quality.duplicateRows) {
+    warnings.push(`Removed ${input.quality.duplicateRows} duplicate rows.`);
+  }
+  if (input.quality.piiRiskRows) {
+    warnings.push(
+      `Potential private data detected in ${input.quality.piiRiskRows} sampled rows. Review before training.`,
+    );
+  }
+  if (input.quality.licenseRisk !== "low") {
+    warnings.push(`License risk is ${input.quality.licenseRisk}. Verify upstream terms.`);
+  }
+  return warnings;
+}
 
-  return url.toString();
+async function readCommunityDatasetResponseText(response: Response) {
+  const contentLength = Number(response.headers.get("content-length") || "0");
+  if (contentLength > 0 && contentLength <= MAX_COMMUNITY_IMPORT_BYTES) {
+    return { content: await response.text(), truncated: false };
+  }
+  if (!response.body) {
+    if (contentLength > MAX_COMMUNITY_IMPORT_BYTES) {
+      throw new Error(
+        `Community dataset file is too large for direct import (${contentLength} bytes). Use a smaller sampled slice first.`,
+      );
+    }
+    return { content: await response.text(), truncated: false };
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  let truncated = false;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done || !value) break;
+    if (bytes + value.length > MAX_COMMUNITY_IMPORT_BYTES) {
+      const remaining = Math.max(0, MAX_COMMUNITY_IMPORT_BYTES - bytes);
+      if (remaining > 0) chunks.push(value.slice(0, remaining));
+      truncated = true;
+      await reader.cancel();
+      break;
+    }
+    chunks.push(value);
+    bytes += value.length;
+  }
+  const decoder = new TextDecoder();
+  return {
+    content: chunks.map((chunk) => decoder.decode(chunk, { stream: true })).join("") +
+      decoder.decode(),
+    truncated,
+  };
 }
 
 export async function importFineTuneCommunityDataset(input: {
@@ -767,7 +1108,8 @@ export async function importFineTuneCommunityDataset(input: {
   if (!label) {
     throw new Error("Dataset label is required.");
   }
-  const sourceUrl = normalizeCommunitySourceUrl(input.sourceUrl);
+  const sourceResolution = await resolveCommunitySourceUrl(input.sourceUrl);
+  const sourceUrl = sourceResolution.downloadUrl;
   const sampleLimit =
     typeof input.sampleLimit === "number" && Number.isFinite(input.sampleLimit)
       ? Math.max(16, Math.min(MAX_COMMUNITY_IMPORT_ROWS, Math.round(input.sampleLimit)))
@@ -779,13 +1121,7 @@ export async function importFineTuneCommunityDataset(input: {
   if (!response.ok) {
     throw new Error(`Community dataset download failed: HTTP ${response.status}.`);
   }
-  const contentLength = Number(response.headers.get("content-length") || "0");
-  if (contentLength > MAX_COMMUNITY_IMPORT_BYTES) {
-    throw new Error(
-      `Community dataset file is too large for direct import (${contentLength} bytes). Use a smaller sampled slice first.`,
-    );
-  }
-  const content = await response.text();
+  const { content, truncated } = await readCommunityDatasetResponseText(response);
   if (content.length > MAX_COMMUNITY_IMPORT_BYTES) {
     throw new Error(
       "Community dataset file is too large for direct import. Use a smaller sampled slice first.",
@@ -795,12 +1131,18 @@ export async function importFineTuneCommunityDataset(input: {
   if (!rows.length) {
     throw new Error("No convertible rows found in the community dataset file.");
   }
-  const seen = new Set<string>();
-  const converted = rows.flatMap((row) => {
+  const convertedRows = rows.flatMap((row) => {
     const output = convertCommunityRecord(row, input.format);
-    if (!output) return [];
+    return output ? [output] : [];
+  });
+  const seen = new Set<string>();
+  let duplicateRows = 0;
+  const converted = convertedRows.flatMap((output) => {
     const key = JSON.stringify(output).slice(0, 1200);
-    if (seen.has(key)) return [];
+    if (seen.has(key)) {
+      duplicateRows += 1;
+      return [];
+    }
     seen.add(key);
     return [output];
   });
@@ -810,6 +1152,15 @@ export async function importFineTuneCommunityDataset(input: {
     );
   }
   const sampled = converted.slice(0, sampleLimit);
+  const quality = buildImportedDatasetQuality({
+    downloadedRows: rows.length,
+    convertedRows: convertedRows.length,
+    sampledRows: sampled.length,
+    duplicateRows,
+    piiRiskRows: sampled.filter(containsPotentialSensitiveData).length,
+    format: input.format,
+    license: input.license,
+  });
   const now = new Date();
   const slug = normalizeFineTuneSlug(label || new URL(sourceUrl).pathname);
   const localFile = path.join(
@@ -830,18 +1181,21 @@ export async function importFineTuneCommunityDataset(input: {
     label,
     sourcePath: localFile,
     format: input.format,
-    upstreamQuery: input.upstreamQuery || sourceUrl,
+    upstreamQuery: input.upstreamQuery || sourceResolution.sourcePageUrl,
     refreshCadenceHours: input.refreshCadenceHours,
     sourceType: "community-import",
-    sourceUrl,
-    sourceLabel: input.sourceLabel || new URL(sourceUrl).hostname,
+    sourceUrl: sourceResolution.sourcePageUrl,
+    sourceLabel:
+      input.sourceLabel ||
+      sourceResolution.sourceLabel ||
+      new URL(sourceResolution.sourcePageUrl).hostname,
     license: input.license,
-    qualityWarnings: [
-      "Imported from a community source. Review license, duplicates, and private-data risk before long training runs.",
-      rows.length > sampled.length
-        ? `Sampled ${sampled.length} rows from ${rows.length} downloaded rows.`
-        : `Imported ${sampled.length} rows.`,
-    ],
+    quality,
+    qualityWarnings: buildCommunityQualityWarnings({
+      quality,
+      resolutionNote: sourceResolution.resolutionNote,
+      truncatedDownload: truncated,
+    }),
   });
   appendTimelineEvent({
     kind: "finetune",
@@ -851,8 +1205,11 @@ export async function importFineTuneCommunityDataset(input: {
     relatedId: dataset.id,
     metadata: {
       sourceUrl,
+      sourcePageUrl: sourceResolution.sourcePageUrl,
       sourceLabel: dataset.sourceLabel,
       sampleCount: dataset.sampleCount,
+      qualityScore: dataset.quality?.score,
+      licenseRisk: dataset.quality?.licenseRisk,
       format: dataset.format,
     },
   });
@@ -905,9 +1262,10 @@ function reconcileBundledSmokeDatasets(datasets: AgentFineTuneDataset[]) {
     sourceType: "bundled-preset",
     sampleCount: validation.sampleCount,
     upstreamQuery:
-      existing?.upstreamQuery || "first llm studio fine-tune smoke dataset",
-    refreshCadenceHours: existing?.refreshCadenceHours || 24,
-    latestUpstreamCandidates: existing?.latestUpstreamCandidates || [],
+        existing?.upstreamQuery || "first llm studio fine-tune smoke dataset",
+      refreshCadenceHours: existing?.refreshCadenceHours || 24,
+      quality: existing?.quality,
+      latestUpstreamCandidates: existing?.latestUpstreamCandidates || [],
     lastUpstreamCheckedAt: existing?.lastUpstreamCheckedAt || now,
     nextUpstreamCheckAt:
       existing?.nextUpstreamCheckAt ||
@@ -1523,10 +1881,11 @@ function buildJobBundle(
       sourcePath: dataset.sourcePath,
       sourceType: dataset.sourceType,
       sourceUrl: dataset.sourceUrl,
-      sourceLabel: dataset.sourceLabel,
-      license: dataset.license,
-      qualityWarnings: dataset.qualityWarnings,
-      sampleCount: dataset.sampleCount,
+        sourceLabel: dataset.sourceLabel,
+        license: dataset.license,
+        qualityWarnings: dataset.qualityWarnings,
+        quality: dataset.quality,
+        sampleCount: dataset.sampleCount,
       validation: dataset.validation,
     },
     baseTarget: target,
@@ -1624,9 +1983,10 @@ export function saveFineTuneDataset(input: {
   sourceType?: AgentFineTuneDataset["sourceType"];
   sourceUrl?: string;
   sourceLabel?: string;
-  license?: string;
-  qualityWarnings?: string[];
-  upstreamQuery?: string;
+    license?: string;
+    qualityWarnings?: string[];
+    quality?: AgentFineTuneDatasetQuality;
+    upstreamQuery?: string;
   refreshCadenceHours?: number;
 }) {
   const label = input.label.trim();
@@ -1654,8 +2014,9 @@ export function saveFineTuneDataset(input: {
     sourceType: input.sourceType || existing?.sourceType || "local-path",
     sourceUrl: input.sourceUrl?.trim() || existing?.sourceUrl,
     sourceLabel: input.sourceLabel?.trim() || existing?.sourceLabel,
-    license: input.license?.trim() || existing?.license,
-    qualityWarnings: input.qualityWarnings || existing?.qualityWarnings,
+      license: input.license?.trim() || existing?.license,
+      qualityWarnings: input.qualityWarnings || existing?.qualityWarnings,
+      quality: input.quality || existing?.quality,
     sampleCount: validation.sampleCount,
     upstreamQuery: input.upstreamQuery?.trim() || existing?.upstreamQuery,
     refreshCadenceHours:
@@ -2123,6 +2484,60 @@ function summarizeFineTuneMetrics(
   };
 }
 
+function buildFineTuneRunComparison(input: {
+  job: AgentFineTuneJob;
+  recipe?: AgentFineTuneRecipe;
+}): AgentFineTuneRunComparisonSummary {
+  const adapterName = input.job.adapterName || input.recipe?.adapterName || input.job.id;
+  const runs = readJobs()
+    .filter((job) => job.adapterName === adapterName)
+    .sort((a, b) =>
+      (b.startedAt || b.createdAt || b.updatedAt).localeCompare(
+        a.startedAt || a.createdAt || a.updatedAt,
+      ),
+    )
+    .slice(0, 8)
+    .map((job) => {
+      const paths = getJobPaths(job.id);
+      const metrics = readFineTuneMetricsFile(paths.metricsFile);
+      const summary = summarizeFineTuneMetrics(metrics);
+      const durationMs =
+        job.startedAt && job.completedAt
+          ? Math.max(
+              0,
+              new Date(job.completedAt).getTime() -
+                new Date(job.startedAt).getTime(),
+            )
+          : null;
+      return {
+        jobId: job.id,
+        status: job.status,
+        startedAt: job.startedAt,
+        completedAt: job.completedAt,
+        durationMs,
+        outputDir: job.outputDir,
+        trainLatest: summary.train.latest ?? null,
+        validLatest: summary.valid.latest ?? null,
+        validBest: summary.valid.best ?? null,
+        latestStep: summary.latestStep ?? null,
+        pointCount: summary.pointCount,
+      };
+    });
+  const validValues = runs
+    .map((run) => run.validBest)
+    .filter((value): value is number => typeof value === "number");
+  const latestValidValues = runs
+    .map((run) => run.validLatest)
+    .filter((value): value is number => typeof value === "number");
+  return {
+    adapterName,
+    runCount: runs.length,
+    bestValidationLoss: validValues.length ? Math.min(...validValues) : null,
+    latestValidationLoss: latestValidValues[0] ?? null,
+    runs,
+  };
+}
+
 function formatReportNumber(value?: number | null, digits = 4) {
   return typeof value === "number" && Number.isFinite(value)
     ? value.toFixed(digits)
@@ -2327,6 +2742,7 @@ function buildFineTuneMarkdownReport(input: {
   logLines: string[];
   generatedAt: string;
   evidence: AgentFineTuneExperimentEvidence;
+  runComparison: AgentFineTuneRunComparisonSummary;
 }) {
   const {
     job,
@@ -2339,6 +2755,7 @@ function buildFineTuneMarkdownReport(input: {
     logLines,
     generatedAt,
     evidence,
+    runComparison,
   } = input;
   const plan = bundle?.plan;
   const curveSample = metrics
@@ -2347,6 +2764,10 @@ function buildFineTuneMarkdownReport(input: {
       (point) =>
         `| ${point.step} | ${point.split} | ${formatReportNumber(point.loss)} | ${formatReportNumber(point.learningRate)} | ${formatReportNumber(point.tokensPerSecond)} | ${point.at} |`,
     );
+  const comparisonRows = runComparison.runs.map(
+    (run) =>
+      `| ${run.jobId} | ${run.status} | ${formatReportNumber(run.trainLatest)} | ${formatReportNumber(run.validLatest)} | ${formatReportNumber(run.validBest)} | ${run.latestStep ?? "--"} | ${typeof run.durationMs === "number" ? `${Math.round(run.durationMs / 1000)}s` : "--"} | ${run.outputDir} |`,
+  );
   return [
     `# Fine-tune Run Report: ${job.adapterName}`,
     "",
@@ -2395,6 +2816,19 @@ function buildFineTuneMarkdownReport(input: {
     `Step range: ${metricsSummary.firstStep ?? "--"} - ${metricsSummary.latestStep ?? "--"}`,
     `Axis note: chart values are normalized per split to the first observed point = 1.00; raw losses are preserved in metrics.csv.`,
     "",
+    "## Multi-run Comparison",
+    "",
+    `Adapter key: ${runComparison.adapterName}`,
+    `Compared runs: ${runComparison.runCount}`,
+    `Best validation loss: ${formatReportNumber(runComparison.bestValidationLoss)}`,
+    `Latest validation loss: ${formatReportNumber(runComparison.latestValidationLoss)}`,
+    "",
+    "| Job | Status | Latest train | Latest validation | Best validation | Latest step | Duration | Output dir |",
+    "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |",
+    ...(comparisonRows.length
+      ? comparisonRows
+      : ["| -- | -- | -- | -- | -- | -- | -- | -- |"]),
+    "",
     "## Full Loss Curve Sample",
     "",
     "| Step | Split | Raw loss | Learning rate | Tokens/s | At |",
@@ -2411,6 +2845,20 @@ function buildFineTuneMarkdownReport(input: {
     `- Source path: ${dataset?.sourcePath || bundle?.dataset.sourcePath || "--"}`,
     `- Upstream query: ${dataset?.upstreamQuery || "--"}`,
     `- Sample count: ${dataset?.sampleCount || bundle?.dataset.sampleCount || "--"}`,
+    `- Quality score: ${dataset?.quality?.score ?? bundle?.dataset.quality?.score ?? "--"}`,
+    `- License risk: ${dataset?.quality?.licenseRisk ?? bundle?.dataset.quality?.licenseRisk ?? "--"}`,
+    `- Recommended steps: ${
+      dataset?.quality?.recommendedSteps
+        ? `${dataset.quality.recommendedSteps.min}-${dataset.quality.recommendedSteps.max} (${dataset.quality.recommendedSteps.label})`
+        : bundle?.dataset.quality?.recommendedSteps
+          ? `${bundle.dataset.quality.recommendedSteps.min}-${bundle.dataset.quality.recommendedSteps.max} (${bundle.dataset.quality.recommendedSteps.label})`
+          : "--"
+    }`,
+    `- Converted / duplicate / PII-risk rows: ${
+      dataset?.quality || bundle?.dataset.quality
+        ? `${dataset?.quality?.convertedRows ?? bundle?.dataset.quality?.convertedRows ?? "--"} / ${dataset?.quality?.duplicateRows ?? bundle?.dataset.quality?.duplicateRows ?? "--"} / ${dataset?.quality?.piiRiskRows ?? bundle?.dataset.quality?.piiRiskRows ?? "--"}`
+        : "--"
+    }`,
     `- Validation warnings: ${dataset?.validation.warnings.length ?? bundle?.dataset.validation.warnings.length ?? 0}`,
     ...(dataset?.qualityWarnings || bundle?.dataset.qualityWarnings || []).map(
       (warning) => `  - ${warning}`,
@@ -2487,6 +2935,7 @@ export function exportFineTuneJobReport(input: {
   const logLines = tailLines(paths.logFile, 80);
   const generatedAt = new Date().toISOString();
   const evidence = buildFineTuneExperimentEvidence({ job, recipe, dataset });
+  const runComparison = buildFineTuneRunComparison({ job, recipe });
   const manifest = {
     kind: "first-llm-studio-finetune-report",
     generatedAt,
@@ -2496,6 +2945,7 @@ export function exportFineTuneJobReport(input: {
     bundle,
     metricsSummary,
     evidence,
+    runComparison,
     artifactFiles,
   };
   const fileNameByFormat: Record<AgentFineTuneReportFormat, string> = {
@@ -2520,6 +2970,7 @@ export function exportFineTuneJobReport(input: {
             logLines,
             generatedAt,
             evidence,
+            runComparison,
           });
   writeFileSync(filePath, content, "utf8");
   return {
@@ -2530,6 +2981,7 @@ export function exportFineTuneJobReport(input: {
     generatedAt,
     metricsSummary,
     evidence,
+    runComparison,
   };
 }
 

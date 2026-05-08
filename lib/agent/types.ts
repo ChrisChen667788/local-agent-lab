@@ -890,6 +890,29 @@ export type AgentFineTuneDatasetValidation = {
   preview: AgentFineTuneDatasetPreview[];
 };
 
+export type AgentFineTuneDatasetLicenseRisk =
+  | "low"
+  | "medium"
+  | "high"
+  | "unknown";
+
+export type AgentFineTuneDatasetQuality = {
+  score: number;
+  licenseRisk: AgentFineTuneDatasetLicenseRisk;
+  downloadedRows?: number;
+  convertedRows?: number;
+  sampledRows?: number;
+  duplicateRows?: number;
+  skippedRows?: number;
+  piiRiskRows?: number;
+  schemaConversion?: string;
+  recommendedSteps?: {
+    min: number;
+    max: number;
+    label: string;
+  };
+};
+
 export type AgentFineTuneDataset = {
   id: string;
   label: string;
@@ -904,6 +927,7 @@ export type AgentFineTuneDataset = {
   sourceLabel?: string;
   license?: string;
   qualityWarnings?: string[];
+  quality?: AgentFineTuneDatasetQuality;
   sampleCount: number;
   upstreamQuery?: string;
   refreshCadenceHours?: number;
@@ -1058,6 +1082,26 @@ export type AgentFineTuneExperimentEvidence = {
   }>;
 };
 
+export type AgentFineTuneRunComparisonSummary = {
+  adapterName: string;
+  runCount: number;
+  bestValidationLoss?: number | null;
+  latestValidationLoss?: number | null;
+  runs: Array<{
+    jobId: string;
+    status: AgentFineTuneJobStatus;
+    startedAt?: string;
+    completedAt?: string;
+    durationMs?: number | null;
+    outputDir: string;
+    trainLatest?: number | null;
+    validLatest?: number | null;
+    validBest?: number | null;
+    latestStep?: number | null;
+    pointCount: number;
+  }>;
+};
+
 export type AgentFineTuneReportExport = {
   jobId: string;
   format: AgentFineTuneReportFormat;
@@ -1066,6 +1110,7 @@ export type AgentFineTuneReportExport = {
   generatedAt: string;
   metricsSummary: AgentFineTuneReportMetricsSummary;
   evidence?: AgentFineTuneExperimentEvidence;
+  runComparison?: AgentFineTuneRunComparisonSummary;
 };
 
 export type AgentFineTuneBundleArchive = {

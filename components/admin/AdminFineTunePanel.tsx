@@ -1124,6 +1124,16 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
         reportPath: "Report path",
         reportPoints: "curve points",
         reportLatestStep: "latest step",
+        qualityScore: "quality score",
+        licenseRisk: "license risk",
+        recommendedSteps: "recommended steps",
+        convertedRows: "converted rows",
+        modelFit: "model fit",
+        risk: "risk",
+        runComparison: "Multi-run comparison",
+        runsCompared: "runs compared",
+        bestValLoss: "best val loss",
+        latestValLoss: "latest val loss",
         evidenceSummary: "Evidence summary",
         evidenceTimeline: "timeline",
         evidenceCompare: "compare",
@@ -1317,6 +1327,16 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
       reportPath: "报告路径",
       reportPoints: "曲线点数",
       reportLatestStep: "最新轮次",
+      qualityScore: "质量分",
+      licenseRisk: "许可证风险",
+      recommendedSteps: "推荐轮次",
+      convertedRows: "转换行数",
+      modelFit: "适配规模",
+      risk: "风险",
+      runComparison: "多 run 对比",
+      runsCompared: "对比 run 数",
+      bestValLoss: "最佳验证 loss",
+      latestValLoss: "最新验证 loss",
       evidenceSummary: "证据摘要",
       evidenceTimeline: "时间线",
       evidenceCompare: "Compare",
@@ -2098,6 +2118,44 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
     [isEnglish],
   );
 
+  const getPresetLicenseRisk = useCallback(
+    (preset: CommunityDatasetPreset) => {
+      const license = preset.license.toLowerCase();
+      if (
+        license.includes("gpl") ||
+        license.includes("gated") ||
+        license.includes("non-commercial") ||
+        license.includes("nc")
+      ) {
+        return isEnglish ? "review required" : "需复核";
+      }
+      if (license.includes("verify") || license.includes("terms")) {
+        return isEnglish ? "medium" : "中等";
+      }
+      return isEnglish ? "low" : "较低";
+    },
+    [isEnglish],
+  );
+
+  const getPresetModelFit = useCallback(
+    (preset: CommunityDatasetPreset) => {
+      if (preset.recommendedSamples <= 1000) {
+        return isEnglish ? "0.6B-4B safe" : "0.6B-4B 安全";
+      }
+      if (preset.recommendedSamples <= 2000) {
+        return isEnglish ? "4B preferred" : "更适合 4B";
+      }
+      return isEnglish ? "4B+ cautious" : "4B+ 谨慎";
+    },
+    [isEnglish],
+  );
+
+  const formatQualityScore = useCallback((score?: number | null) => {
+    return typeof score === "number" && Number.isFinite(score)
+      ? `${Math.round(score)}/100`
+      : "--";
+  }, []);
+
   const buildDatasetCandidateImportPlan = useCallback(
     (
       dataset: AgentFineTuneDataset,
@@ -2627,15 +2685,27 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
                               {preset.sampleCount.toLocaleString()} upstream
                             </span>
                           </span>
-                          <span className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2">
-                            {text.recommendedPlan}:{" "}
-                            <span className="text-slate-200">
-                              {preset.recommendedEpochs} epochs ·{" "}
-                              {preset.recommendedSamples.toLocaleString()} rows
+                            <span className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2">
+                              {text.recommendedPlan}:{" "}
+                              <span className="text-slate-200">
+                                {preset.recommendedEpochs} epochs ·{" "}
+                                {preset.recommendedSamples.toLocaleString()} rows
+                              </span>
                             </span>
-                          </span>
-                          <span className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2">
-                            {text.license}:{" "}
+                            <span className="rounded-2xl border border-cyan-300/15 bg-cyan-400/[0.06] px-3 py-2">
+                              {text.modelFit}:{" "}
+                              <span className="text-cyan-100">
+                                {getPresetModelFit(preset)}
+                              </span>
+                            </span>
+                            <span className="rounded-2xl border border-amber-300/15 bg-amber-300/[0.06] px-3 py-2">
+                              {text.risk}:{" "}
+                              <span className="text-amber-100">
+                                {getPresetLicenseRisk(preset)}
+                              </span>
+                            </span>
+                            <span className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2">
+                              {text.license}:{" "}
                             <span className="text-slate-200">
                               {preset.license}
                             </span>
@@ -3251,10 +3321,45 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
                   className="rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-3 text-xs leading-6 text-slate-300"
                 >
                   <p className="font-semibold text-white">{dataset.label}</p>
-                  <p className="mt-1 text-slate-400">
-                    {dataset.format} · {dataset.sampleCount} samples
-                  </p>
-                  <p>{dataset.sourcePath || "--"}</p>
+                    <p className="mt-1 text-slate-400">
+                      {dataset.format} · {dataset.sampleCount} samples
+                    </p>
+                    {dataset.quality ? (
+                      <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                        <span className="rounded-2xl border border-cyan-300/15 bg-cyan-400/[0.06] px-3 py-2">
+                          {text.qualityScore}:{" "}
+                          <span className="font-semibold text-cyan-100">
+                            {formatQualityScore(dataset.quality.score)}
+                          </span>
+                        </span>
+                        <span className="rounded-2xl border border-amber-300/15 bg-amber-300/[0.06] px-3 py-2">
+                          {text.licenseRisk}:{" "}
+                          <span className="font-semibold text-amber-100">
+                            {dataset.quality.licenseRisk}
+                          </span>
+                        </span>
+                        <span className="rounded-2xl border border-emerald-300/15 bg-emerald-400/[0.06] px-3 py-2">
+                          {text.recommendedSteps}:{" "}
+                          <span className="font-semibold text-emerald-100">
+                            {dataset.quality.recommendedSteps
+                              ? `${dataset.quality.recommendedSteps.min}-${dataset.quality.recommendedSteps.max}`
+                              : "--"}
+                          </span>
+                        </span>
+                        <span className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 sm:col-span-3">
+                          {text.convertedRows}:{" "}
+                          <span className="text-slate-200">
+                            {dataset.quality.convertedRows ?? "--"} /{" "}
+                            {dataset.quality.downloadedRows ?? "--"}
+                          </span>
+                          <span className="ml-2 text-slate-500">
+                            dup {dataset.quality.duplicateRows ?? 0} · pii{" "}
+                            {dataset.quality.piiRiskRows ?? 0}
+                          </span>
+                        </span>
+                      </div>
+                    ) : null}
+                    <p>{dataset.sourcePath || "--"}</p>
                   <p>{formatDateTime(dataset.updatedAt)}</p>
                   {dataset.sourcePath ? (
                     <div className="mt-3 flex flex-wrap gap-2">
@@ -4356,19 +4461,67 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
                                       </button>
                                     </div>
                                   </div>
-                                  <div className="mt-2 flex flex-wrap gap-2 text-[10px] uppercase tracking-[0.14em] text-emerald-50/70">
-                                    <span className="rounded-full border border-emerald-200/20 bg-emerald-200/10 px-2 py-0.5">
-                                      {text.reportPoints}:{" "}
+                                    <div className="mt-2 flex flex-wrap gap-2 text-[10px] uppercase tracking-[0.14em] text-emerald-50/70">
+                                      <span className="rounded-full border border-emerald-200/20 bg-emerald-200/10 px-2 py-0.5">
+                                        {text.reportPoints}:{" "}
                                       {latestReport.metricsSummary.pointCount}
                                     </span>
                                     <span className="rounded-full border border-emerald-200/20 bg-emerald-200/10 px-2 py-0.5">
                                       {text.reportLatestStep}:{" "}
                                       {latestReport.metricsSummary.latestStep ??
-                                        "--"}
-                                    </span>
-                                  </div>
-                                  {latestReport.evidence ? (
-                                    <div className="mt-3 rounded-2xl border border-emerald-200/15 bg-black/15 p-3">
+                                          "--"}
+                                      </span>
+                                    </div>
+                                    {latestReport.runComparison ? (
+                                      <div className="mt-3 rounded-2xl border border-cyan-200/15 bg-cyan-300/[0.06] p-3">
+                                        <div className="flex flex-wrap items-center justify-between gap-2">
+                                          <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-cyan-50/70">
+                                            {text.runComparison}
+                                          </p>
+                                          <span className="rounded-full border border-cyan-200/15 bg-cyan-200/10 px-2 py-0.5 text-[10px] text-cyan-50/70">
+                                            {latestReport.runComparison.adapterName}
+                                          </span>
+                                        </div>
+                                        <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                                          <div className="rounded-xl border border-cyan-200/15 bg-black/15 px-2 py-2">
+                                            <p className="text-[9px] uppercase tracking-[0.16em] text-cyan-50/50">
+                                              {text.runsCompared}
+                                            </p>
+                                            <p className="mt-1 text-sm font-semibold text-cyan-50">
+                                              {latestReport.runComparison.runCount}
+                                            </p>
+                                          </div>
+                                          <div className="rounded-xl border border-cyan-200/15 bg-black/15 px-2 py-2">
+                                            <p className="text-[9px] uppercase tracking-[0.16em] text-cyan-50/50">
+                                              {text.bestValLoss}
+                                            </p>
+                                            <p className="mt-1 text-sm font-semibold text-cyan-50">
+                                              {typeof latestReport.runComparison
+                                                .bestValidationLoss === "number"
+                                                ? latestReport.runComparison.bestValidationLoss.toFixed(
+                                                    4,
+                                                  )
+                                                : "--"}
+                                            </p>
+                                          </div>
+                                          <div className="rounded-xl border border-cyan-200/15 bg-black/15 px-2 py-2">
+                                            <p className="text-[9px] uppercase tracking-[0.16em] text-cyan-50/50">
+                                              {text.latestValLoss}
+                                            </p>
+                                            <p className="mt-1 text-sm font-semibold text-cyan-50">
+                                              {typeof latestReport.runComparison
+                                                .latestValidationLoss === "number"
+                                                ? latestReport.runComparison.latestValidationLoss.toFixed(
+                                                    4,
+                                                  )
+                                                : "--"}
+                                            </p>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    ) : null}
+                                    {latestReport.evidence ? (
+                                      <div className="mt-3 rounded-2xl border border-emerald-200/15 bg-black/15 p-3">
                                       <div className="flex flex-wrap items-center justify-between gap-2">
                                         <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-50/70">
                                           {text.evidenceSummary}
