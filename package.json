@@ -30,7 +30,18 @@
     "dev": "./scripts/run-next.sh dev 3011",
     "build": "./scripts/run-next.sh build",
     "start": "./scripts/run-next.sh start 3011",
-    "lint": "./scripts/run-lint.sh"
+    "lint": "./scripts/run-lint.sh",
+    "typecheck": "./scripts/run-typecheck.sh full",
+    "typecheck:partitions": "./scripts/run-typecheck.sh partitions",
+    "typecheck:changed": "./scripts/run-typecheck.sh changed",
+    "smoke:routes": "./scripts/route-smoke.sh",
+    "smoke:screenshots": "./scripts/screenshot-smoke.sh",
+    "typecheck:validate": "./scripts/run-typecheck.sh validate",
+    "typecheck:changed:dry": "TYPECHECK_DRY_RUN=1 ./scripts/run-typecheck.sh changed",
+    "typecheck:core": "./scripts/run-typecheck.sh core",
+    "typecheck:agent": "./scripts/run-typecheck.sh agent",
+    "typecheck:admin": "./scripts/run-typecheck.sh admin",
+    "typecheck:app": "./scripts/run-typecheck.sh app"
   },
   "dependencies": {
     "next": "14.2.33",
@@ -44,6 +55,7 @@
     "autoprefixer": "10.4.19",
     "eslint": "8.57.0",
     "eslint-config-next": "14.2.33",
+    "playwright": "^1.54.1",
     "postcss": "8.4.40",
     "tailwindcss": "3.4.9",
     "typescript": "5.5.4"

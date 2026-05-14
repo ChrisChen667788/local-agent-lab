@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.typecheck.json",
+  "compilerOptions": {
+    "incremental": true,
+    "tsBuildInfoFile": "./node_modules/.cache/first-llm-studio/typecheck/core.tsbuildinfo",
+    "types": ["node"]
+  },
+  "include": [
+    "lib/**/*.ts",
+    "scripts/**/*.ts",
+    "tailwind.config.ts"
+  ]
+}

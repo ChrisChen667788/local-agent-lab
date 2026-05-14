@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.lint.json",
+  "compilerOptions": {
+    "allowJs": false,
+    "incremental": true,
+    "moduleResolution": "node",
+    "plugins": [],
+    "tsBuildInfoFile": "./node_modules/.cache/first-llm-studio/typecheck/full.tsbuildinfo",
+    "types": ["node", "react", "react-dom"]
+  }
+}

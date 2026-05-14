@@ -1,0 +1,35 @@
+{
+  "extends": "./tsconfig.typecheck.json",
+  "compilerOptions": {
+    "incremental": true,
+    "tsBuildInfoFile": "./node_modules/.cache/first-llm-studio/typecheck/app.tsbuildinfo"
+  },
+  "include": [
+    "next-env.d.ts",
+    "app/**/*.ts",
+    "app/**/*.tsx",
+    "components/**/*.ts",
+    "components/**/*.tsx",
+    "lib/i18n.ts",
+    "lib/types.ts",
+    "lib/mock-data.ts",
+    "pages/**/*.ts",
+    "pages/**/*.tsx"
+  ],
+  "exclude": [
+    "node_modules",
+    "node_modules 2",
+    ".venv",
+    "data",
+    "tmp",
+    "dist",
+    "output",
+    ".codex-run",
+    ".next",
+    ".next-dev",
+    ".next-build",
+    ".next.bak.*",
+    ".next.empty.*",
+    "app/api/**/*.ts"
+  ]
+}
