@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.typecheck.json",
+  "compilerOptions": {
+    "incremental": true,
+    "tsBuildInfoFile": "./node_modules/.cache/first-llm-studio/typecheck/core-demo-data.tsbuildinfo",
+    "typeRoots": ["./types/typecheck-empty"],
+    "types": []
+  },
+  "include": [
+    "lib/mock-data.ts"
+  ]
+}

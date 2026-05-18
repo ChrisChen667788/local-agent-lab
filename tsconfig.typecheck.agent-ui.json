@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.typecheck.json",
+  "compilerOptions": {
+    "incremental": true,
+    "tsBuildInfoFile": "./node_modules/.cache/first-llm-studio/typecheck/agent-ui.tsbuildinfo"
+  },
+  "include": [
+    "next-env.d.ts",
+    "app/agent/**/*.ts",
+    "app/agent/**/*.tsx",
+    "components/agent/**/*.ts",
+    "components/agent/**/*.tsx",
+    "components/layout/**/*.ts",
+    "components/layout/**/*.tsx",
+    "lib/agent/**/*.ts",
+    "lib/i18n.ts",
+    "lib/types.ts",
+    "lib/mock-data.ts"
+  ]
+}

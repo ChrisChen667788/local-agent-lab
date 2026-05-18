@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.typecheck.json",
+  "compilerOptions": {
+    "incremental": true,
+    "tsBuildInfoFile": "./node_modules/.cache/first-llm-studio/typecheck/agent-api.tsbuildinfo"
+  },
+  "include": [
+    "next-env.d.ts",
+    "app/api/agent/**/*.ts",
+    "lib/agent/**/*.ts",
+    "lib/i18n.ts",
+    "lib/types.ts",
+    "lib/mock-data.ts"
+  ]
+}

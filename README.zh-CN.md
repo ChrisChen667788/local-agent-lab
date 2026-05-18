@@ -64,7 +64,7 @@ First LLM Studio 的目标，就是把这些环节重新收回同一个工作台
 ### 远端
 
 - `OpenAI Codex`
-- `OpenAI GPT-5.4`
+- `OpenAI GPT-5.5`
 - `Claude API`
 - `DeepSeek API`
 - `Kimi API`
@@ -216,4 +216,4 @@ public/                   对外资源和社媒封面图
 - 当前版本：[`VERSION`](./VERSION)
 - Release notes：[`docs/releases`](./docs/releases)
 - 发布流程：[`docs/release-process.md`](./docs/release-process.md)
-- 最新版本说明：[v0.3.1](./docs/releases/v0.3.1_2026-05-02.md)
+- 最新版本说明：[v0.3.2](./docs/releases/v0.3.2_2026-05-18.md)

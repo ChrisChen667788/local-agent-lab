@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.typecheck.json",
+  "compilerOptions": {
+    "incremental": true,
+    "tsBuildInfoFile": "./node_modules/.cache/first-llm-studio/typecheck/core-i18n.tsbuildinfo",
+    "typeRoots": ["./types/typecheck-empty"],
+    "types": []
+  },
+  "include": [
+    "lib/i18n.ts"
+  ]
+}

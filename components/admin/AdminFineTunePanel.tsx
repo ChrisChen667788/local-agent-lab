@@ -16,6 +16,7 @@ import type {
   AgentFineTuneDatasetQuality,
   AgentFineTuneDatasetFormat,
   AgentFineTuneDatasetValidation,
+  AgentFineTuneOperation,
   AgentFineTuneReportExport,
   AgentFineTuneSummary,
   AgentFineTuneUpstreamDatasetCandidate,
@@ -56,6 +57,7 @@ type FineTuneResponse = {
     sourceUrl?: string;
   };
   report?: AgentFineTuneReportExport;
+  operation?: AgentFineTuneOperation;
 };
 
 const DEFAULT_DATASET_FORM = {
@@ -175,6 +177,106 @@ type TrainingChartOverlaySeries = {
 type TrainingChartHoverState = TrainingChartPoint | null;
 type FineTuneJobGroupKey = "active" | "needs-review" | "completed" | "staged";
 type FineTuneWorkspaceTab = "setup" | "runs" | "assets";
+type FineTuneLabTab = "train" | "evaluate" | "chat" | "export";
+type FineTuneTrainStage =
+  | "supervised-fine-tune"
+  | "continued-pretrain"
+  | "preference-tuning"
+  | "distillation";
+type FineTuneRecipeFormState = typeof DEFAULT_RECIPE_FORM;
+type FineTuneEvalMetric =
+  | "loss"
+  | "rouge-l"
+  | "bleu"
+  | "exact-match"
+  | "latency";
+type FineTuneEvaluateFormState = {
+  datasetId: string;
+  checkpointPath: string;
+  maxSamples: number;
+  maxNewTokens: number;
+  temperature: number;
+  topP: number;
+  metrics: FineTuneEvalMetric[];
+  savePredictions: boolean;
+};
+type FineTuneChatFormState = {
+  adapterId: string;
+  role: "user" | "assistant" | "system";
+  systemPrompt: string;
+  prompt: string;
+  maxNewTokens: number;
+  temperature: number;
+  topP: number;
+  skipSpecialTokens: boolean;
+  renderHtmlTags: boolean;
+};
+type FineTuneDistillationFormState = {
+  teacherTargetId: string;
+  outputPath: string;
+  sampleCount: number;
+  maxNewTokens: number;
+  temperature: number;
+  topP: number;
+  seedPrompt: string;
+  includeReasoningTrace: boolean;
+};
+type FineTuneExportFormState = {
+  adapterId: string;
+  quantization: "none" | "q8" | "q4";
+  exportFormat: "adapter-bundle" | "merged-mlx" | "gguf";
+  maxShardSizeGb: number;
+  outputDir: string;
+  hubId: string;
+  includeDatasetCard: boolean;
+};
+
+const DEFAULT_EVALUATE_FORM: FineTuneEvaluateFormState = {
+  datasetId: "",
+  checkpointPath: "",
+  maxSamples: 64,
+  maxNewTokens: 512,
+  temperature: 0.2,
+  topP: 0.8,
+  metrics: ["loss", "rouge-l", "exact-match"],
+  savePredictions: true,
+};
+
+const DEFAULT_CHAT_FORM: FineTuneChatFormState = {
+  adapterId: "",
+  role: "user",
+  systemPrompt:
+    "You are testing a fine-tuned local adapter. Answer directly and avoid exposing training metadata.",
+  prompt:
+    "Summarize the current fine-tune result in three concise bullets for a teammate.",
+  maxNewTokens: 512,
+  temperature: 0.7,
+  topP: 0.9,
+  skipSpecialTokens: true,
+  renderHtmlTags: false,
+};
+
+const DEFAULT_DISTILLATION_FORM: FineTuneDistillationFormState = {
+  teacherTargetId: "",
+  outputPath: "data/fine-tune/distilled/starter-distill.jsonl",
+  sampleCount: 384,
+  maxNewTokens: 768,
+  temperature: 0.4,
+  topP: 0.85,
+  seedPrompt:
+    "Generate concise coding-agent supervision samples for compare, benchmark, retrieval, and local runtime recovery tasks.",
+  includeReasoningTrace: false,
+};
+
+const DEFAULT_EXPORT_FORM: FineTuneExportFormState = {
+  adapterId: "",
+  quantization: "none",
+  exportFormat: "adapter-bundle",
+  maxShardSizeGb: 5,
+  outputDir: "",
+  hubId: "",
+  includeDatasetCard: true,
+};
 
 const TRAINING_CHART_RANGE_PRESETS: TrainingChartRangePreset[] = [
   "all",
@@ -668,6 +770,256 @@ function normalizeFineTuneSlug(value: string) {
     .slice(0, 48);
 }
 
+function estimateFineTuneSteps(
+  recipe: FineTuneRecipeFormState,
+  sampleCount?: number | null,
+) {
+  if (typeof sampleCount !== "number" || !Number.isFinite(sampleCount)) {
+    return null;
+  }
+  const validationRatio = Math.max(
+    0,
+    Math.min(0.8, recipe.validationSplitPct / 100),
+  );
+  const trainSamples = Math.max(1, Math.round(sampleCount * (1 - validationRatio)));
+  const effectiveBatch = Math.max(
+    1,
+    recipe.batchSize * Math.max(1, recipe.gradientAccumulationSteps),
+  );
+  return Math.max(1, Math.ceil(trainSamples / effectiveBatch) * recipe.epochs);
+}
+
+function buildTrainingCommandPreview({
+  recipe,
+  stage,
+  datasetPath,
+  targetModel,
+  adapterName,
+  estimatedSteps,
+}: {
+  recipe: FineTuneRecipeFormState;
+  stage: FineTuneTrainStage;
+  datasetPath: string;
+  targetModel: string;
+  adapterName: string;
+  estimatedSteps: number | null;
+}) {
+  const command = [
+    "python -m mlx_lm.lora",
+    "--train",
+    `--model "${targetModel || recipe.baseTargetId || "<base-model>"}"`,
+    `--data "${datasetPath || recipe.datasetId || "<dataset-jsonl>"}"`,
+    `--adapter-path "adapters/${adapterName || recipe.adapterName || "<adapter-name>"}"`,
+    `--max-seq-length ${recipe.sequenceLength}`,
+    `--batch-size ${recipe.batchSize}`,
+    `--iters ${estimatedSteps || "<estimated-steps>"}`,
+    `--learning-rate ${recipe.learningRate}`,
+    `--lora-layers ${recipe.numLayers}`,
+    `--grad-accumulation ${recipe.gradientAccumulationSteps}`,
+    `--seed ${recipe.seed}`,
+  ];
+  if (recipe.gradientCheckpointing) {
+    command.push("--grad-checkpoint");
+  }
+  if (stage !== "supervised-fine-tune") {
+    command.push(`# stage=${stage}`);
+  }
+  return command.join(" \\\n  ");
+}
+
+function buildTrainingYamlPreview({
+  recipe,
+  stage,
+  datasetPath,
+  datasetLabel,
+  targetModel,
+  adapterName,
+  estimatedSteps,
+}: {
+  recipe: FineTuneRecipeFormState;
+  stage: FineTuneTrainStage;
+  datasetPath: string;
+  datasetLabel: string;
+  targetModel: string;
+  adapterName: string;
+  estimatedSteps: number | null;
+}) {
+  return [
+    "training:",
+    `  stage: ${stage}`,
+    "  backend: mlx-lm-lora",
+    `  model: ${targetModel || recipe.baseTargetId || "<base-model>"}`,
+    `  dataset: ${datasetPath || recipe.datasetId || "<dataset-jsonl>"}`,
+    `  dataset_label: ${datasetLabel || "<dataset-label>"}`,
+    `  adapter: ${adapterName || recipe.adapterName || "<adapter-name>"}`,
+    `  sequence_length: ${recipe.sequenceLength}`,
+    `  batch_size: ${recipe.batchSize}`,
+    `  epochs: ${recipe.epochs}`,
+    `  estimated_steps: ${estimatedSteps || "unknown"}`,
+    `  learning_rate: ${recipe.learningRate}`,
+    "lora:",
+    `  method: ${recipe.fineTuneMethod}`,
+    `  rank: ${recipe.loraRank}`,
+    `  alpha: ${recipe.loraAlpha}`,
+    `  layers: ${recipe.numLayers}`,
+    "runtime:",
+    `  optimizer: ${recipe.optimizer}`,
+    `  gradient_accumulation_steps: ${recipe.gradientAccumulationSteps}`,
+    `  gradient_checkpointing: ${recipe.gradientCheckpointing ? "true" : "false"}`,
+    `  validation_split_pct: ${recipe.validationSplitPct}`,
+    `  save_every_steps: ${recipe.saveEverySteps}`,
+    `  seed: ${recipe.seed}`,
+    `  benchmark_suite: ${recipe.benchmarkSuiteId || "none"}`,
+  ].join("\n");
+}
+
+function buildDistillationCommandPreview({
+  distillationForm,
+  teacherModel,
+  outputPath,
+}: {
+  distillationForm: FineTuneDistillationFormState;
+  teacherModel: string;
+  outputPath: string;
+}) {
+  return [
+    "python -m first_llm_studio.distill_dataset",
+    `--teacher "${teacherModel || distillationForm.teacherTargetId || "<teacher-target>"}"`,
+    `--output "${outputPath || distillationForm.outputPath || "<distilled-jsonl>"}"`,
+    `--samples ${distillationForm.sampleCount}`,
+    `--max-new-tokens ${distillationForm.maxNewTokens}`,
+    `--temperature ${distillationForm.temperature}`,
+    `--top-p ${distillationForm.topP}`,
+    `--seed-prompt "${distillationForm.seedPrompt.replaceAll('"', '\\"') || "<seed-prompt>"}"`,
+    distillationForm.includeReasoningTrace
+      ? "--include-reasoning-trace"
+      : "--strip-reasoning-trace",
+  ].join(" \\\n  ");
+}
+
+function buildDistillationYamlPreview({
+  distillationForm,
+  teacherLabel,
+  teacherModel,
+  outputPath,
+}: {
+  distillationForm: FineTuneDistillationFormState;
+  teacherLabel: string;
+  teacherModel: string;
+  outputPath: string;
+}) {
+  return [
+    "distillation:",
+    "  backend: first-llm-studio-dataset-distiller",
+    `  teacher_target: ${distillationForm.teacherTargetId || "<teacher-target>"}`,
+    `  teacher_label: ${teacherLabel || "<teacher-label>"}`,
+    `  teacher_model: ${teacherModel || "<teacher-model>"}`,
+    `  output_path: ${outputPath || distillationForm.outputPath || "<distilled-jsonl>"}`,
+    `  samples: ${distillationForm.sampleCount}`,
+    `  max_new_tokens: ${distillationForm.maxNewTokens}`,
+    `  temperature: ${distillationForm.temperature}`,
+    `  top_p: ${distillationForm.topP}`,
+    `  include_reasoning_trace: ${distillationForm.includeReasoningTrace ? "true" : "false"}`,
+    "  schema:",
+    "    format: instruction-jsonl",
+    "    fields: [instruction, input, output, source]",
+    `  seed_prompt: ${JSON.stringify(distillationForm.seedPrompt)}`,
+  ].join("\n");
+}
+
+function buildEvaluateCommandPreview({
+  checkpointPath,
+  datasetPath,
+  evaluateForm,
+}: {
+  checkpointPath: string;
+  datasetPath: string;
+  evaluateForm: FineTuneEvaluateFormState;
+}) {
+  return [
+    "python -m first_llm_studio.eval_adapter",
+    `--adapter-path "${checkpointPath || "<adapter-or-checkpoint-path>"}"`,
+    `--dataset "${datasetPath || "<validation-jsonl>"}"`,
+    `--max-samples ${evaluateForm.maxSamples}`,
+    `--max-new-tokens ${evaluateForm.maxNewTokens}`,
+    `--temperature ${evaluateForm.temperature}`,
+    `--top-p ${evaluateForm.topP}`,
+    `--metrics "${evaluateForm.metrics.join(",") || "loss"}"`,
+    evaluateForm.savePredictions ? "--save-predictions" : "--no-save-predictions",
+  ].join(" \\\n  ");
+}
+
+function buildEvaluateYamlPreview({
+  checkpointPath,
+  datasetPath,
+  datasetLabel,
+  evaluateForm,
+}: {
+  checkpointPath: string;
+  datasetPath: string;
+  datasetLabel: string;
+  evaluateForm: FineTuneEvaluateFormState;
+}) {
+  return [
+    "evaluation:",
+    "  backend: local-adapter-eval",
+    `  adapter_or_checkpoint: ${checkpointPath || "<adapter-or-checkpoint-path>"}`,
+    `  dataset: ${datasetPath || "<validation-jsonl>"}`,
+    `  dataset_label: ${datasetLabel || "<dataset-label>"}`,
+    `  max_samples: ${evaluateForm.maxSamples}`,
+    `  max_new_tokens: ${evaluateForm.maxNewTokens}`,
+    `  temperature: ${evaluateForm.temperature}`,
+    `  top_p: ${evaluateForm.topP}`,
+    `  metrics: [${evaluateForm.metrics.join(", ")}]`,
+    `  save_predictions: ${evaluateForm.savePredictions ? "true" : "false"}`,
+  ].join("\n");
+}
+
+function buildChatAdapterCommandPreview({
+  adapterPath,
+  chatForm,
+}: {
+  adapterPath: string;
+  chatForm: FineTuneChatFormState;
+}) {
+  return [
+    "python -m first_llm_studio.chat_adapter",
+    `--adapter-id "${chatForm.adapterId || "<adapter-id>"}"`,
+    `--adapter-path "${adapterPath || "<adapter-output-dir>"}"`,
+    `--role ${chatForm.role}`,
+    `--max-new-tokens ${chatForm.maxNewTokens}`,
+    `--temperature ${chatForm.temperature}`,
+    `--top-p ${chatForm.topP}`,
+    chatForm.skipSpecialTokens ? "--skip-special-tokens" : "--keep-special-tokens",
+    chatForm.renderHtmlTags ? "--render-html-tags" : "--plain-text",
+  ].join(" \\\n  ");
+}
+
+function buildExportAdapterCommandPreview({
+  adapterPath,
+  exportForm,
+}: {
+  adapterPath: string;
+  exportForm: FineTuneExportFormState;
+}) {
+  const command = [
+    "python -m first_llm_studio.export_adapter",
+    `--adapter-id "${exportForm.adapterId || "<adapter-id>"}"`,
+    `--adapter-path "${adapterPath || "<adapter-output-dir>"}"`,
+    `--format ${exportForm.exportFormat}`,
+    `--quantization ${exportForm.quantization}`,
+    `--max-shard-size-gb ${exportForm.maxShardSizeGb}`,
+    `--output-dir "${exportForm.outputDir || "<export-dir>"}"`,
+  ];
+  if (exportForm.hubId.trim()) {
+    command.push(`--hub-id "${exportForm.hubId.trim()}"`);
+  }
+  if (exportForm.includeDatasetCard) {
+    command.push("--include-dataset-card");
+  }
+  return command.join(" \\\n  ");
+}
+
 function getJobProgressPercent(job: AgentFineTuneJob) {
   if (job.status === "completed") return 100;
   if (typeof job.progress?.percent === "number")
@@ -995,6 +1347,121 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
         tabSetup: "Setup",
         tabRuns: "Runs & logs",
         tabAssets: "Assets",
+        fineTuneLabTabs: "Fine-tune modes",
+        fineTuneTrainTab: "Train",
+        fineTuneEvaluateTab: "Evaluate & Predict",
+        fineTuneChatTab: "Chat Adapter",
+        fineTuneExportTab: "Export",
+        fineTuneTabPlanned: "Planned",
+        trainConsoleTitle: "Train control console",
+        trainConsoleHint:
+          "Mirror the LLaMA-Factory flow: choose a training stage, inspect the exact command/YAML, then stage or run the local worker.",
+        trainStage: "Training stage",
+        trainStageSft: "Supervised fine-tune",
+        trainStagePretrain: "Continued pre-train",
+        trainStagePreference: "Preference tuning",
+        trainStageDistillation: "Distillation data",
+        distillationConsoleTitle: "Distillation dataset builder",
+        distillationConsoleHint:
+          "Use a stronger teacher target to generate starter instruction data, then validate and fine-tune the smaller local adapter.",
+        distillationTeacher: "Teacher target",
+        distillationOutputPath: "Output JSONL path",
+        distillationSamples: "Sample count",
+        distillationSeedPrompt: "Seed prompt",
+        distillationIncludeReasoning: "Keep reasoning traces",
+        distillationGeneration: "Teacher generation",
+        distillationRun: "Generate dataset",
+        distillationRunSuccess: "Distillation starter dataset generated.",
+        distillationCommandCopied: "Distillation command copied.",
+        distillationYamlCopied: "Distillation YAML copied.",
+        commandPreview: "Command preview",
+        yamlPreview: "YAML preview",
+        copyCommand: "Copy command",
+        copyYaml: "Copy YAML",
+        saveArgs: "Save args",
+        loadArgs: "Load args",
+        argsSaved: "Training args snapshot saved locally.",
+        argsLoaded: "Training args snapshot loaded.",
+        argsMissing: "No saved training args snapshot yet.",
+        commandCopied: "Training command copied.",
+        yamlCopied: "Training YAML copied.",
+        estimatedSteps: "Estimated steps",
+        effectiveBatch: "Effective batch",
+        trainSamples: "Train samples",
+        recipeGroupIdentity: "Identity",
+        recipeGroupSchedule: "Schedule & memory",
+        recipeGroupAdapter: "Adapter capacity",
+        recipeGroupEvidence: "Evidence",
+        evaluatePlaceholder:
+          "Evaluation will reuse the staged checkpoint path, validation dataset, generation settings, and ROUGE-style metrics.",
+        evaluateConsoleTitle: "Evaluate & Predict console",
+        evaluateConsoleHint:
+          "Prepare the post-training evaluation before wiring the worker: choose a validation dataset, adapter output/checkpoint, generation budget, and metrics.",
+        evalDataset: "Evaluation dataset",
+        evalCheckpoint: "Adapter or checkpoint path",
+        evalCheckpointHelper:
+          "Use a ready adapter output directory or paste a checkpoint path from a completed run.",
+        evalGeneration: "Generation settings",
+        evalMetrics: "Metrics",
+        evalMaxSamples: "Max samples",
+        evalMaxNewTokens: "Max new tokens",
+        evalTemperature: "Temperature",
+        evalTopP: "Top-p",
+        evalSavePredictions: "Save predictions",
+        evalReadiness: "Evaluation readiness",
+        evalReady:
+          "Ready to run evaluation and write predictions, metrics, and a report.",
+        evalNeedsDataset: "Select a dataset before evaluating.",
+        evalNeedsCheckpoint: "Select or paste an adapter/checkpoint path.",
+        evalApiPlanned:
+          "Runs locally now: creates predictions.jsonl, operation manifest, and evaluation report.",
+        evalRun: "Run evaluation",
+        evalRunSuccess: "Evaluation operation completed.",
+        evalCommandCopied: "Evaluation command copied.",
+        evalYamlCopied: "Evaluation YAML copied.",
+        chatPlaceholder:
+          "Adapter chat will load the selected adapter into a safe local runtime and compare replies against the base model.",
+        chatConsoleTitle: "Chat Adapter sandbox",
+        chatConsoleHint:
+          "Prepare a controlled single-turn adapter chat before wiring the live sandbox: role, prompt, generation controls, and output cleanup.",
+        chatAdapter: "Adapter",
+        chatRole: "Role",
+        chatSystemPrompt: "System prompt",
+        chatPrompt: "Test prompt",
+        chatSkipSpecialTokens: "Skip special tokens",
+        chatRenderHtmlTags: "Render HTML tags",
+        chatReadiness: "Chat readiness",
+        chatReady: "Ready to attach this adapter and run a sandbox chat.",
+        chatNeedsAdapter: "Select a ready adapter before chatting.",
+        chatApiPlanned:
+          "Runs locally now: writes a chat transcript, manifest, and smoke report.",
+        chatRun: "Run adapter chat",
+        chatRunSuccess: "Adapter chat operation completed.",
+        exportPlaceholder:
+          "Export will package adapter files, config, metrics, report, and optional quantized artifacts for deployment.",
+        exportConsoleTitle: "Adapter export wizard",
+        exportConsoleHint:
+          "Prepare deployment packaging with an explicit adapter, export format, quantization level, shard budget, and optional Hub metadata.",
+        exportAdapter: "Adapter",
+        exportFormat: "Export format",
+        exportQuantization: "Quantization",
+        exportShardSize: "Max shard size (GB)",
+        exportOutputDir: "Export output dir",
+        exportHubId: "HF Hub ID",
+        exportIncludeDatasetCard: "Include dataset/model card",
+        exportReadiness: "Export readiness",
+        exportReady:
+          "Ready to package adapter metadata, model card, dataset card, and manifest.",
+        exportNeedsAdapter: "Select a ready adapter before exporting.",
+        exportApiPlanned:
+          "Runs locally now: writes deployment cards, export manifest, and report.",
+        exportRun: "Run export",
+        exportRunSuccess: "Adapter export operation completed.",
+        adapterCommandCopied: "Adapter command copied.",
+        operationHistory: "Operation history",
+        operationHistoryEmpty:
+          "Evaluation, chat, export, and distillation operations will appear here.",
+        operationArtifacts: "Artifacts",
         setupSummary:
           "Dataset intake, recipe parameters, and job staging stay in one guided flow.",
         runsSummary:
@@ -1213,6 +1680,118 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
       tabSetup: "配置",
       tabRuns: "作业与日志",
       tabAssets: "资产库",
+      fineTuneLabTabs: "微调模式",
+      fineTuneTrainTab: "Train",
+      fineTuneEvaluateTab: "Evaluate & Predict",
+      fineTuneChatTab: "Chat Adapter",
+      fineTuneExportTab: "Export",
+      fineTuneTabPlanned: "规划中",
+      trainConsoleTitle: "训练控制台",
+      trainConsoleHint:
+        "对齐 LLaMA-Factory 的操作流：选择训练阶段，检查命令和 YAML，再暂存或启动本地 worker。",
+      trainStage: "训练阶段",
+      trainStageSft: "监督微调",
+      trainStagePretrain: "继续预训练",
+      trainStagePreference: "偏好优化",
+      trainStageDistillation: "蒸馏数据",
+      distillationConsoleTitle: "蒸馏数据构建器",
+      distillationConsoleHint:
+        "用更强教师目标生成 starter 指令数据，再校验并微调更小的本地 adapter。",
+      distillationTeacher: "教师目标",
+      distillationOutputPath: "输出 JSONL 路径",
+      distillationSamples: "样本数",
+      distillationSeedPrompt: "种子提示词",
+      distillationIncludeReasoning: "保留 reasoning trace",
+      distillationGeneration: "教师生成参数",
+      distillationRun: "生成数据集",
+      distillationRunSuccess: "蒸馏 starter 数据集已生成。",
+      distillationCommandCopied: "蒸馏命令已复制。",
+      distillationYamlCopied: "蒸馏 YAML 已复制。",
+      commandPreview: "命令预览",
+      yamlPreview: "YAML 预览",
+      copyCommand: "复制命令",
+      copyYaml: "复制 YAML",
+      saveArgs: "保存参数",
+      loadArgs: "载入参数",
+      argsSaved: "训练参数快照已保存到本地。",
+      argsLoaded: "训练参数快照已载入。",
+      argsMissing: "还没有保存过训练参数快照。",
+      commandCopied: "训练命令已复制。",
+      yamlCopied: "训练 YAML 已复制。",
+      estimatedSteps: "预估 step",
+      effectiveBatch: "等效 batch",
+      trainSamples: "训练样本",
+      recipeGroupIdentity: "身份与数据",
+      recipeGroupSchedule: "调度与内存",
+      recipeGroupAdapter: "Adapter 容量",
+      recipeGroupEvidence: "证据链",
+      evaluatePlaceholder:
+        "Evaluate 会沿用已暂存 checkpoint、验证集、生成参数和 ROUGE 类指标。",
+      evaluateConsoleTitle: "Evaluate & Predict 控制台",
+      evaluateConsoleHint:
+        "先把训练后评估配置准备好：选择验证数据集、adapter 产物或 checkpoint、生成预算和评测指标。",
+      evalDataset: "评估数据集",
+      evalCheckpoint: "Adapter 或 checkpoint 路径",
+      evalCheckpointHelper:
+        "可选择已就绪 adapter 的产物目录，也可以粘贴已完成作业里的 checkpoint 路径。",
+      evalGeneration: "生成参数",
+      evalMetrics: "评估指标",
+      evalMaxSamples: "最大样本数",
+      evalMaxNewTokens: "最大生成长度",
+      evalTemperature: "温度",
+      evalTopP: "Top-p",
+      evalSavePredictions: "保存预测结果",
+      evalReadiness: "评估就绪度",
+      evalReady: "已可运行评估，并写入预测、指标和报告。",
+      evalNeedsDataset: "评估前请选择数据集。",
+      evalNeedsCheckpoint: "请选择或填写 adapter / checkpoint 路径。",
+      evalApiPlanned:
+        "现在会本地生成 predictions.jsonl、operation manifest 和评估报告。",
+      evalRun: "运行评估",
+      evalRunSuccess: "评估操作已完成。",
+      evalCommandCopied: "评估命令已复制。",
+      evalYamlCopied: "评估 YAML 已复制。",
+      chatPlaceholder:
+        "Chat Adapter 会把选中的 adapter 安全挂到本地运行时，并和基础模型对话对比。",
+      chatConsoleTitle: "Chat Adapter 沙盒",
+      chatConsoleHint:
+        "先准备受控单轮 adapter 对话配置：角色、提示词、生成参数和输出清理策略，后续直接接实时沙盒。",
+      chatAdapter: "Adapter",
+      chatRole: "角色",
+      chatSystemPrompt: "系统提示词",
+      chatPrompt: "测试提示词",
+      chatSkipSpecialTokens: "跳过特殊 token",
+      chatRenderHtmlTags: "渲染 HTML 标签",
+      chatReadiness: "对话就绪度",
+      chatReady: "可挂载 adapter 并启动沙盒对话。",
+      chatNeedsAdapter: "对话前请选择一个可用 adapter。",
+      chatApiPlanned:
+        "现在会本地写入 chat transcript、manifest 和冒烟报告。",
+      chatRun: "运行 Adapter 对话",
+      chatRunSuccess: "Adapter 对话操作已完成。",
+      exportPlaceholder:
+        "Export 会打包 adapter 文件、配置、指标、报告，以及可选量化产物，方便部署。",
+      exportConsoleTitle: "Adapter 导出向导",
+      exportConsoleHint:
+        "显式选择 adapter、导出格式、量化等级、分片预算和可选 Hub 元数据，为部署打包做准备。",
+      exportAdapter: "Adapter",
+      exportFormat: "导出格式",
+      exportQuantization: "量化等级",
+      exportShardSize: "最大分片大小（GB）",
+      exportOutputDir: "导出目录",
+      exportHubId: "HF Hub ID",
+      exportIncludeDatasetCard: "包含数据集 / 模型卡",
+      exportReadiness: "导出就绪度",
+      exportReady: "已可打包 adapter 元数据、模型卡、数据卡和 manifest。",
+      exportNeedsAdapter: "导出前请选择一个可用 adapter。",
+      exportApiPlanned:
+        "现在会本地写入部署卡片、导出 manifest 和报告。",
+      exportRun: "运行导出",
+      exportRunSuccess: "Adapter 导出操作已完成。",
+      adapterCommandCopied: "Adapter 命令已复制。",
+      operationHistory: "操作记录",
+      operationHistoryEmpty: "评估、对话、导出和蒸馏操作会出现在这里。",
+      operationArtifacts: "产物",
       setupSummary:
         "数据接入、配方参数和作业暂存放在同一条引导式流程里，减少来回跳转。",
       runsSummary:
@@ -1537,6 +2116,19 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
   >({});
   const [activeWorkspaceTab, setActiveWorkspaceTab] =
     useState<FineTuneWorkspaceTab>("setup");
+  const [activeFineTuneLabTab, setActiveFineTuneLabTab] =
+    useState<FineTuneLabTab>("train");
+  const [trainStage, setTrainStage] =
+    useState<FineTuneTrainStage>("supervised-fine-tune");
+  const [evaluateForm, setEvaluateForm] = useState<FineTuneEvaluateFormState>(
+    DEFAULT_EVALUATE_FORM,
+  );
+  const [chatForm, setChatForm] =
+    useState<FineTuneChatFormState>(DEFAULT_CHAT_FORM);
+  const [distillationForm, setDistillationForm] =
+    useState<FineTuneDistillationFormState>(DEFAULT_DISTILLATION_FORM);
+  const [exportForm, setExportForm] =
+    useState<FineTuneExportFormState>(DEFAULT_EXPORT_FORM);
 
   const getChartRangeLabel = useCallback(
     (range: TrainingChartRangePreset) => {
@@ -1716,6 +2308,18 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
   }, [loadTargetCatalog]);
 
   useEffect(() => {
+    if (!targetCatalog.length) return;
+    setDistillationForm((current) => ({
+      ...current,
+      teacherTargetId:
+        current.teacherTargetId ||
+        targetCatalog.find((target) => target.execution === "remote")?.id ||
+        targetCatalog[0]?.id ||
+        "",
+    }));
+  }, [targetCatalog]);
+
+  useEffect(() => {
     if (
       !summary?.jobs.some(
         (job) => job.status === "queued" || job.status === "running",
@@ -1744,6 +2348,35 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
       return next;
     });
   }, [summary?.datasets]);
+
+  useEffect(() => {
+    if (!summary) return;
+    const firstDatasetId = summary.datasets[0]?.id || "";
+    const firstAdapterPath =
+      summary.adapters.find((adapter) => adapter.status === "ready")
+        ?.outputDir ||
+      summary.jobs.find((job) => job.status === "completed")?.outputDir ||
+      "";
+    const firstAdapter = summary.adapters.find(
+      (adapter) => adapter.status === "ready",
+    );
+    setEvaluateForm((current) => ({
+      ...current,
+      datasetId: current.datasetId || firstDatasetId,
+      checkpointPath: current.checkpointPath || firstAdapterPath,
+    }));
+    setChatForm((current) => ({
+      ...current,
+      adapterId: current.adapterId || firstAdapter?.id || "",
+    }));
+    setExportForm((current) => ({
+      ...current,
+      adapterId: current.adapterId || firstAdapter?.id || "",
+      outputDir:
+        current.outputDir ||
+        (firstAdapter?.outputDir ? `${firstAdapter.outputDir}/export` : ""),
+    }));
+  }, [summary]);
 
   async function postAction(
     body: Record<string, unknown>,
@@ -1801,6 +2434,57 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
     }
   }
 
+  function saveTrainingArgsSnapshot() {
+    try {
+      window.localStorage.setItem(
+        "first-llm-studio:fine-tune-training-args",
+        JSON.stringify({
+          recipeForm,
+          trainStage,
+          savedAt: new Date().toISOString(),
+        }),
+      );
+      setMessage(text.argsSaved);
+      setMessageTone("success");
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : "Failed to save args.",
+      );
+      setMessageTone("error");
+    }
+  }
+
+  function loadTrainingArgsSnapshot() {
+    try {
+      const raw = window.localStorage.getItem(
+        "first-llm-studio:fine-tune-training-args",
+      );
+      if (!raw) {
+        setMessage(text.argsMissing);
+        setMessageTone("error");
+        return;
+      }
+      const snapshot = JSON.parse(raw) as {
+        recipeForm?: Partial<FineTuneRecipeFormState>;
+        trainStage?: FineTuneTrainStage;
+      };
+      setRecipeForm({
+        ...DEFAULT_RECIPE_FORM,
+        ...snapshot.recipeForm,
+      });
+      if (snapshot.trainStage) {
+        setTrainStage(snapshot.trainStage);
+      }
+      setMessage(text.argsLoaded);
+      setMessageTone("success");
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : "Failed to load args.",
+      );
+      setMessageTone("error");
+    }
+  }
+
   async function exportJobReport(
     jobId: string,
     reportFormat: "markdown" | "manifest-json" | "metrics-csv",
@@ -1828,10 +2512,11 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
   async function runSecondaryAction(
     actionKey: string,
     body: Record<string, unknown>,
+    successMessage = text.actionOpenSuccess,
   ) {
     setActionPending((current) => ({ ...current, [actionKey]: true }));
     try {
-      await postAction(body, text.actionOpenSuccess);
+      await postAction(body, successMessage);
     } finally {
       setActionPending((current) => ({ ...current, [actionKey]: false }));
     }
@@ -2144,6 +2829,219 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
   );
   const selectedRecipe =
     summary?.recipes.find((recipe) => recipe.id === selectedRecipeId) || null;
+  const selectedRecipeDataset =
+    summary?.datasets.find((dataset) => dataset.id === recipeForm.datasetId) ||
+    null;
+  const selectedRecipeTarget =
+    summary?.localTargets.find(
+      (target) => target.id === recipeForm.baseTargetId,
+    ) || null;
+  const estimatedTrainingSteps = useMemo(
+    () => estimateFineTuneSteps(recipeForm, selectedRecipeDataset?.sampleCount),
+    [
+      recipeForm,
+      selectedRecipeDataset?.sampleCount,
+    ],
+  );
+  const effectiveTrainingBatch =
+    recipeForm.batchSize * Math.max(1, recipeForm.gradientAccumulationSteps);
+  const estimatedTrainingSamples =
+    typeof selectedRecipeDataset?.sampleCount === "number"
+      ? Math.max(
+          1,
+          Math.round(
+            selectedRecipeDataset.sampleCount *
+              (1 - Math.max(0, Math.min(0.8, recipeForm.validationSplitPct / 100))),
+          ),
+        )
+      : null;
+  const selectedDistillationTeacher =
+    targetCatalog.find(
+      (target) => target.id === distillationForm.teacherTargetId,
+    ) || null;
+  const distillationOutputPath =
+    distillationForm.outputPath.trim() ||
+    (recipeForm.adapterName
+      ? `data/fine-tune/distilled/${normalizeFineTuneSlug(recipeForm.adapterName)}.jsonl`
+      : DEFAULT_DISTILLATION_FORM.outputPath);
+  const trainingCommandPreview = useMemo(
+    () =>
+      trainStage === "distillation"
+        ? buildDistillationCommandPreview({
+            distillationForm,
+            teacherModel: selectedDistillationTeacher?.modelDefault || "",
+            outputPath: distillationOutputPath,
+          })
+        : buildTrainingCommandPreview({
+            recipe: recipeForm,
+            stage: trainStage,
+            datasetPath:
+              selectedRecipeDataset?.sourcePath || datasetForm.sourcePath || "",
+            targetModel: selectedRecipeTarget?.modelDefault || "",
+            adapterName: recipeForm.adapterName,
+            estimatedSteps: estimatedTrainingSteps,
+          }),
+    [
+      datasetForm.sourcePath,
+      distillationForm,
+      distillationOutputPath,
+      estimatedTrainingSteps,
+      recipeForm,
+      selectedRecipeDataset?.sourcePath,
+      selectedDistillationTeacher?.modelDefault,
+      selectedRecipeTarget?.modelDefault,
+      trainStage,
+    ],
+  );
+  const trainingYamlPreview = useMemo(
+    () =>
+      trainStage === "distillation"
+        ? buildDistillationYamlPreview({
+            distillationForm,
+            teacherLabel: selectedDistillationTeacher?.label || "",
+            teacherModel: selectedDistillationTeacher?.modelDefault || "",
+            outputPath: distillationOutputPath,
+          })
+        : buildTrainingYamlPreview({
+            recipe: recipeForm,
+            stage: trainStage,
+            datasetPath:
+              selectedRecipeDataset?.sourcePath || datasetForm.sourcePath || "",
+            datasetLabel:
+              selectedRecipeDataset?.label ||
+              datasetForm.label ||
+              recipeForm.datasetId,
+            targetModel: selectedRecipeTarget?.modelDefault || "",
+            adapterName: recipeForm.adapterName,
+            estimatedSteps: estimatedTrainingSteps,
+          }),
+    [
+      datasetForm.label,
+      datasetForm.sourcePath,
+      distillationForm,
+      distillationOutputPath,
+      estimatedTrainingSteps,
+      recipeForm,
+      selectedRecipeDataset?.label,
+      selectedRecipeDataset?.sourcePath,
+      selectedDistillationTeacher?.label,
+      selectedDistillationTeacher?.modelDefault,
+      selectedRecipeTarget?.modelDefault,
+      trainStage,
+    ],
+  );
+  const selectedEvaluateDataset =
+    summary?.datasets.find((dataset) => dataset.id === evaluateForm.datasetId) ||
+    null;
+  const evaluateCheckpointOptions = useMemo(() => {
+    const options = new Map<string, string>();
+    (summary?.adapters || []).forEach((adapter) => {
+      if (adapter.outputDir) {
+        options.set(
+          adapter.outputDir,
+          `${adapter.adapterName} · ${adapter.status}`,
+        );
+      }
+    });
+    (summary?.jobs || []).forEach((job) => {
+      if (job.outputDir) {
+        options.set(job.outputDir, `${job.adapterName} · ${job.status}`);
+      }
+    });
+    return Array.from(options, ([pathValue, label]) => ({
+      path: pathValue,
+      label,
+    }));
+  }, [summary?.adapters, summary?.jobs]);
+  const evaluateCommandPreview = useMemo(
+    () =>
+      buildEvaluateCommandPreview({
+        checkpointPath: evaluateForm.checkpointPath,
+        datasetPath: selectedEvaluateDataset?.sourcePath || "",
+        evaluateForm,
+      }),
+    [evaluateForm, selectedEvaluateDataset?.sourcePath],
+  );
+  const evaluateYamlPreview = useMemo(
+    () =>
+      buildEvaluateYamlPreview({
+        checkpointPath: evaluateForm.checkpointPath,
+        datasetPath: selectedEvaluateDataset?.sourcePath || "",
+        datasetLabel: selectedEvaluateDataset?.label || "",
+        evaluateForm,
+      }),
+    [
+      evaluateForm,
+      selectedEvaluateDataset?.label,
+      selectedEvaluateDataset?.sourcePath,
+    ],
+  );
+  const selectedEvaluateAdapter =
+    summary?.adapters.find(
+      (adapter) => adapter.outputDir === evaluateForm.checkpointPath,
+    ) ||
+    summary?.adapters.find((adapter) => adapter.status === "ready") ||
+    null;
+  const evaluationReadiness = !evaluateForm.datasetId
+    ? text.evalNeedsDataset
+    : !evaluateForm.checkpointPath.trim()
+      ? text.evalNeedsCheckpoint
+      : text.evalReady;
+  const selectedChatAdapter =
+    summary?.adapters.find((adapter) => adapter.id === chatForm.adapterId) ||
+    null;
+  const selectedExportAdapter =
+    summary?.adapters.find((adapter) => adapter.id === exportForm.adapterId) ||
+    null;
+  const chatAdapterCommandPreview = useMemo(
+    () =>
+      buildChatAdapterCommandPreview({
+        adapterPath: selectedChatAdapter?.outputDir || "",
+        chatForm,
+      }),
+    [chatForm, selectedChatAdapter?.outputDir],
+  );
+  const exportAdapterCommandPreview = useMemo(
+    () =>
+      buildExportAdapterCommandPreview({
+        adapterPath: selectedExportAdapter?.outputDir || "",
+        exportForm,
+      }),
+    [exportForm, selectedExportAdapter?.outputDir],
+  );
+  const chatReadiness = chatForm.adapterId
+    ? text.chatReady
+    : text.chatNeedsAdapter;
+  const exportReadiness = exportForm.adapterId
+    ? text.exportReady
+    : text.exportNeedsAdapter;
+  const operationHistory = summary?.operations || [];
+  const toggleEvaluateMetric = useCallback((metric: FineTuneEvalMetric) => {
+    setEvaluateForm((current) => {
+      const nextMetrics = current.metrics.includes(metric)
+        ? current.metrics.filter((item) => item !== metric)
+        : [...current.metrics, metric];
+      return {
+        ...current,
+        metrics: nextMetrics.length ? nextMetrics : ["loss"],
+      };
+    });
+  }, []);
+  const fineTuneLabTabs = useMemo(
+    () =>
+      [
+        { key: "train" as const, label: text.fineTuneTrainTab },
+        { key: "evaluate" as const, label: text.fineTuneEvaluateTab },
+        { key: "chat" as const, label: text.fineTuneChatTab },
+        { key: "export" as const, label: text.fineTuneExportTab },
+      ] satisfies Array<{ key: FineTuneLabTab; label: string }>,
+    [
+      text.fineTuneChatTab,
+      text.fineTuneEvaluateTab,
+      text.fineTuneExportTab,
+      text.fineTuneTrainTab,
+    ],
+  );
   const recipeById = useMemo(
     () =>
       new Map((summary?.recipes || []).map((recipe) => [recipe.id, recipe])),
@@ -2657,6 +3555,21 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
       }>,
     [recipeHelp, text],
   );
+  const recipeScheduleFields = numericRecipeFields.filter((field) =>
+    [
+      "sequenceLength",
+      "batchSize",
+      "epochs",
+      "learningRate",
+      "gradientAccumulationSteps",
+    ].includes(field.key),
+  );
+  const recipeAdapterFields = numericRecipeFields.filter((field) =>
+    ["numLayers", "loraRank", "loraAlpha"].includes(field.key),
+  );
+  const recipeEvidenceFields = numericRecipeFields.filter((field) =>
+    ["validationSplitPct", "saveEverySteps", "seed"].includes(field.key),
+  );
 
   const updateRecipeNumber = useCallback(
     (key: NumericRecipeFieldKey, value: string) => {
@@ -2762,8 +3675,1140 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
       </div>
 
       <div
-        className={`mt-5 grid gap-4 xl:grid-cols-[minmax(360px,1fr)_minmax(420px,1.12fr)] 2xl:grid-cols-[minmax(380px,1.02fr)_minmax(460px,1.18fr)_minmax(340px,0.84fr)] ${
+        className={`mt-5 rounded-[26px] border border-white/10 bg-white/[0.035] p-4 ${
           activeWorkspaceTab === "setup" ? "" : "hidden"
+        }`}
+      >
+        <div className="flex flex-col gap-3 2xl:flex-row 2xl:items-start 2xl:justify-between">
+          <div className="min-w-0">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-cyan-300">
+              {text.fineTuneLabTabs}
+            </p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {fineTuneLabTabs.map((tab) => (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => setActiveFineTuneLabTab(tab.key)}
+                  className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+                    activeFineTuneLabTab === tab.key
+                      ? "border-cyan-300/40 bg-cyan-400/15 text-cyan-50"
+                      : "border-white/10 bg-slate-950/60 text-slate-300 hover:bg-white/[0.08]"
+                  }`}
+                >
+                  {tab.label}
+                  {tab.key === "train" || tab.key === "evaluate" ? null : (
+                    <span className="ml-2 rounded-full bg-black/25 px-2 py-0.5 text-[10px] text-slate-400">
+                      {text.fineTuneTabPlanned}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="grid min-w-0 gap-2 sm:grid-cols-3">
+            <div className="rounded-2xl border border-white/10 bg-slate-950/60 px-3 py-2">
+              <p className="text-[10px] uppercase tracking-[0.2em] text-slate-500">
+                {text.estimatedSteps}
+              </p>
+              <p className="mt-1 text-sm font-semibold text-white">
+                {formatSampleCount(estimatedTrainingSteps)}
+              </p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-slate-950/60 px-3 py-2">
+              <p className="text-[10px] uppercase tracking-[0.2em] text-slate-500">
+                {text.effectiveBatch}
+              </p>
+              <p className="mt-1 text-sm font-semibold text-white">
+                {effectiveTrainingBatch}
+              </p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-slate-950/60 px-3 py-2">
+              <p className="text-[10px] uppercase tracking-[0.2em] text-slate-500">
+                {text.trainSamples}
+              </p>
+              <p className="mt-1 text-sm font-semibold text-white">
+                {formatSampleCount(estimatedTrainingSamples)}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {activeFineTuneLabTab === "train" ? (
+          <div className="mt-4 grid gap-3 xl:grid-cols-[0.85fr_1fr_1fr]">
+            <div className="rounded-3xl border border-cyan-300/15 bg-cyan-400/[0.055] p-4">
+              <p className="text-sm font-semibold text-white">
+                {text.trainConsoleTitle}
+              </p>
+              <p className="mt-2 text-xs leading-6 text-cyan-50/70">
+                {text.trainConsoleHint}
+              </p>
+              <FieldShell
+                label={text.trainStage}
+                helper={
+                  isEnglish
+                    ? "This stage is written into the preview and staged bundle metadata."
+                    : "训练阶段会写入预览和暂存 bundle 元数据。"
+                }
+                className="mt-4"
+              >
+                <select
+                  value={trainStage}
+                  onChange={(event) =>
+                    setTrainStage(event.target.value as FineTuneTrainStage)
+                  }
+                  className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm text-white outline-none"
+                >
+                  <option value="supervised-fine-tune">
+                    {text.trainStageSft}
+                  </option>
+                  <option value="continued-pretrain">
+                    {text.trainStagePretrain}
+                  </option>
+                  <option value="preference-tuning">
+                    {text.trainStagePreference}
+                  </option>
+                  <option value="distillation">
+                    {text.trainStageDistillation}
+                  </option>
+                </select>
+              </FieldShell>
+              {trainStage === "distillation" ? (
+                <div className="mt-4 rounded-3xl border border-amber-300/20 bg-amber-300/[0.06] p-3">
+                  <p className="text-sm font-semibold text-amber-50">
+                    {text.distillationConsoleTitle}
+                  </p>
+                  <p className="mt-1 text-xs leading-5 text-amber-100/70">
+                    {text.distillationConsoleHint}
+                  </p>
+                  <FieldShell
+                    label={text.distillationTeacher}
+                    helper={
+                      isEnglish
+                        ? "Pick a stronger remote or local target that will generate supervision examples."
+                        : "选择更强的远端或本地目标，用来生成监督样本。"
+                    }
+                    className="mt-3"
+                  >
+                    <select
+                      value={distillationForm.teacherTargetId}
+                      onChange={(event) =>
+                        setDistillationForm((current) => ({
+                          ...current,
+                          teacherTargetId: event.target.value,
+                        }))
+                      }
+                      className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm text-white outline-none"
+                    >
+                      <option value="">{text.distillationTeacher}</option>
+                      {targetCatalog.map((target) => (
+                        <option key={target.id} value={target.id}>
+                          {target.label} · {target.execution}
+                        </option>
+                      ))}
+                    </select>
+                  </FieldShell>
+                  <FieldShell
+                    label={text.distillationOutputPath}
+                    helper={
+                      isEnglish
+                        ? "Generated instruction JSONL should be validated before training."
+                        : "生成的 instruction JSONL 仍需先校验，再进入训练。"
+                    }
+                    className="mt-3"
+                  >
+                    <input
+                      value={distillationForm.outputPath}
+                      onChange={(event) =>
+                        setDistillationForm((current) => ({
+                          ...current,
+                          outputPath: event.target.value,
+                        }))
+                      }
+                      className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm text-white outline-none"
+                    />
+                  </FieldShell>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                    {(
+                      [
+                        {
+                          key: "sampleCount",
+                          label: text.distillationSamples,
+                          min: 16,
+                          step: 16,
+                        },
+                        {
+                          key: "maxNewTokens",
+                          label: text.evalMaxNewTokens,
+                          min: 64,
+                          step: 64,
+                        },
+                        {
+                          key: "temperature",
+                          label: text.evalTemperature,
+                          min: 0,
+                          step: 0.1,
+                        },
+                        {
+                          key: "topP",
+                          label: text.evalTopP,
+                          min: 0,
+                          step: 0.05,
+                        },
+                      ] satisfies Array<{
+                        key: keyof Pick<
+                          FineTuneDistillationFormState,
+                          "sampleCount" | "maxNewTokens" | "temperature" | "topP"
+                        >;
+                        label: string;
+                        min: number;
+                        step: number;
+                      }>
+                    ).map((field) => (
+                      <FieldShell
+                        key={field.key}
+                        label={field.label}
+                        helper={
+                          field.key === "sampleCount"
+                            ? isEnglish
+                              ? "Small starter sets are safer before long training."
+                              : "长轮次训练前，先用小 starter 数据更安全。"
+                            : field.key === "maxNewTokens"
+                              ? isEnglish
+                                ? "Caps each generated supervision answer."
+                                : "限制每条蒸馏答案的生成长度。"
+                              : field.key === "temperature"
+                                ? isEnglish
+                                  ? "Lower values make synthetic data more stable."
+                                  : "较低温度会让合成数据更稳定。"
+                                : isEnglish
+                                  ? "Nucleus sampling for teacher outputs."
+                                  : "教师输出的 nucleus sampling 参数。"
+                        }
+                      >
+                        <input
+                          type="number"
+                          min={field.min}
+                          step={field.step}
+                          value={distillationForm[field.key]}
+                          onChange={(event) => {
+                            const nextValue = Number(event.target.value);
+                            if (!Number.isFinite(nextValue)) return;
+                            setDistillationForm((current) => ({
+                              ...current,
+                              [field.key]: nextValue,
+                            }));
+                          }}
+                          className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm text-white outline-none"
+                        />
+                      </FieldShell>
+                    ))}
+                  </div>
+                  <FieldShell
+                    label={text.distillationSeedPrompt}
+                    helper={
+                      isEnglish
+                        ? "Describe the behavior you want the generated dataset to teach."
+                        : "描述你希望蒸馏数据教会模型的目标行为。"
+                    }
+                    className="mt-3"
+                  >
+                    <textarea
+                      value={distillationForm.seedPrompt}
+                      onChange={(event) =>
+                        setDistillationForm((current) => ({
+                          ...current,
+                          seedPrompt: event.target.value,
+                        }))
+                      }
+                      rows={4}
+                      className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-xs leading-6 text-white outline-none"
+                    />
+                  </FieldShell>
+                  <label className="mt-3 flex items-center gap-2 rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-2 text-xs font-semibold text-amber-50">
+                    <input
+                      type="checkbox"
+                      checked={distillationForm.includeReasoningTrace}
+                      onChange={(event) =>
+                        setDistillationForm((current) => ({
+                          ...current,
+                          includeReasoningTrace: event.target.checked,
+                        }))
+                      }
+                    />
+                    {text.distillationIncludeReasoning}
+                  </label>
+                  <button
+                    type="button"
+                    disabled={
+                      !distillationForm.teacherTargetId ||
+                      Boolean(actionPending["distillation-run"])
+                    }
+                    onClick={() =>
+                      void runSecondaryAction(
+                        "distillation-run",
+                        {
+                          action: "run-distillation",
+                          teacherTargetId: distillationForm.teacherTargetId,
+                          outputPath: distillationOutputPath,
+                          sampleCount: distillationForm.sampleCount,
+                          maxNewTokens: distillationForm.maxNewTokens,
+                          temperature: distillationForm.temperature,
+                          topP: distillationForm.topP,
+                          seedPrompt: distillationForm.seedPrompt,
+                          includeReasoningTrace:
+                            distillationForm.includeReasoningTrace,
+                        },
+                        text.distillationRunSuccess,
+                      )
+                    }
+                    className="mt-3 w-full rounded-2xl border border-amber-300/30 bg-amber-300/15 px-4 py-3 text-sm font-semibold text-amber-50 transition hover:bg-amber-300/20 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {actionPending["distillation-run"]
+                      ? text.loading
+                      : text.distillationRun}
+                  </button>
+                </div>
+              ) : null}
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={saveTrainingArgsSnapshot}
+                  className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1.5 text-[11px] font-semibold text-emerald-100 transition hover:bg-emerald-400/15"
+                >
+                  {text.saveArgs}
+                </button>
+                <button
+                  type="button"
+                  onClick={loadTrainingArgsSnapshot}
+                  className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] font-semibold text-slate-100 transition hover:bg-white/10"
+                >
+                  {text.loadArgs}
+                </button>
+              </div>
+            </div>
+            <div className="rounded-3xl border border-white/10 bg-slate-950/70 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
+                  {text.commandPreview}
+                </p>
+                <button
+                  type="button"
+                  onClick={() =>
+                    void copyValue(
+                      trainingCommandPreview,
+                      trainStage === "distillation"
+                        ? text.distillationCommandCopied
+                        : text.commandCopied,
+                    )
+                  }
+                  className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1.5 text-[11px] font-semibold text-cyan-100 transition hover:bg-cyan-400/15"
+                >
+                  {text.copyCommand}
+                </button>
+              </div>
+              <pre className="mt-3 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-2xl border border-white/10 bg-black/25 p-3 text-[11px] leading-5 text-slate-200">
+                {trainingCommandPreview}
+              </pre>
+            </div>
+            <div className="rounded-3xl border border-white/10 bg-slate-950/70 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
+                  {text.yamlPreview}
+                </p>
+                <button
+                  type="button"
+                  onClick={() =>
+                    void copyValue(
+                      trainingYamlPreview,
+                      trainStage === "distillation"
+                        ? text.distillationYamlCopied
+                        : text.yamlCopied,
+                    )
+                  }
+                  className="rounded-full border border-violet-400/30 bg-violet-400/10 px-3 py-1.5 text-[11px] font-semibold text-violet-100 transition hover:bg-violet-400/15"
+                >
+                  {text.copyYaml}
+                </button>
+              </div>
+              <pre className="mt-3 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-2xl border border-white/10 bg-black/25 p-3 text-[11px] leading-5 text-slate-200">
+                {trainingYamlPreview}
+              </pre>
+            </div>
+          </div>
+        ) : activeFineTuneLabTab === "evaluate" ? (
+          <div className="mt-4 grid gap-3 xl:grid-cols-[0.9fr_0.9fr_1.15fr]">
+            <div className="rounded-3xl border border-cyan-300/15 bg-cyan-400/[0.055] p-4">
+              <p className="text-sm font-semibold text-white">
+                {text.evaluateConsoleTitle}
+              </p>
+              <p className="mt-2 text-xs leading-6 text-cyan-50/70">
+                {text.evaluateConsoleHint}
+              </p>
+              <FieldShell
+                label={text.evalDataset}
+                helper={
+                  isEnglish
+                    ? "Use a validation or held-out dataset; saved datasets are available immediately."
+                    : "建议选择验证集或留出集；已保存数据集会直接出现在这里。"
+                }
+                className="mt-4"
+              >
+                <select
+                  value={evaluateForm.datasetId}
+                  onChange={(event) =>
+                    setEvaluateForm((current) => ({
+                      ...current,
+                      datasetId: event.target.value,
+                    }))
+                  }
+                  className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm text-white outline-none"
+                >
+                  <option value="">{text.evalDataset}</option>
+                  {(summary?.datasets || []).map((dataset) => (
+                    <option key={dataset.id} value={dataset.id}>
+                      {dataset.label}
+                    </option>
+                  ))}
+                </select>
+              </FieldShell>
+              <FieldShell
+                label={text.evalCheckpoint}
+                helper={text.evalCheckpointHelper}
+                className="mt-4"
+              >
+                <select
+                  value={evaluateForm.checkpointPath}
+                  onChange={(event) =>
+                    setEvaluateForm((current) => ({
+                      ...current,
+                      checkpointPath: event.target.value,
+                    }))
+                  }
+                  className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm text-white outline-none"
+                >
+                  <option value="">{text.evalCheckpoint}</option>
+                  {evaluateCheckpointOptions.map((option) => (
+                    <option key={option.path} value={option.path}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  value={evaluateForm.checkpointPath}
+                  onChange={(event) =>
+                    setEvaluateForm((current) => ({
+                      ...current,
+                      checkpointPath: event.target.value,
+                    }))
+                  }
+                  placeholder={text.evalCheckpoint}
+                  className="mt-2 w-full rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-xs text-white outline-none focus:border-cyan-400/40"
+                />
+              </FieldShell>
+            </div>
+
+            <div className="rounded-3xl border border-white/10 bg-slate-950/70 p-4">
+              <p className="text-sm font-semibold text-white">
+                {text.evalGeneration}
+              </p>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                {[
+                  {
+                    key: "maxSamples",
+                    label: text.evalMaxSamples,
+                    min: 1,
+                    step: 1,
+                  },
+                  {
+                    key: "maxNewTokens",
+                    label: text.evalMaxNewTokens,
+                    min: 16,
+                    step: 16,
+                  },
+                  {
+                    key: "temperature",
+                    label: text.evalTemperature,
+                    min: 0,
+                    step: 0.1,
+                  },
+                  { key: "topP", label: text.evalTopP, min: 0, step: 0.05 },
+                ].map((field) => (
+                  <FieldShell
+                    key={field.key}
+                    label={field.label}
+                    helper={
+                      field.key === "maxSamples"
+                        ? isEnglish
+                          ? "Caps evaluation rows so local smoke runs stay short."
+                          : "限制评估样本数，避免本地冒烟跑太久。"
+                        : field.key === "maxNewTokens"
+                          ? isEnglish
+                            ? "Caps generated answer length for each sample."
+                            : "限制每条样本的最大生成长度。"
+                          : field.key === "temperature"
+                            ? isEnglish
+                              ? "Lower values reduce sampling noise during evaluation."
+                              : "较低温度可减少评估时的采样噪声。"
+                            : isEnglish
+                              ? "Controls nucleus sampling; keep stable for repeatable evals."
+                              : "控制 nucleus sampling；评估时建议保持稳定。"
+                    }
+                  >
+                    <input
+                      type="number"
+                      min={field.min}
+                      step={field.step}
+                      value={
+                        evaluateForm[
+                          field.key as keyof Pick<
+                            FineTuneEvaluateFormState,
+                            | "maxSamples"
+                            | "maxNewTokens"
+                            | "temperature"
+                            | "topP"
+                          >
+                        ]
+                      }
+                      onChange={(event) => {
+                        const nextValue = Number(event.target.value);
+                        if (!Number.isFinite(nextValue)) return;
+                        setEvaluateForm((current) => ({
+                          ...current,
+                          [field.key]: nextValue,
+                        }));
+                      }}
+                      className="w-full rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-sm text-white outline-none focus:border-cyan-400/40"
+                    />
+                  </FieldShell>
+                ))}
+              </div>
+              <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.035] p-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
+                  {text.evalMetrics}
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {(
+                    [
+                      "loss",
+                      "rouge-l",
+                      "bleu",
+                      "exact-match",
+                      "latency",
+                    ] as FineTuneEvalMetric[]
+                  ).map((metric) => (
+                    <button
+                      key={metric}
+                      type="button"
+                      onClick={() => toggleEvaluateMetric(metric)}
+                      className={`rounded-full border px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] transition ${
+                        evaluateForm.metrics.includes(metric)
+                          ? "border-cyan-300/40 bg-cyan-400/15 text-cyan-50"
+                          : "border-white/10 bg-white/[0.04] text-slate-400 hover:bg-white/[0.08]"
+                      }`}
+                    >
+                      {metric}
+                    </button>
+                  ))}
+                </div>
+                <label className="mt-3 flex items-center gap-2 text-xs font-semibold text-slate-200">
+                  <input
+                    type="checkbox"
+                    checked={evaluateForm.savePredictions}
+                    onChange={(event) =>
+                      setEvaluateForm((current) => ({
+                        ...current,
+                        savePredictions: event.target.checked,
+                      }))
+                    }
+                  />
+                  {text.evalSavePredictions}
+                </label>
+              </div>
+            </div>
+
+            <div className="rounded-3xl border border-white/10 bg-slate-950/70 p-4">
+              <div className="rounded-2xl border border-white/10 bg-white/[0.035] p-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
+                  {text.evalReadiness}
+                </p>
+                <p className="mt-2 text-sm leading-6 text-slate-200">
+                  {evaluationReadiness}
+                </p>
+                <p className="mt-2 rounded-2xl border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-xs leading-5 text-amber-100">
+                  {text.evalApiPlanned}
+                </p>
+                <button
+                  type="button"
+                  disabled={
+                    !evaluateForm.datasetId ||
+                    !evaluateForm.checkpointPath.trim() ||
+                    !selectedEvaluateAdapter?.id ||
+                    Boolean(actionPending["evaluation-run"])
+                  }
+                  onClick={() => {
+                    const adapterId = selectedEvaluateAdapter?.id;
+                    if (!adapterId) return;
+                    void runSecondaryAction(
+                      "evaluation-run",
+                      {
+                        action: "run-evaluation",
+                        adapterId,
+                        datasetId: evaluateForm.datasetId,
+                        checkpointPath: evaluateForm.checkpointPath,
+                        maxSamples: evaluateForm.maxSamples,
+                        maxNewTokens: evaluateForm.maxNewTokens,
+                        temperature: evaluateForm.temperature,
+                        topP: evaluateForm.topP,
+                        metrics: evaluateForm.metrics,
+                        savePredictions: evaluateForm.savePredictions,
+                      },
+                      text.evalRunSuccess,
+                    );
+                  }}
+                  className="mt-3 w-full rounded-2xl border border-cyan-300/35 bg-cyan-400/15 px-4 py-3 text-sm font-semibold text-cyan-50 transition enabled:hover:bg-cyan-400/20 disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  {actionPending["evaluation-run"]
+                    ? text.loading
+                    : text.evalRun}
+                </button>
+              </div>
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
+                  {text.commandPreview}
+                </p>
+                <button
+                  type="button"
+                  onClick={() =>
+                    void copyValue(evaluateCommandPreview, text.evalCommandCopied)
+                  }
+                  className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1.5 text-[11px] font-semibold text-cyan-100 transition hover:bg-cyan-400/15"
+                >
+                  {text.copyCommand}
+                </button>
+              </div>
+              <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap break-words rounded-2xl border border-white/10 bg-black/25 p-3 text-[11px] leading-5 text-slate-200">
+                {evaluateCommandPreview}
+              </pre>
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
+                  {text.yamlPreview}
+                </p>
+                <button
+                  type="button"
+                  onClick={() =>
+                    void copyValue(evaluateYamlPreview, text.evalYamlCopied)
+                  }
+                  className="rounded-full border border-violet-400/30 bg-violet-400/10 px-3 py-1.5 text-[11px] font-semibold text-violet-100 transition hover:bg-violet-400/15"
+                >
+                  {text.copyYaml}
+                </button>
+              </div>
+              <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap break-words rounded-2xl border border-white/10 bg-black/25 p-3 text-[11px] leading-5 text-slate-200">
+                {evaluateYamlPreview}
+              </pre>
+            </div>
+          </div>
+        ) : activeFineTuneLabTab === "chat" ? (
+          <div className="mt-4 grid gap-3 xl:grid-cols-[0.9fr_1.15fr_1fr]">
+            <div className="rounded-3xl border border-cyan-300/15 bg-cyan-400/[0.055] p-4">
+              <p className="text-sm font-semibold text-white">
+                {text.chatConsoleTitle}
+              </p>
+              <p className="mt-2 text-xs leading-6 text-cyan-50/70">
+                {text.chatConsoleHint}
+              </p>
+              <FieldShell
+                label={text.chatAdapter}
+                helper={
+                  isEnglish
+                    ? "Ready adapters can be attached to the local runtime for a controlled single-turn test."
+                    : "可用 adapter 后续可挂载到本地运行时，进行受控单轮测试。"
+                }
+                className="mt-4"
+              >
+                <select
+                  value={chatForm.adapterId}
+                  onChange={(event) =>
+                    setChatForm((current) => ({
+                      ...current,
+                      adapterId: event.target.value,
+                    }))
+                  }
+                  className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm text-white outline-none"
+                >
+                  <option value="">{text.chatAdapter}</option>
+                  {(summary?.adapters || []).map((adapter) => (
+                    <option key={adapter.id} value={adapter.id}>
+                      {adapter.adapterName} · {adapter.status}
+                    </option>
+                  ))}
+                </select>
+              </FieldShell>
+              <FieldShell
+                label={text.chatRole}
+                helper={
+                  isEnglish
+                    ? "Role is useful when reproducing dataset-style prompts."
+                    : "角色用于复现数据集里的对话格式。"
+                }
+                className="mt-4"
+              >
+                <select
+                  value={chatForm.role}
+                  onChange={(event) =>
+                    setChatForm((current) => ({
+                      ...current,
+                      role: event.target.value as FineTuneChatFormState["role"],
+                    }))
+                  }
+                  className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm text-white outline-none"
+                >
+                  <option value="user">user</option>
+                  <option value="assistant">assistant</option>
+                  <option value="system">system</option>
+                </select>
+              </FieldShell>
+            </div>
+
+            <div className="rounded-3xl border border-white/10 bg-slate-950/70 p-4">
+              <FieldShell
+                label={text.chatSystemPrompt}
+                helper={
+                  isEnglish
+                    ? "Keep this short so the adapter behavior stays visible."
+                    : "保持简短，避免系统提示词盖过 adapter 本身行为。"
+                }
+              >
+                <textarea
+                  value={chatForm.systemPrompt}
+                  onChange={(event) =>
+                    setChatForm((current) => ({
+                      ...current,
+                      systemPrompt: event.target.value,
+                    }))
+                  }
+                  rows={4}
+                  className="w-full rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-xs leading-6 text-white outline-none focus:border-cyan-400/40"
+                />
+              </FieldShell>
+              <FieldShell
+                label={text.chatPrompt}
+                helper={
+                  isEnglish
+                    ? "Use a short prompt that should expose whether the adapter learned the intended behavior."
+                    : "建议用能暴露 adapter 行为变化的短提示词。"
+                }
+                className="mt-3"
+              >
+                <textarea
+                  value={chatForm.prompt}
+                  onChange={(event) =>
+                    setChatForm((current) => ({
+                      ...current,
+                      prompt: event.target.value,
+                    }))
+                  }
+                  rows={5}
+                  className="w-full rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-xs leading-6 text-white outline-none focus:border-cyan-400/40"
+                />
+              </FieldShell>
+            </div>
+
+            <div className="rounded-3xl border border-white/10 bg-slate-950/70 p-4">
+              <div className="grid gap-3 sm:grid-cols-2">
+                {[
+                  {
+                    key: "maxNewTokens",
+                    label: text.evalMaxNewTokens,
+                    min: 16,
+                    step: 16,
+                  },
+                  {
+                    key: "temperature",
+                    label: text.evalTemperature,
+                    min: 0,
+                    step: 0.1,
+                  },
+                  { key: "topP", label: text.evalTopP, min: 0, step: 0.05 },
+                ].map((field) => (
+                  <FieldShell
+                    key={field.key}
+                    label={field.label}
+                    helper={
+                      field.key === "maxNewTokens"
+                        ? isEnglish
+                          ? "Caps answer length in the sandbox."
+                          : "限制沙盒回答长度。"
+                        : field.key === "temperature"
+                          ? isEnglish
+                            ? "Higher values make behavior differences easier to spot."
+                            : "温度越高，行为差异越容易显现。"
+                          : isEnglish
+                            ? "Nucleus sampling value for the sandbox call."
+                            : "沙盒调用的 nucleus sampling 参数。"
+                    }
+                  >
+                    <input
+                      type="number"
+                      min={field.min}
+                      step={field.step}
+                      value={
+                        chatForm[
+                          field.key as keyof Pick<
+                            FineTuneChatFormState,
+                            "maxNewTokens" | "temperature" | "topP"
+                          >
+                        ]
+                      }
+                      onChange={(event) => {
+                        const nextValue = Number(event.target.value);
+                        if (!Number.isFinite(nextValue)) return;
+                        setChatForm((current) => ({
+                          ...current,
+                          [field.key]: nextValue,
+                        }));
+                      }}
+                      className="w-full rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-sm text-white outline-none focus:border-cyan-400/40"
+                    />
+                  </FieldShell>
+                ))}
+              </div>
+              <div className="mt-4 grid gap-2">
+                {[
+                  {
+                    key: "skipSpecialTokens",
+                    label: text.chatSkipSpecialTokens,
+                    checked: chatForm.skipSpecialTokens,
+                  },
+                  {
+                    key: "renderHtmlTags",
+                    label: text.chatRenderHtmlTags,
+                    checked: chatForm.renderHtmlTags,
+                  },
+                ].map((item) => (
+                  <label
+                    key={item.key}
+                    className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.035] px-3 py-2 text-xs font-semibold text-slate-200"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={item.checked}
+                      onChange={(event) =>
+                        setChatForm((current) => ({
+                          ...current,
+                          [item.key]: event.target.checked,
+                        }))
+                      }
+                    />
+                    {item.label}
+                  </label>
+                ))}
+              </div>
+              <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.035] p-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
+                  {text.chatReadiness}
+                </p>
+                <p className="mt-2 text-sm leading-6 text-slate-200">
+                  {chatReadiness}
+                </p>
+                <p className="mt-2 rounded-2xl border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-xs leading-5 text-amber-100">
+                  {text.chatApiPlanned}
+                </p>
+                <button
+                  type="button"
+                  disabled={
+                    !chatForm.adapterId ||
+                    !chatForm.prompt.trim() ||
+                    Boolean(actionPending["chat-adapter-run"])
+                  }
+                  onClick={() =>
+                    void runSecondaryAction(
+                      "chat-adapter-run",
+                      {
+                        action: "run-chat-adapter",
+                        adapterId: chatForm.adapterId,
+                        role: chatForm.role,
+                        systemPrompt: chatForm.systemPrompt,
+                        prompt: chatForm.prompt,
+                        maxNewTokens: chatForm.maxNewTokens,
+                        temperature: chatForm.temperature,
+                        topP: chatForm.topP,
+                        skipSpecialTokens: chatForm.skipSpecialTokens,
+                        renderHtmlTags: chatForm.renderHtmlTags,
+                      },
+                      text.chatRunSuccess,
+                    )
+                  }
+                  className="mt-3 w-full rounded-2xl border border-cyan-300/35 bg-cyan-400/15 px-4 py-3 text-sm font-semibold text-cyan-50 transition enabled:hover:bg-cyan-400/20 disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  {actionPending["chat-adapter-run"]
+                    ? text.loading
+                    : text.chatRun}
+                </button>
+              </div>
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
+                  {text.commandPreview}
+                </p>
+                <button
+                  type="button"
+                  onClick={() =>
+                    void copyValue(
+                      chatAdapterCommandPreview,
+                      text.adapterCommandCopied,
+                    )
+                  }
+                  className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1.5 text-[11px] font-semibold text-cyan-100 transition hover:bg-cyan-400/15"
+                >
+                  {text.copyCommand}
+                </button>
+              </div>
+              <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-2xl border border-white/10 bg-black/25 p-3 text-[11px] leading-5 text-slate-200">
+                {chatAdapterCommandPreview}
+              </pre>
+            </div>
+          </div>
+        ) : (
+          <div className="mt-4 grid gap-3 xl:grid-cols-[0.9fr_0.9fr_1.15fr]">
+            <div className="rounded-3xl border border-cyan-300/15 bg-cyan-400/[0.055] p-4">
+              <p className="text-sm font-semibold text-white">
+                {text.exportConsoleTitle}
+              </p>
+              <p className="mt-2 text-xs leading-6 text-cyan-50/70">
+                {text.exportConsoleHint}
+              </p>
+              <FieldShell
+                label={text.exportAdapter}
+                helper={
+                  isEnglish
+                    ? "Pick the adapter artifact to package for deployment."
+                    : "选择要打包部署的 adapter 产物。"
+                }
+                className="mt-4"
+              >
+                <select
+                  value={exportForm.adapterId}
+                  onChange={(event) =>
+                    setExportForm((current) => ({
+                      ...current,
+                      adapterId: event.target.value,
+                    }))
+                  }
+                  className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm text-white outline-none"
+                >
+                  <option value="">{text.exportAdapter}</option>
+                  {(summary?.adapters || []).map((adapter) => (
+                    <option key={adapter.id} value={adapter.id}>
+                      {adapter.adapterName} · {adapter.status}
+                    </option>
+                  ))}
+                </select>
+              </FieldShell>
+            </div>
+
+            <div className="rounded-3xl border border-white/10 bg-slate-950/70 p-4">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <FieldShell
+                  label={text.exportFormat}
+                  helper={
+                    isEnglish
+                      ? "Adapter bundle is safest; merged/gguf are deployment-oriented follow-ups."
+                      : "Adapter bundle 最安全；merged / gguf 偏部署导出。"
+                  }
+                >
+                  <select
+                    value={exportForm.exportFormat}
+                    onChange={(event) =>
+                      setExportForm((current) => ({
+                        ...current,
+                        exportFormat:
+                          event.target
+                            .value as FineTuneExportFormState["exportFormat"],
+                      }))
+                    }
+                    className="w-full rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-sm text-white outline-none focus:border-cyan-400/40"
+                  >
+                    <option value="adapter-bundle">adapter-bundle</option>
+                    <option value="merged-mlx">merged-mlx</option>
+                    <option value="gguf">gguf</option>
+                  </select>
+                </FieldShell>
+                <FieldShell
+                  label={text.exportQuantization}
+                  helper={
+                    isEnglish
+                      ? "Keep none for lossless adapter bundles; q8/q4 for smaller deployables."
+                      : "无损 adapter bundle 选 none；q8/q4 用于更小部署产物。"
+                  }
+                >
+                  <select
+                    value={exportForm.quantization}
+                    onChange={(event) =>
+                      setExportForm((current) => ({
+                        ...current,
+                        quantization:
+                          event.target
+                            .value as FineTuneExportFormState["quantization"],
+                      }))
+                    }
+                    className="w-full rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-sm text-white outline-none focus:border-cyan-400/40"
+                  >
+                    <option value="none">none</option>
+                    <option value="q8">q8</option>
+                    <option value="q4">q4</option>
+                  </select>
+                </FieldShell>
+                <FieldShell
+                  label={text.exportShardSize}
+                  helper={
+                    isEnglish
+                      ? "Large merged exports can be split for upload and sync."
+                      : "较大的合并导出可按分片大小拆分，便于上传同步。"
+                  }
+                >
+                  <input
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={exportForm.maxShardSizeGb}
+                    onChange={(event) => {
+                      const nextValue = Number(event.target.value);
+                      if (!Number.isFinite(nextValue)) return;
+                      setExportForm((current) => ({
+                        ...current,
+                        maxShardSizeGb: nextValue,
+                      }));
+                    }}
+                    className="w-full rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-sm text-white outline-none focus:border-cyan-400/40"
+                  />
+                </FieldShell>
+                <FieldShell
+                  label={text.exportHubId}
+                  helper={
+                    isEnglish
+                      ? "Optional repository id if this export will be published later."
+                      : "如果后续要发布到 Hub，可先填可选仓库 ID。"
+                  }
+                >
+                  <input
+                    value={exportForm.hubId}
+                    onChange={(event) =>
+                      setExportForm((current) => ({
+                        ...current,
+                        hubId: event.target.value,
+                      }))
+                    }
+                    placeholder="username/model-name"
+                    className="w-full rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-sm text-white outline-none focus:border-cyan-400/40"
+                  />
+                </FieldShell>
+              </div>
+              <FieldShell
+                label={text.exportOutputDir}
+                helper={
+                  isEnglish
+                    ? "Defaults to an export folder next to the adapter output."
+                    : "默认导出到 adapter 产物旁边的 export 文件夹。"
+                }
+                className="mt-3"
+              >
+                <input
+                  value={exportForm.outputDir}
+                  onChange={(event) =>
+                    setExportForm((current) => ({
+                      ...current,
+                      outputDir: event.target.value,
+                    }))
+                  }
+                  className="w-full rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-sm text-white outline-none focus:border-cyan-400/40"
+                />
+              </FieldShell>
+              <label className="mt-3 flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.035] px-3 py-2 text-xs font-semibold text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={exportForm.includeDatasetCard}
+                  onChange={(event) =>
+                    setExportForm((current) => ({
+                      ...current,
+                      includeDatasetCard: event.target.checked,
+                    }))
+                  }
+                />
+                {text.exportIncludeDatasetCard}
+              </label>
+            </div>
+
+            <div className="rounded-3xl border border-white/10 bg-slate-950/70 p-4">
+              <div className="rounded-2xl border border-white/10 bg-white/[0.035] p-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
+                  {text.exportReadiness}
+                </p>
+                <p className="mt-2 text-sm leading-6 text-slate-200">
+                  {exportReadiness}
+                </p>
+                <p className="mt-2 rounded-2xl border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-xs leading-5 text-amber-100">
+                  {text.exportApiPlanned}
+                </p>
+                <button
+                  type="button"
+                  disabled={
+                    !exportForm.adapterId ||
+                    Boolean(actionPending["export-adapter-run"])
+                  }
+                  onClick={() =>
+                    void runSecondaryAction(
+                      "export-adapter-run",
+                      {
+                        action: "run-export-adapter",
+                        adapterId: exportForm.adapterId,
+                        exportFormat: exportForm.exportFormat,
+                        quantization: exportForm.quantization,
+                        maxShardSizeGb: exportForm.maxShardSizeGb,
+                        outputDir: exportForm.outputDir,
+                        hubId: exportForm.hubId,
+                        includeDatasetCard: exportForm.includeDatasetCard,
+                      },
+                      text.exportRunSuccess,
+                    )
+                  }
+                  className="mt-3 w-full rounded-2xl border border-cyan-300/35 bg-cyan-400/15 px-4 py-3 text-sm font-semibold text-cyan-50 transition enabled:hover:bg-cyan-400/20 disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  {actionPending["export-adapter-run"]
+                    ? text.loading
+                    : text.exportRun}
+                </button>
+              </div>
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
+                  {text.commandPreview}
+                </p>
+                <button
+                  type="button"
+                  onClick={() =>
+                    void copyValue(
+                      exportAdapterCommandPreview,
+                      text.adapterCommandCopied,
+                    )
+                  }
+                  className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1.5 text-[11px] font-semibold text-cyan-100 transition hover:bg-cyan-400/15"
+                >
+                  {text.copyCommand}
+                </button>
+              </div>
+              <pre className="mt-2 max-h-60 overflow-auto whitespace-pre-wrap break-words rounded-2xl border border-white/10 bg-black/25 p-3 text-[11px] leading-5 text-slate-200">
+                {exportAdapterCommandPreview}
+              </pre>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div
+        className={`mt-5 grid gap-4 xl:grid-cols-[minmax(360px,1fr)_minmax(420px,1.12fr)] 2xl:grid-cols-[minmax(380px,1.02fr)_minmax(460px,1.18fr)_minmax(340px,0.84fr)] ${
+          activeWorkspaceTab === "setup" && activeFineTuneLabTab === "train"
+            ? ""
+            : "hidden"
         }`}
       >
         <div className="min-w-0 rounded-[24px] border border-white/10 bg-white/[0.035] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
@@ -3477,23 +5522,48 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
                 <option value="adafactor">{text.optimizer} · Adafactor</option>
               </select>
             </FieldShell>
-            {numericRecipeFields.map((field) => (
-              <FieldShell
-                key={field.key}
-                label={field.label}
-                helper={field.helper}
+            {[
+              {
+                label: text.recipeGroupSchedule,
+                fields: recipeScheduleFields,
+              },
+              {
+                label: text.recipeGroupAdapter,
+                fields: recipeAdapterFields,
+              },
+              {
+                label: text.recipeGroupEvidence,
+                fields: recipeEvidenceFields,
+              },
+            ].map((group) => (
+              <div
+                key={group.label}
+                className="rounded-3xl border border-white/10 bg-slate-950/45 p-3 sm:col-span-2"
               >
-                <input
-                  type="number"
-                  step={field.step}
-                  value={recipeForm[field.key]}
-                  onChange={(event) =>
-                    updateRecipeNumber(field.key, event.target.value)
-                  }
-                  placeholder={field.label}
-                  className="w-full rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-sm text-white outline-none"
-                />
-              </FieldShell>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-cyan-200/80">
+                  {group.label}
+                </p>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  {group.fields.map((field) => (
+                    <FieldShell
+                      key={field.key}
+                      label={field.label}
+                      helper={field.helper}
+                    >
+                      <input
+                        type="number"
+                        step={field.step}
+                        value={recipeForm[field.key]}
+                        onChange={(event) =>
+                          updateRecipeNumber(field.key, event.target.value)
+                        }
+                        placeholder={field.label}
+                        className="w-full rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-sm text-white outline-none"
+                      />
+                    </FieldShell>
+                  ))}
+                </div>
+              </div>
             ))}
             <FieldShell
               label={text.benchmarkSuite}
@@ -3699,6 +5769,102 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
             ) : (
               <p className="text-sm text-slate-500">{text.empty}</p>
             )}
+          </div>
+          <div className="mt-4 rounded-[24px] border border-cyan-300/15 bg-cyan-400/[0.045] p-3">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm font-semibold text-white">
+                {text.operationHistory}
+              </p>
+              <span className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-2.5 py-1 text-[10px] font-semibold text-cyan-50">
+                {operationHistory.length}
+              </span>
+            </div>
+            <div className="mt-3 space-y-3">
+              {operationHistory.length ? (
+                operationHistory.slice(0, 8).map((operation) => (
+                  <div
+                    key={operation.id}
+                    className="rounded-2xl border border-white/10 bg-slate-950/70 p-3 text-xs leading-6 text-slate-300"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="font-semibold text-white">
+                            {operation.title}
+                          </p>
+                          <span className="rounded-full border border-white/10 bg-white/[0.06] px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-slate-300">
+                            {operation.kind}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-[11px] text-slate-500">
+                          {formatDateTime(operation.updatedAt)}
+                        </p>
+                      </div>
+                      <span
+                        className={`rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] ${
+                          operation.status === "completed"
+                            ? "bg-emerald-400/10 text-emerald-100"
+                            : "bg-rose-400/10 text-rose-100"
+                        }`}
+                      >
+                        {operation.status}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-slate-300">{operation.summary}</p>
+                    {operation.metrics &&
+                    Object.keys(operation.metrics).length ? (
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {Object.entries(operation.metrics)
+                          .slice(0, 8)
+                          .map(([metricKey, metricValue]) => (
+                            <span
+                              key={`${operation.id}:${metricKey}`}
+                              className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] text-slate-300"
+                            >
+                              {metricKey}: {String(metricValue ?? "--")}
+                            </span>
+                          ))}
+                      </div>
+                    ) : null}
+                    <div className="mt-3 rounded-2xl border border-white/10 bg-black/20 p-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
+                        {text.operationArtifacts}
+                      </p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {operation.artifacts.length ? (
+                          operation.artifacts.map((artifact) => (
+                            <button
+                              key={`${operation.id}:${artifact.filePath}`}
+                              type="button"
+                              onClick={() =>
+                                void copyValue(artifact.filePath, text.copied)
+                              }
+                              className="max-w-full truncate rounded-full border border-cyan-300/20 bg-cyan-300/10 px-2.5 py-1 text-left text-[10px] font-semibold text-cyan-50 transition hover:bg-cyan-300/15"
+                              title={artifact.filePath}
+                            >
+                              {artifact.label}
+                            </button>
+                          ))
+                        ) : (
+                          <span className="text-[11px] text-slate-500">
+                            --
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    {operation.errorMessage ? (
+                      <p className="mt-2 rounded-xl border border-rose-400/20 bg-rose-400/10 px-2.5 py-2 text-[11px] text-rose-100">
+                        {operation.errorMessage}
+                      </p>
+                    ) : null}
+                  </div>
+                ))
+              ) : (
+                <p className="rounded-2xl border border-white/10 bg-black/20 px-3 py-3 text-sm text-slate-500">
+                  {text.operationHistoryEmpty}
+                </p>
+              )}
+            </div>
           </div>
         </div>
 

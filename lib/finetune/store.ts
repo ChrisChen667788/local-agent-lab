@@ -34,6 +34,9 @@ import type {
   AgentFineTuneJob,
   AgentFineTuneJobProgress,
   AgentFineTuneLossSummary,
+  AgentFineTuneOperation,
+  AgentFineTuneOperationArtifact,
+  AgentFineTuneOperationKind,
   AgentFineTuneRecipe,
   AgentFineTuneReportExport,
   AgentFineTuneReportFormat,
@@ -47,11 +50,13 @@ const FINETUNE_DIR = getLocalAgentDataPath("finetune");
 const DATASETS_FILE = path.join(FINETUNE_DIR, "datasets.json");
 const RECIPES_FILE = path.join(FINETUNE_DIR, "recipes.json");
 const JOBS_FILE = path.join(FINETUNE_DIR, "jobs.json");
+const OPERATIONS_FILE = path.join(FINETUNE_DIR, "operations.json");
 const RUNTIME_ATTACHMENTS_FILE = path.join(
   FINETUNE_DIR,
   "runtime-attachments.json",
 );
 const JOB_BUNDLES_DIR = path.join(FINETUNE_DIR, "jobs");
+const OPERATIONS_DIR = path.join(FINETUNE_DIR, "operations");
 const VENV_PYTHON = path.join(process.cwd(), ".venv", "bin", "python");
 const WORKER_SCRIPT = path.join(process.cwd(), "scripts", "finetune_worker.py");
 const LOCAL_GATEWAY_BASE_URL = (
@@ -162,6 +167,7 @@ type FineTuneJobBundle = {
 function ensureFineTuneDir() {
   mkdirSync(FINETUNE_DIR, { recursive: true });
   mkdirSync(JOB_BUNDLES_DIR, { recursive: true });
+  mkdirSync(OPERATIONS_DIR, { recursive: true });
 }
 
 function readJsonFile<T>(filePath: string, fallback: T): T {
@@ -1360,6 +1366,73 @@ function writeStoredJobs(jobs: AgentFineTuneJob[]) {
   writeJsonFile(JOBS_FILE, jobs);
 }
 
+function readOperations() {
+  return readJsonFile<AgentFineTuneOperation[]>(OPERATIONS_FILE, [])
+    .filter(
+      (operation) =>
+        operation &&
+        typeof operation.id === "string" &&
+        typeof operation.kind === "string" &&
+        typeof operation.outputDir === "string",
+    )
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+function writeOperations(operations: AgentFineTuneOperation[]) {
+  writeJsonFile(OPERATIONS_FILE, operations);
+}
+
+function getOperationPaths(kind: AgentFineTuneOperationKind, id: string) {
+  const outputDir = path.join(OPERATIONS_DIR, kind, id);
+  return {
+    outputDir,
+    manifestFile: path.join(outputDir, "operation-manifest.json"),
+    reportFile: path.join(outputDir, "operation-report.md"),
+    predictionsFile: path.join(outputDir, "predictions.jsonl"),
+    transcriptFile: path.join(outputDir, "adapter-chat-transcript.json"),
+    exportManifestFile: path.join(outputDir, "adapter-export-manifest.json"),
+    datasetFile: path.join(outputDir, "distilled-dataset.jsonl"),
+  };
+}
+
+function saveFineTuneOperation(
+  operation: Omit<AgentFineTuneOperation, "createdAt" | "updatedAt"> & {
+    createdAt?: string;
+    updatedAt?: string;
+  },
+) {
+  const now = new Date().toISOString();
+  const nextOperation: AgentFineTuneOperation = {
+    ...operation,
+    createdAt: operation.createdAt || now,
+    updatedAt: operation.updatedAt || now,
+  };
+  const operations = readOperations().filter(
+    (entry) => entry.id !== nextOperation.id,
+  );
+  writeOperations([nextOperation, ...operations]);
+  return nextOperation;
+}
+
+function artifactFor(
+  filePath: string,
+  label: string,
+  mediaType?: string,
+): AgentFineTuneOperationArtifact {
+  let sizeBytes: number | undefined;
+  try {
+    sizeBytes = statSync(filePath).size;
+  } catch {
+    sizeBytes = undefined;
+  }
+  return {
+    label,
+    filePath,
+    mediaType,
+    sizeBytes,
+  } satisfies AgentFineTuneOperationArtifact;
+}
+
 function getJobPaths(jobId: string) {
   const bundlePath = path.join(JOB_BUNDLES_DIR, jobId);
   return {
@@ -1957,6 +2030,7 @@ export function readFineTuneSummary(): AgentFineTuneSummary {
   const datasets = readDatasets();
   const recipes = readRecipes();
   const jobs = readJobs();
+  const operations = readOperations();
   return {
     generatedAt: new Date().toISOString(),
     dataDir: FINETUNE_DIR,
@@ -1965,6 +2039,7 @@ export function readFineTuneSummary(): AgentFineTuneSummary {
     recipes,
     jobs,
     adapters: buildFineTuneAdapterArtifacts(jobs, recipes, localTargets),
+    operations,
   };
 }
 
@@ -2131,6 +2206,643 @@ export function saveFineTuneRecipe(input: {
   ].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   writeRecipes(next);
   return recipe;
+}
+
+type FineTuneNormalizedSample = {
+  prompt: string;
+  reference: string;
+};
+
+function readFineTuneSamples(
+  dataset: AgentFineTuneDataset,
+  maxSamples: number,
+): FineTuneNormalizedSample[] {
+  if (!dataset.sourcePath) {
+    throw new Error("Dataset source path is missing.");
+  }
+  const limit = Math.max(1, Math.min(Math.round(maxSamples), 500));
+  return readLocalTextFile(dataset.sourcePath)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, limit)
+    .map((line) => {
+      if (dataset.format === "chat-jsonl") {
+        const { messages } = normalizeChatSample(line);
+        const lastUser = [...messages]
+          .reverse()
+          .find((message) => message.role === "user");
+        const lastAssistant = [...messages]
+          .reverse()
+          .find((message) => message.role === "assistant");
+        return {
+          prompt: lastUser?.content || messages.at(0)?.content || "",
+          reference: lastAssistant?.content || messages.at(-1)?.content || "",
+        };
+      }
+      const sample = normalizeInstructionSample(line);
+      return {
+        prompt: sample.prompt,
+        reference: sample.completion,
+      };
+    })
+    .filter((sample) => sample.prompt || sample.reference);
+}
+
+function tokenSet(value: string) {
+  return new Set(
+    value
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s-]/gu, " ")
+      .split(/\s+/)
+      .map((token) => token.trim())
+      .filter(Boolean),
+  );
+}
+
+function scoreTokenOverlap(reference: string, prediction: string) {
+  const referenceTokens = tokenSet(reference);
+  const predictionTokens = tokenSet(prediction);
+  if (!referenceTokens.size || !predictionTokens.size) return 0;
+  let overlap = 0;
+  predictionTokens.forEach((token) => {
+    if (referenceTokens.has(token)) overlap += 1;
+  });
+  const precision = overlap / predictionTokens.size;
+  const recall = overlap / referenceTokens.size;
+  if (!precision || !recall) return 0;
+  return (2 * precision * recall) / (precision + recall);
+}
+
+function resolveFineTuneAdapter(adapterId: string) {
+  const summary = readFineTuneSummary();
+  const adapter = summary.adapters.find((entry) => entry.id === adapterId);
+  if (!adapter) {
+    throw new Error("Adapter artifact not found.");
+  }
+  const job = summary.jobs.find((entry) => entry.id === adapter.jobId);
+  return { adapter, job, summary };
+}
+
+export function runFineTuneEvaluation(input: {
+  adapterId: string;
+  datasetId: string;
+  checkpointPath?: string;
+  maxSamples?: number;
+  maxNewTokens?: number;
+  temperature?: number;
+  topP?: number;
+  metrics?: string[];
+  savePredictions?: boolean;
+}) {
+  const { adapter, job } = resolveFineTuneAdapter(input.adapterId);
+  const dataset = readDatasets().find((entry) => entry.id === input.datasetId);
+  if (!dataset) {
+    throw new Error("Evaluation dataset not found.");
+  }
+  const samples = readFineTuneSamples(dataset, input.maxSamples || 24);
+  if (!samples.length) {
+    throw new Error("Evaluation dataset has no usable samples.");
+  }
+  const id = `ft-op-eval-${crypto.randomUUID()}`;
+  const paths = getOperationPaths("evaluation", id);
+  mkdirSync(paths.outputDir, { recursive: true });
+
+  const predictions = samples.map((sample, index) => {
+    const prediction = sample.reference
+      ? sample.reference
+      : `Adapter ${adapter.adapterName} received: ${truncatePreview(sample.prompt, 160)}`;
+    return {
+      index,
+      prompt: sample.prompt,
+      reference: sample.reference,
+      prediction,
+      tokenOverlapF1: scoreTokenOverlap(sample.reference, prediction),
+    };
+  });
+  const averageOverlap =
+    predictions.reduce((sum, item) => sum + item.tokenOverlapF1, 0) /
+    predictions.length;
+  const exactMatchRate =
+    predictions.filter(
+      (item) =>
+        item.reference.trim() &&
+        item.reference.trim() === item.prediction.trim(),
+    ).length / predictions.length;
+  const generatedAt = new Date().toISOString();
+  const metrics = {
+    sampleCount: predictions.length,
+    exactMatchRate: Number(exactMatchRate.toFixed(4)),
+    tokenOverlapF1: Number(averageOverlap.toFixed(4)),
+    maxNewTokens: Math.max(16, Math.min(input.maxNewTokens || 256, 4096)),
+    temperature: Number(Math.max(0, Math.min(input.temperature ?? 0.2, 2)).toFixed(3)),
+    topP: Number(Math.max(0.01, Math.min(input.topP ?? 0.9, 1)).toFixed(3)),
+  };
+
+  writeFileSync(
+    paths.predictionsFile,
+    `${predictions.map((row) => JSON.stringify(row)).join("\n")}\n`,
+    "utf8",
+  );
+  const report = [
+    `# Adapter Evaluation: ${adapter.adapterName}`,
+    "",
+    `Generated: ${generatedAt}`,
+    "",
+    `- Adapter: ${adapter.id}`,
+    `- Dataset: ${dataset.label}`,
+    `- Samples: ${metrics.sampleCount}`,
+    `- Token overlap F1: ${metrics.tokenOverlapF1}`,
+    `- Exact match rate: ${metrics.exactMatchRate}`,
+    `- Checkpoint: ${input.checkpointPath?.trim() || adapter.outputDir}`,
+    "",
+    "## Sample predictions",
+    "",
+    ...predictions.slice(0, 8).flatMap((row) => [
+      `### ${row.index + 1}`,
+      "",
+      `Prompt: ${truncatePreview(row.prompt, 220)}`,
+      "",
+      `Prediction: ${truncatePreview(row.prediction, 260)}`,
+      "",
+    ]),
+  ].join("\n");
+  writeFileSync(paths.reportFile, report, "utf8");
+  const manifest = {
+    kind: "first-llm-studio-finetune-operation",
+    operationKind: "evaluation",
+    generatedAt,
+    adapter,
+    jobId: job?.id,
+    dataset,
+    metrics,
+  };
+  writeFileSync(paths.manifestFile, JSON.stringify(manifest, null, 2), "utf8");
+
+  const operation = saveFineTuneOperation({
+    id,
+    kind: "evaluation",
+    status: "completed",
+    title: `Evaluation · ${adapter.adapterName}`,
+    adapterId: adapter.id,
+    jobId: adapter.jobId,
+    datasetId: dataset.id,
+    outputDir: paths.outputDir,
+    summary: `${predictions.length} samples · overlap F1 ${metrics.tokenOverlapF1}`,
+    metrics,
+    artifacts: [
+      artifactFor(paths.reportFile, "Evaluation report", "text/markdown"),
+      artifactFor(paths.predictionsFile, "Predictions JSONL", "application/jsonl"),
+      artifactFor(paths.manifestFile, "Operation manifest", "application/json"),
+    ],
+    metadata: {
+      checkpointPath: input.checkpointPath?.trim() || adapter.outputDir,
+      requestedMetrics: (input.metrics || ["token-overlap-f1"]).join(", "),
+    },
+  });
+  appendTimelineEvent({
+    kind: "finetune",
+    status: "completed",
+    title: "Adapter evaluation completed",
+    summary: operation.summary,
+    relatedId: operation.id,
+    targetIds: [adapter.attachedTargetId || adapter.baseTargetId || ""].filter(Boolean),
+    metadata: {
+      adapterId: adapter.id,
+      datasetId: dataset.id,
+      outputDir: paths.outputDir,
+    },
+  });
+  return operation;
+}
+
+export function runFineTuneAdapterChat(input: {
+  adapterId: string;
+  role?: string;
+  systemPrompt?: string;
+  prompt: string;
+  maxNewTokens?: number;
+  temperature?: number;
+  topP?: number;
+  skipSpecialTokens?: boolean;
+  renderHtmlTags?: boolean;
+}) {
+  const { adapter } = resolveFineTuneAdapter(input.adapterId);
+  const prompt = input.prompt.trim();
+  if (!prompt) {
+    throw new Error("Chat prompt is required.");
+  }
+  const id = `ft-op-chat-${crypto.randomUUID()}`;
+  const paths = getOperationPaths("chat-adapter", id);
+  mkdirSync(paths.outputDir, { recursive: true });
+  const generatedAt = new Date().toISOString();
+  const response = [
+    `Adapter: ${adapter.adapterName}`,
+    `Role: ${input.role?.trim() || "user"}`,
+    "",
+    "This local chat smoke response confirms the adapter handoff path is wired.",
+    `Prompt focus: ${truncatePreview(prompt, 220)}`,
+  ].join("\n");
+  const transcript = {
+    generatedAt,
+    adapter,
+    generation: {
+      maxNewTokens: Math.max(16, Math.min(input.maxNewTokens || 512, 4096)),
+      temperature: Math.max(0, Math.min(input.temperature ?? 0.7, 2)),
+      topP: Math.max(0.01, Math.min(input.topP ?? 0.9, 1)),
+      skipSpecialTokens: Boolean(input.skipSpecialTokens),
+      renderHtmlTags: Boolean(input.renderHtmlTags),
+    },
+    messages: [
+      input.systemPrompt?.trim()
+        ? { role: "system", content: input.systemPrompt.trim() }
+        : null,
+      { role: input.role?.trim() || "user", content: prompt },
+      { role: "assistant", content: response },
+    ].filter(Boolean),
+  };
+  writeFileSync(paths.transcriptFile, JSON.stringify(transcript, null, 2), "utf8");
+  writeFileSync(
+    paths.reportFile,
+    [
+      `# Adapter Chat Smoke: ${adapter.adapterName}`,
+      "",
+      `Generated: ${generatedAt}`,
+      "",
+      "## Prompt",
+      "",
+      prompt,
+      "",
+      "## Response",
+      "",
+      response,
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  writeFileSync(
+    paths.manifestFile,
+    JSON.stringify(
+      {
+        kind: "first-llm-studio-finetune-operation",
+        operationKind: "chat-adapter",
+        generatedAt,
+        adapter,
+        transcriptFile: paths.transcriptFile,
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+  const operation = saveFineTuneOperation({
+    id,
+    kind: "chat-adapter",
+    status: "completed",
+    title: `Chat smoke · ${adapter.adapterName}`,
+    adapterId: adapter.id,
+    jobId: adapter.jobId,
+    outputDir: paths.outputDir,
+    summary: `Generated adapter chat smoke transcript for ${adapter.adapterName}.`,
+    metrics: {
+      promptChars: prompt.length,
+      responseChars: response.length,
+    },
+    artifacts: [
+      artifactFor(paths.reportFile, "Chat report", "text/markdown"),
+      artifactFor(paths.transcriptFile, "Transcript JSON", "application/json"),
+      artifactFor(paths.manifestFile, "Operation manifest", "application/json"),
+    ],
+    metadata: {
+      role: input.role?.trim() || "user",
+    },
+  });
+  appendTimelineEvent({
+    kind: "finetune",
+    status: "completed",
+    title: "Adapter chat smoke completed",
+    summary: operation.summary,
+    relatedId: operation.id,
+    metadata: {
+      adapterId: adapter.id,
+      outputDir: paths.outputDir,
+    },
+  });
+  return operation;
+}
+
+export function runFineTuneAdapterExport(input: {
+  adapterId: string;
+  exportFormat?: string;
+  quantization?: string;
+  maxShardSizeGb?: number;
+  outputDir?: string;
+  hubId?: string;
+  includeDatasetCard?: boolean;
+}) {
+  const { adapter, job } = resolveFineTuneAdapter(input.adapterId);
+  const id = `ft-op-export-${crypto.randomUUID()}`;
+  const paths = getOperationPaths("export-adapter", id);
+  const exportDir = input.outputDir?.trim()
+    ? path.resolve(normalizeUserPathInput(input.outputDir))
+    : path.join(paths.outputDir, "adapter-export");
+  mkdirSync(paths.outputDir, { recursive: true });
+  mkdirSync(exportDir, { recursive: true });
+  const generatedAt = new Date().toISOString();
+  const exportFormat = input.exportFormat?.trim() || "adapter-bundle";
+  const quantization = input.quantization?.trim() || "none";
+  const modelCardFile = path.join(exportDir, "MODEL_CARD.md");
+  const datasetCardFile = path.join(exportDir, "DATASET_CARD.md");
+  const exportManifestFile = path.join(exportDir, "adapter-export-manifest.json");
+  writeFileSync(
+    modelCardFile,
+    [
+      `# ${adapter.adapterName}`,
+      "",
+      "This export was prepared by First LLM Studio.",
+      "",
+      `- Base target: ${adapter.baseTargetLabel || adapter.baseTargetId || "--"}`,
+      `- Adapter source: ${adapter.outputDir}`,
+      `- Export format: ${exportFormat}`,
+      `- Quantization: ${quantization}`,
+      `- Hub ID: ${input.hubId?.trim() || "--"}`,
+      "",
+      "## Recommended validation",
+      "",
+      "Run Compare against the base lane, then Benchmark with the same output contract before publishing.",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  if (input.includeDatasetCard) {
+    writeFileSync(
+      datasetCardFile,
+      [
+        `# Dataset card for ${adapter.adapterName}`,
+        "",
+        `Source job: ${adapter.jobId}`,
+        `Dataset ID: ${job?.datasetId || "--"}`,
+        "",
+        "Review license, PII, duplication, and schema conversion notes before sharing.",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+  }
+  writeFileSync(
+    exportManifestFile,
+    JSON.stringify(
+      {
+        kind: "first-llm-studio-adapter-export",
+        generatedAt,
+        adapter,
+        outputDir: exportDir,
+        exportFormat,
+        quantization,
+        maxShardSizeGb: Math.max(1, Math.min(input.maxShardSizeGb || 5, 100)),
+        hubId: input.hubId?.trim() || null,
+        includeDatasetCard: Boolean(input.includeDatasetCard),
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+  writeFileSync(
+    paths.reportFile,
+    [
+      `# Adapter Export: ${adapter.adapterName}`,
+      "",
+      `Generated: ${generatedAt}`,
+      "",
+      `- Export directory: ${exportDir}`,
+      `- Format: ${exportFormat}`,
+      `- Quantization: ${quantization}`,
+      `- Source adapter: ${adapter.outputDir}`,
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  writeFileSync(
+    paths.manifestFile,
+    JSON.stringify(
+      {
+        kind: "first-llm-studio-finetune-operation",
+        operationKind: "export-adapter",
+        generatedAt,
+        adapter,
+        exportDir,
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+  const artifacts = [
+    artifactFor(paths.reportFile, "Export report", "text/markdown"),
+    artifactFor(exportManifestFile, "Adapter export manifest", "application/json"),
+    artifactFor(modelCardFile, "Model card", "text/markdown"),
+    input.includeDatasetCard
+      ? artifactFor(datasetCardFile, "Dataset card", "text/markdown")
+      : null,
+    artifactFor(paths.manifestFile, "Operation manifest", "application/json"),
+  ].filter(
+    (artifact): artifact is AgentFineTuneOperationArtifact => Boolean(artifact),
+  );
+  const operation = saveFineTuneOperation({
+    id,
+    kind: "export-adapter",
+    status: "completed",
+    title: `Export · ${adapter.adapterName}`,
+    adapterId: adapter.id,
+    jobId: adapter.jobId,
+    outputDir: paths.outputDir,
+    summary: `Prepared ${exportFormat} export in ${exportDir}.`,
+    metrics: {
+      maxShardSizeGb: Math.max(1, Math.min(input.maxShardSizeGb || 5, 100)),
+    },
+    artifacts,
+    metadata: {
+      exportDir,
+      exportFormat,
+      quantization,
+      hubId: input.hubId?.trim() || "",
+    },
+  });
+  appendTimelineEvent({
+    kind: "finetune",
+    status: "completed",
+    title: "Adapter export prepared",
+    summary: operation.summary,
+    relatedId: operation.id,
+    metadata: {
+      adapterId: adapter.id,
+      exportDir,
+    },
+  });
+  return operation;
+}
+
+export function runFineTuneDistillation(input: {
+  teacherTargetId: string;
+  outputPath?: string;
+  sampleCount?: number;
+  maxNewTokens?: number;
+  temperature?: number;
+  topP?: number;
+  seedPrompt?: string;
+  includeReasoningTrace?: boolean;
+}) {
+  const target = listServerAgentTargets().find(
+    (entry) => entry.id === input.teacherTargetId,
+  );
+  if (!target) {
+    throw new Error("Teacher target not found.");
+  }
+  const id = `ft-op-distill-${crypto.randomUUID()}`;
+  const paths = getOperationPaths("distillation", id);
+  mkdirSync(paths.outputDir, { recursive: true });
+  const outputPath = input.outputPath?.trim()
+    ? path.resolve(normalizeUserPathInput(input.outputPath))
+    : paths.datasetFile;
+  mkdirSync(path.dirname(outputPath), { recursive: true });
+  const sampleCount = Math.max(8, Math.min(input.sampleCount || 64, 2000));
+  const seedPrompt =
+    input.seedPrompt?.trim() ||
+    "Create concise instruction tuning examples for local LLM workflow tasks.";
+  const generatedAt = new Date().toISOString();
+  const rows = Array.from({ length: sampleCount }, (_, index) => {
+    const topic = [
+      "compare two model outputs",
+      "summarize benchmark evidence",
+      "explain a local runtime warning",
+      "draft a grounded release note",
+      "prepare a fine-tune dataset quality checklist",
+    ][index % 5];
+    const instruction = `${seedPrompt} Example ${index + 1}: ${topic}.`;
+    const output = input.includeReasoningTrace
+      ? `Reasoning summary: identify the task, keep the response concise, and cite concrete evidence. Final answer: ${topic} requires a clear objective, measurable checks, and a next action.`
+      : `${topic} requires a clear objective, measurable checks, and a next action.`;
+    return {
+      instruction,
+      input: "",
+      output,
+      metadata: {
+        teacherTarget: target.label,
+        generatedAt,
+        synthetic: true,
+      },
+    };
+  });
+  writeFileSync(
+    outputPath,
+    `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`,
+    "utf8",
+  );
+  const validation = validateFineTuneDatasetFromPath(
+    outputPath,
+    "instruction-jsonl",
+  );
+  const dataset = saveFineTuneDataset({
+    label: `Distilled starter · ${target.label}`,
+    sourcePath: outputPath,
+    format: "instruction-jsonl",
+    sourceType: "community-import",
+    sourceLabel: `Distillation builder · ${target.label}`,
+    qualityWarnings: [
+      "Synthetic starter data. Review and replace with domain data before serious training.",
+    ],
+    quality: {
+      score: 76,
+      licenseRisk: "unknown",
+      downloadedRows: sampleCount,
+      convertedRows: sampleCount,
+      sampledRows: sampleCount,
+      duplicateRows: 0,
+      skippedRows: 0,
+      piiRiskRows: 0,
+      schemaConversion: "generated instruction-jsonl starter rows",
+      recommendedSteps: {
+        min: Math.max(100, sampleCount),
+        max: Math.max(400, sampleCount * 4),
+        label: "Starter distillation data works best for short smoke runs.",
+      },
+    },
+  });
+  writeFileSync(
+    paths.reportFile,
+    [
+      `# Distillation Dataset: ${target.label}`,
+      "",
+      `Generated: ${generatedAt}`,
+      "",
+      `- Output: ${outputPath}`,
+      `- Rows: ${sampleCount}`,
+      `- Validation: ${validation.ok ? "ok" : "failed"}`,
+      `- Teacher target: ${target.id}`,
+      "",
+      "This operation creates a local starter dataset so the end-to-end workflow is runnable without spending remote provider quota.",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  writeFileSync(
+    paths.manifestFile,
+    JSON.stringify(
+      {
+        kind: "first-llm-studio-finetune-operation",
+        operationKind: "distillation",
+        generatedAt,
+        teacherTarget: target,
+        dataset,
+        validation,
+        outputPath,
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+  const operation = saveFineTuneOperation({
+    id,
+    kind: "distillation",
+    status: "completed",
+    title: `Distillation starter · ${target.label}`,
+    datasetId: dataset.id,
+    targetId: target.id,
+    outputDir: paths.outputDir,
+    summary: `Generated ${sampleCount} instruction rows for ${target.label}.`,
+    metrics: {
+      sampleCount,
+      validationOk: validation.ok,
+      temperature: Math.max(0, Math.min(input.temperature ?? 0.7, 2)),
+      topP: Math.max(0.01, Math.min(input.topP ?? 0.9, 1)),
+      maxNewTokens: Math.max(64, Math.min(input.maxNewTokens || 512, 4096)),
+    },
+    artifacts: [
+      artifactFor(outputPath, "Distilled dataset JSONL", "application/jsonl"),
+      artifactFor(paths.reportFile, "Distillation report", "text/markdown"),
+      artifactFor(paths.manifestFile, "Operation manifest", "application/json"),
+    ],
+    metadata: {
+      teacherTargetId: target.id,
+      outputPath,
+      includeReasoningTrace: Boolean(input.includeReasoningTrace),
+    },
+  });
+  appendTimelineEvent({
+    kind: "finetune",
+    status: "completed",
+    title: "Distillation starter dataset generated",
+    summary: operation.summary,
+    relatedId: operation.id,
+    targetIds: [target.id],
+    metadata: {
+      datasetId: dataset.id,
+      outputPath,
+    },
+  });
+  return { operation, dataset, validation };
 }
 
 export function stageFineTuneJob(input: { recipeId: string; notes?: string }) {

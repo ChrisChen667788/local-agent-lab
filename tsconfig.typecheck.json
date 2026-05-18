@@ -6,6 +6,7 @@
     "moduleResolution": "node",
     "plugins": [],
     "tsBuildInfoFile": "./node_modules/.cache/first-llm-studio/typecheck/full.tsbuildinfo",
+    "typeRoots": ["./node_modules/@types"],
     "types": ["node", "react", "react-dom"]
   }
 }

@@ -13,6 +13,10 @@ import {
   refreshDueFineTuneDatasetWatches,
   readFineTuneSummary,
   rerunFineTuneJob,
+  runFineTuneAdapterChat,
+  runFineTuneAdapterExport,
+  runFineTuneDistillation,
+  runFineTuneEvaluation,
   saveFineTuneDataset,
   saveFineTuneRecipe,
   saveFineTuneDatasetWatch,
@@ -260,6 +264,29 @@ export async function POST(request: Request) {
       sourceType?: AgentFineTuneDataset["sourceType"];
       qualityWarnings?: string[];
       quality?: AgentFineTuneDatasetQuality;
+      checkpointPath?: string;
+      maxSamples?: number;
+      maxNewTokens?: number;
+      temperature?: number;
+      topP?: number;
+      metrics?: string[];
+      savePredictions?: boolean;
+      role?: string;
+      systemPrompt?: string;
+      prompt?: string;
+      skipSpecialTokens?: boolean;
+      renderHtmlTags?: boolean;
+      exportFormat?: string;
+      quantization?: string;
+      maxShardSizeGb?: number;
+      outputDir?: string;
+      hubId?: string;
+      includeDatasetCard?: boolean;
+      teacherTargetId?: string;
+      outputPath?: string;
+      sampleCount?: number;
+      seedPrompt?: string;
+      includeReasoningTrace?: boolean;
     };
 
     if (body.action === "validate-dataset") {
@@ -593,6 +620,105 @@ export async function POST(request: Request) {
       return NextResponse.json({
         ok: true,
         detached,
+        summary: readFineTuneSummary(),
+      });
+    }
+
+    if (body.action === "run-evaluation") {
+      const operation = runFineTuneEvaluation({
+        adapterId:
+          typeof body.adapterId === "string" ? body.adapterId.trim() : "",
+        datasetId:
+          typeof body.datasetId === "string" ? body.datasetId.trim() : "",
+        checkpointPath:
+          typeof body.checkpointPath === "string"
+            ? body.checkpointPath
+            : undefined,
+        maxSamples: typeof body.maxSamples === "number" ? body.maxSamples : 24,
+        maxNewTokens:
+          typeof body.maxNewTokens === "number" ? body.maxNewTokens : 256,
+        temperature:
+          typeof body.temperature === "number" ? body.temperature : 0.2,
+        topP: typeof body.topP === "number" ? body.topP : 0.9,
+        metrics: normalizeStringList(body.metrics),
+        savePredictions: Boolean(body.savePredictions),
+      });
+      return NextResponse.json({
+        ok: true,
+        operation,
+        summary: readFineTuneSummary(),
+      });
+    }
+
+    if (body.action === "run-chat-adapter") {
+      const operation = runFineTuneAdapterChat({
+        adapterId:
+          typeof body.adapterId === "string" ? body.adapterId.trim() : "",
+        role: typeof body.role === "string" ? body.role : undefined,
+        systemPrompt:
+          typeof body.systemPrompt === "string" ? body.systemPrompt : undefined,
+        prompt: typeof body.prompt === "string" ? body.prompt : "",
+        maxNewTokens:
+          typeof body.maxNewTokens === "number" ? body.maxNewTokens : 512,
+        temperature:
+          typeof body.temperature === "number" ? body.temperature : 0.7,
+        topP: typeof body.topP === "number" ? body.topP : 0.9,
+        skipSpecialTokens: Boolean(body.skipSpecialTokens),
+        renderHtmlTags: Boolean(body.renderHtmlTags),
+      });
+      return NextResponse.json({
+        ok: true,
+        operation,
+        summary: readFineTuneSummary(),
+      });
+    }
+
+    if (body.action === "run-export-adapter") {
+      const operation = runFineTuneAdapterExport({
+        adapterId:
+          typeof body.adapterId === "string" ? body.adapterId.trim() : "",
+        exportFormat:
+          typeof body.exportFormat === "string" ? body.exportFormat : undefined,
+        quantization:
+          typeof body.quantization === "string" ? body.quantization : undefined,
+        maxShardSizeGb:
+          typeof body.maxShardSizeGb === "number"
+            ? body.maxShardSizeGb
+            : undefined,
+        outputDir:
+          typeof body.outputDir === "string" ? body.outputDir : undefined,
+        hubId: typeof body.hubId === "string" ? body.hubId : undefined,
+        includeDatasetCard: Boolean(body.includeDatasetCard),
+      });
+      return NextResponse.json({
+        ok: true,
+        operation,
+        summary: readFineTuneSummary(),
+      });
+    }
+
+    if (body.action === "run-distillation") {
+      const result = runFineTuneDistillation({
+        teacherTargetId:
+          typeof body.teacherTargetId === "string"
+            ? body.teacherTargetId.trim()
+            : "",
+        outputPath:
+          typeof body.outputPath === "string" ? body.outputPath : undefined,
+        sampleCount:
+          typeof body.sampleCount === "number" ? body.sampleCount : 64,
+        maxNewTokens:
+          typeof body.maxNewTokens === "number" ? body.maxNewTokens : 512,
+        temperature:
+          typeof body.temperature === "number" ? body.temperature : 0.7,
+        topP: typeof body.topP === "number" ? body.topP : 0.9,
+        seedPrompt:
+          typeof body.seedPrompt === "string" ? body.seedPrompt : undefined,
+        includeReasoningTrace: Boolean(body.includeReasoningTrace),
+      });
+      return NextResponse.json({
+        ok: true,
+        ...result,
         summary: readFineTuneSummary(),
       });
     }

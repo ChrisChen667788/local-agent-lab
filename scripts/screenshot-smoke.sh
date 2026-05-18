@@ -9,11 +9,15 @@ CAPTURE_TIMEOUT_SECONDS="${SCREENSHOT_SMOKE_TIMEOUT_SECONDS:-75}"
 DRIVER="${SCREENSHOT_SMOKE_DRIVER:-auto}"
 BROWSER_APP="${SCREENSHOT_SMOKE_BROWSER_APP:-Google Chrome}"
 MACOS_CAPTURE_REGION="${SCREENSHOT_SMOKE_REGION:-80,80,1600,1040}"
+PRIMARY_NODE="/opt/homebrew/opt/node@22/bin/node"
+NODE_BIN="${NODE22_BIN:-${NODE_BINARY:-}}"
 
 mkdir -p "$OUT_DIR"
 
 if [[ "$DRIVER" == "auto" ]]; then
-  if [[ "$(uname -s)" == "Darwin" ]] && command -v screencapture >/dev/null 2>&1; then
+  if [[ -x "$ROOT/node_modules/.bin/playwright" ]]; then
+    DRIVER="playwright"
+  elif [[ "$(uname -s)" == "Darwin" ]] && command -v screencapture >/dev/null 2>&1; then
     DRIVER="macos"
   else
     DRIVER="playwright"
@@ -30,6 +34,23 @@ if [[ "$DRIVER" == "playwright" && ! -x "$ROOT/node_modules/.bin/playwright" ]];
 [screenshot-smoke]   npm run smoke:screenshots
 EOF
   exit 1
+fi
+
+node_major_version() {
+  local binary="$1"
+  [[ -x "$binary" ]] || return 1
+  "$binary" -p 'process.versions.node.split(".")[0]' 2>/dev/null
+}
+
+if [[ "$DRIVER" == "playwright" && -z "$NODE_BIN" ]]; then
+  if [[ -x "$PRIMARY_NODE" ]]; then
+    NODE_BIN="$PRIMARY_NODE"
+  elif [[ "$(node_major_version "$(command -v node || true)")" == "22" ]]; then
+    NODE_BIN="$(command -v node)"
+  else
+    printf '[screenshot-smoke] Node 22 binary not found. Install node@22 or set NODE22_BIN.\n' >&2
+    exit 1
+  fi
 fi
 
 if [[ "$DRIVER" == "macos" ]] && ! open -Ra "$BROWSER_APP" >/dev/null 2>&1; then
@@ -78,8 +99,10 @@ capture_route() {
   local route="$2"
   local url="${BASE_URL}${route}"
   local file="$OUT_DIR/${label}.png"
+  local capture_script="$OUT_DIR/.capture-${label}.mjs"
 
   printf '[screenshot-smoke] capturing %s -> %s\n' "$route" "$file"
+  rm -f "$file"
   if [[ "$DRIVER" == "macos" ]]; then
     if [[ "$BROWSER_APP" == "Google Chrome" ]]; then
       osascript >/dev/null <<OSA
@@ -112,11 +135,63 @@ end tell
 OSA
     fi
   else
-    run_with_timeout "$label screenshot" "$ROOT/node_modules/.bin/playwright" screenshot \
-      --device="Desktop Chrome" \
-      --full-page \
-      "$url" \
-      "$file"
+    cat >"$capture_script" <<'NODE'
+const { chromium } = await import("playwright");
+
+let browser;
+try {
+  browser = await chromium.launch({ channel: "chrome", headless: true });
+} catch (systemChromeError) {
+  try {
+    browser = await chromium.launch({ headless: true });
+  } catch (bundledChromiumError) {
+    throw new Error(
+      [
+        "Unable to launch a screenshot browser.",
+        "Install Google Chrome or run: ./node_modules/.bin/playwright install chromium",
+        `System Chrome error: ${systemChromeError.message}`,
+        `Bundled Chromium error: ${bundledChromiumError.message}`,
+      ].join("\n"),
+    );
+  }
+}
+const page = await browser.newPage({
+  viewport: { width: 1728, height: 1117 },
+  deviceScaleFactor: 1,
+});
+
+await page.goto(process.env.PLAYWRIGHT_URL, {
+  waitUntil: "domcontentloaded",
+  timeout: 30000,
+});
+await page.locator("body").waitFor({ timeout: 15000 });
+await page.waitForLoadState("networkidle", { timeout: 5000 }).catch(() => {});
+await page.addStyleTag({
+  content: `
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.001s !important;
+      animation-iteration-count: 1 !important;
+      scroll-behavior: auto !important;
+      transition-duration: 0s !important;
+    }
+  `,
+}).catch(() => {});
+await page.waitForTimeout(1200);
+await page.screenshot({
+  path: process.env.PLAYWRIGHT_FILE,
+  fullPage: false,
+});
+await browser.close();
+NODE
+    PLAYWRIGHT_URL="$url" PLAYWRIGHT_FILE="$file" run_with_timeout "$label screenshot" "$NODE_BIN" "$capture_script"
+    rm -f "$capture_script"
+  fi
+
+  if [[ ! -s "$file" ]]; then
+    printf '[screenshot-smoke] %s did not produce a screenshot file.\n' "$label" >&2
+    exit 1
   fi
 }
 

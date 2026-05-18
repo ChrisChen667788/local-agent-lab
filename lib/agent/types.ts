@@ -1121,6 +1121,40 @@ export type AgentFineTuneBundleArchive = {
   generatedAt: string;
 };
 
+export type AgentFineTuneOperationKind =
+  | "evaluation"
+  | "chat-adapter"
+  | "export-adapter"
+  | "distillation";
+
+export type AgentFineTuneOperationStatus = "completed" | "failed";
+
+export type AgentFineTuneOperationArtifact = {
+  label: string;
+  filePath: string;
+  mediaType?: string;
+  sizeBytes?: number;
+};
+
+export type AgentFineTuneOperation = {
+  id: string;
+  kind: AgentFineTuneOperationKind;
+  status: AgentFineTuneOperationStatus;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  adapterId?: string;
+  jobId?: string;
+  datasetId?: string;
+  targetId?: string;
+  outputDir: string;
+  summary: string;
+  metrics?: Record<string, number | string | boolean | null>;
+  artifacts: AgentFineTuneOperationArtifact[];
+  errorMessage?: string;
+  metadata?: Record<string, number | string | boolean | null | string[]>;
+};
+
 export type AgentFineTuneTargetOption = {
   id: string;
   label: string;
@@ -1144,6 +1178,7 @@ export type AgentFineTuneSummary = {
   recipes: AgentFineTuneRecipe[];
   jobs: AgentFineTuneJob[];
   adapters: AgentFineTuneAdapterArtifact[];
+  operations: AgentFineTuneOperation[];
 };
 
 export type AgentFineTuneAdapterArtifact = {

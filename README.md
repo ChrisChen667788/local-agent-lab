@@ -64,7 +64,7 @@ First LLM Studio is built to keep those loops together so we can compare behavio
 ### Remote
 
 - `OpenAI Codex`
-- `OpenAI GPT-5.4`
+- `OpenAI GPT-5.5`
 - `Claude API`
 - `DeepSeek API`
 - `Kimi API`
@@ -216,4 +216,4 @@ Issues and PRs are welcome.
 - Current version: [`VERSION`](./VERSION)
 - Release notes: [`docs/releases`](./docs/releases)
 - Release process: [`docs/release-process.md`](./docs/release-process.md)
-- Latest release note: [v0.3.1](./docs/releases/v0.3.1_2026-05-02.md)
+- Latest release note: [v0.3.2](./docs/releases/v0.3.2_2026-05-18.md)

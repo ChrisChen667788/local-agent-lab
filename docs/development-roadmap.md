@@ -1,6 +1,6 @@
 # Agent Lab Development Roadmap
 
-Last updated: 2026-05-13
+Last updated: 2026-05-17
 
 ## Version snapshot
 
@@ -103,6 +103,175 @@ Last updated: 2026-05-13
 9. `Prompt-to-Workflow Drafts`（用自然语言生成 compare / benchmark / schema draft）
 
 这些能力默认进入 `v0.3.x` 讨论范围，不回塞到 `v0.2.x` 的小步稳定节奏里，也不意味着另起一个新项目。
+
+## LLaMA-Factory parity audit · 2026-05-17
+
+这次对照 LLaMA-Factory WebUI 与当前 First LLM Studio 后，结论不是把项目改成另一个训练控制台，而是补齐它在“微调实验闭环”上已经成熟、而我们仍偏弱的部分。
+
+Current overlap:
+
+- 两者都已经覆盖本地模型、数据集、LoRA 类微调、训练日志、loss 曲线、训练后验证与导出思路。
+- First LLM Studio 的差异化仍然是本地/远端统一 Agent、Compare、Benchmark、Provider Health、Runtime Guardrail 与发布证据链。
+- LLaMA-Factory 更强的是训练控制台的完整性：`Train -> Evaluate & Predict -> Chat -> Export` 是连续产品线，参数面板、命令预览、配置保存、训练进度和导出路径更标准。
+
+Next-version parity gaps:
+
+1. Fine-tune page structure
+   - 把当前 Fine-tune 从单页三列继续升级成 tabbed studio：
+     - `Train`
+     - `Evaluate & Predict`
+     - `Chat Adapter`
+     - `Export`
+   - `Train` 继续保留新手 quick start，但高级参数放进可折叠面板，避免新手一进来就被字段淹没。
+   - `Evaluate & Predict` 作为训练后第一站，而不是直接跳 Compare / Benchmark。
+   - `Chat Adapter` 用来对比 base model 与 adapter 的即时回答。
+   - `Export` 用来处理 adapter bundle、merged weights、quantized artifact 与发布元信息。
+
+2. Training method and parameter depth
+   - 新增 training stage selector：
+     - `Supervised fine-tuning`
+     - `Continued pretraining`
+     - `Preference / DPO style tuning`
+     - `Distillation dataset generation`
+   - LoRA 参数面板补齐：
+     - rank
+     - alpha
+     - dropout
+     - target modules
+     - use DoRA
+     - use rsLoRA
+     - PiSSA init
+     - adapter name / output dir
+   - QLoRA / quantization 面板补齐：
+     - quantization level
+     - compute dtype
+     - load-in-4bit / load-in-8bit equivalent strategy
+     - hardware risk badge
+   - Optimizer / memory 面板补齐：
+     - optimizer
+     - learning rate
+     - scheduler
+     - warmup ratio
+     - gradient accumulation
+     - batch size
+     - max samples
+     - cutoff length
+     - save / eval interval
+   - 每个字段都必须显示：
+     - 参数名
+     - 简短用途
+     - 新手建议值
+     - 对显存/内存/训练时间的影响
+
+3. Train operation controls
+   - 增加 `Preview command` 与 `Generated YAML` 预览。
+   - 增加 `Save training args` / `Load training args`。
+   - 增加正式 `Start` / `Stop` / `Resume from checkpoint`。
+   - 训练中显示：
+     - progress
+     - current step / total step
+     - elapsed time
+     - estimated remaining time
+     - train loss
+     - validation loss
+     - tokens/sec or samples/sec
+     - current checkpoint
+   - 日志区域改成 terminal-like stream，并支持 keyword filter、copy tail、download log。
+
+4. Evaluate & Predict closure
+   - 新增 eval dataset selector 与 checkpoint selector。
+   - 支持离线 predict run，输出：
+     - prediction JSONL
+     - reference / prediction diff
+     - exact match / pass rate
+     - BLEU / ROUGE-L starter metrics
+     - latency / tokens/sec
+   - 支持 base model vs adapter 的 side-by-side evaluation。
+   - 支持把 eval run 直接 handoff 到 Compare / Benchmark。
+
+5. Chat Adapter sandbox
+   - 训练后提供一个轻量聊天测试台。
+   - 支持：
+     - base / adapter 切换
+     - system prompt
+     - generation params
+     - skip special tokens
+     - thinking tag handling
+     - HTML / markdown escaping
+     - clear history
+   - 目标是让用户在导出前先快速确认 adapter 是否真的学到了目标行为。
+
+6. Export and publish flow
+   - 新增 adapter export wizard：
+     - adapter-only bundle
+     - merged model artifact
+     - quantized export plan
+     - model card draft
+     - training config snapshot
+     - dataset manifest
+     - metric summary
+   - 增加 Hub / ModelScope 发布前 checklist：
+     - license
+     - dataset attribution
+     - secret scan
+     - sample prompts
+     - known limitations
+   - `full bundle download` 应包含：
+     - adapter manifest
+     - config
+     - metrics
+     - logs
+     - report markdown
+     - eval predictions
+     - source dataset manifest
+
+7. Distillation workflow
+   - 新增 `Teacher -> synthetic dataset -> student adapter` 的轻量蒸馏路径。
+   - 支持用强远端模型或强本地模型生成训练样本。
+   - 样本进入训练前必须经过：
+     - quality scoring
+     - duplicate filter
+     - PII / secret scan
+     - license / source note
+   - 这条线必须与现有 Dataset Pipeline、Compare、Benchmark 串起来，避免生成数据变成黑盒。
+
+Recommended sequencing:
+
+- `v0.3.3`：先补 `Train` 的参数解释、命令/YAML 预览、正式 Start/Stop/Resume、日志与进度条，以及 Fine-tune report bundle。
+- `v0.4.0`：补 `Evaluate & Predict`、dataset preview/split、eval metrics 和 prediction export。
+- `v0.4.1`：补 `Chat Adapter`、base vs adapter 对话对比、Compare/Benchmark handoff。
+- `v0.5.0`：补 `Export` wizard、adapter merge/quantization/publish checklist。
+- `v0.5.1`：补 distillation workflow 和 teacher data generation。
+
+Implementation checkpoint:
+
+- `Train` 已补第一版 LLaMA-Factory 风格控制台：
+  - training stage selector
+  - command preview
+  - generated YAML preview
+  - save / load training args
+  - estimated steps / effective batch / train samples
+  - distillation teacher data builder 的可复制命令与 YAML
+- `Evaluate & Predict` 已补第一版配置台：
+  - eval dataset selector
+  - adapter / checkpoint selector
+  - generation budget
+  - starter metrics
+  - prediction export toggle
+  - command / YAML preview
+- `Chat Adapter` 已补第一版沙盒配置：
+  - adapter selector
+  - role / system prompt / test prompt
+  - generation controls
+  - special-token 与 HTML 输出清理开关
+  - command preview
+- `Export` 已补第一版向导：
+  - adapter selector
+  - adapter-bundle / merged-mlx / gguf export intent
+  - q8 / q4 quantization intent
+  - shard size / output dir / optional Hub ID
+  - dataset card inclusion
+  - command preview
 
 ## Current focus
 
@@ -253,6 +422,40 @@ Acceptance:
 - 用户可以一眼看清完整训练阶段，而不是只看到局部趋势。
 - 多 run 对比时，曲线既可读，也能对应到具体数值。
 
+#### Task 4. LLaMA-Factory parity slice: Train controls
+
+Subtasks:
+
+- Fine-tune 顶层增加 `Train / Evaluate & Predict / Chat Adapter / Export` 的产品结构占位，其中 `Train` 先进入可用状态。
+- `Train` 增加 `Preview command` 与 `Generated YAML`，让用户明确当前 UI 配置最终会变成什么训练命令。
+- `Train` 增加 `Save training args` / `Load training args`。
+- 训练参数按分组展示：
+  - dataset
+  - base model
+  - method
+  - LoRA
+  - QLoRA / quantization
+  - optimizer
+  - runtime and checkpoint
+- 每个关键字段补：
+  - 参数名
+  - 小字用途说明
+  - 新手建议值
+  - 显存/时间影响提示
+- 训练操作按钮统一为：
+  - Preview command
+  - Save args
+  - Load args
+  - Start
+  - Stop
+  - Resume from checkpoint
+
+Acceptance:
+
+- 新手仍可以用 quick start 一键走完。
+- 进阶用户可以清楚看到训练命令/YAML、参数分组、checkpoint 与恢复路径。
+- 页面不再出现大量裸数字字段或含义不明的选择框。
+
 ### `v0.4.0-2026-06` Dataset Pipeline v2
 
 目标：把“社区数据很乱、导入很麻烦”这件事尽量由产品替用户消化掉。
@@ -314,6 +517,32 @@ Subtasks:
 Acceptance:
 
 - 新手第一次本地微调，可以从“选一个默认组合”开始，而不是先研究半天数据清洗。
+
+#### Task 4. Evaluate & Predict v1
+
+Subtasks:
+
+- Fine-tune 中新增真正可执行的 `Evaluate & Predict` 区域。
+- 支持选择：
+  - adapter / checkpoint
+  - eval dataset
+  - max samples
+  - max new tokens
+  - temperature
+  - top-p
+- 输出：
+  - prediction JSONL
+  - reference / prediction sample table
+  - exact match / pass rate
+  - BLEU / ROUGE-L starter metrics
+  - latency / tokens/sec
+- 支持 base model vs adapter 的离线对比。
+- 支持把 eval result handoff 到 Compare 与 Benchmark。
+
+Acceptance:
+
+- 训练完成后，用户可以先跑一次离线评估，再决定是否进入 chat、compare 或 export。
+- 评估产物可以进入报告 bundle。
 
 ### `v0.4.1-2026-06` Experiment Studio expansion
 
@@ -391,6 +620,28 @@ Acceptance:
 
 - 页面实验可以快速迁移到脚本、CI、文档或团队协作里。
 
+#### Task 5. Chat Adapter sandbox
+
+Subtasks:
+
+- Fine-tune 中新增 `Chat Adapter` 测试区。
+- 支持：
+  - base / adapter 切换
+  - system prompt
+  - max tokens
+  - temperature
+  - top-p
+  - skip special tokens
+  - thinking tag handling
+  - clear history
+- 支持 base vs adapter 回答对照。
+- 支持把当前对话保存为 fine-tune evidence。
+
+Acceptance:
+
+- 用户不用离开 Fine-tune 页面，就能确认 adapter 的实际对话效果。
+- Chat evidence 可以进入最终 report 与 release note。
+
 ### `v0.5.0-2026-07` Admin operations v2
 
 目标：把远端 provider 和长期实验历史做成真正的运营层能力。
@@ -440,6 +691,31 @@ Acceptance:
 
 - benchmark 结果可以自然进入发布、复盘、协作三个场景。
 
+#### Task 4. Adapter Export wizard
+
+Subtasks:
+
+- Fine-tune `Export` 区域支持：
+  - adapter-only bundle
+  - merged model export plan
+  - quantized export plan
+  - model card draft
+  - dataset manifest
+  - training config snapshot
+  - metric summary
+- 发布前增加：
+  - license checklist
+  - dataset attribution checklist
+  - secret scan status
+  - sample prompt list
+  - known limitations
+- 支持导出完整 bundle 与 report preview。
+
+Acceptance:
+
+- 一个 adapter 从训练、评估到导出，有完整可复查的产物链。
+- 公开发布前能清楚看到数据、许可证和敏感信息风险。
+
 ### `v0.5.1-2026-07` Public release system
 
 目标：让项目公开增长不再依赖手工拼装。
@@ -484,6 +760,24 @@ Acceptance:
 
 - 外部贡献者可以更快理解项目结构和“怎么参与”。
 
+#### Task 4. Distillation workflow v1
+
+Subtasks:
+
+- 新增 `Teacher -> synthetic dataset -> student adapter` 的实验入口。
+- 支持从强远端 provider 或强本地模型生成教学样本。
+- 生成样本进入 Dataset Pipeline 统一处理：
+  - quality scoring
+  - duplicate filter
+  - PII / secret scan
+  - license / source note
+- 支持把 distillation dataset 直接送入 Fine-tune recipe。
+
+Acceptance:
+
+- 用户可以用强模型生成小模型训练样本，但每一步都有质量、来源和风险提示。
+- Distillation 不绕过现有 dataset / compare / benchmark / report 证据链。
+
 ## Two-week sprint breakdown
 
 下面默认以 **2 周一个 sprint** 推进；如果中途遇到 provider 稳定性或大规模 UI 回归，再插入 hotfix，不打乱大方向。
@@ -519,10 +813,12 @@ Deliverables:
 - failed job 重跑闭环
 - post-train action recommendation
 - full-range / zoom / tooltip 曲线体验补齐
+- LLaMA-Factory parity slice: `Train` tab、参数说明、命令/YAML 预览、Start/Stop/Resume
 
 Definition of done:
 
 - 新手从 preset 到 export report 全流程可独立完成
+- 进阶用户能看到清晰训练命令、配置文件、checkpoint 和恢复路径
 
 ### Sprint 3 · 2026-06-10 to 2026-06-23
 
@@ -536,10 +832,12 @@ Deliverables:
 - schema 转换
 - license / PII / duplicate / quality score
 - 初版推荐训练轮次与模型规模提示
+- Fine-tune `Evaluate & Predict` v1：eval dataset、prediction export、base vs adapter 评估
 
 Definition of done:
 
 - 社区数据从“候选”到“可训练材料”的路径明显缩短
+- adapter 训练完成后可先离线评估，再进入 chat / compare / benchmark
 
 ### Sprint 4 · 2026-06-24 to 2026-07-07
 
@@ -553,10 +851,11 @@ Deliverables:
 - 推荐数据组合
 - Compare `primary editor + lane matrix + drawer`
 - base lane / pinning / 折叠策略第一版
+- Fine-tune `Chat Adapter` sandbox：base vs adapter 即时对话对照
 
 Definition of done:
 
-- 数据与 compare 两条主线都进入“产品可展示”的成熟区间
+- 数据、compare 与 adapter chat 三条主线都进入“产品可展示”的成熟区间
 
 ### Sprint 5 · 2026-07-08 to 2026-07-21
 
@@ -571,10 +870,12 @@ Deliverables:
 - Structured Output Lab
 - Get Code 扩面
 - provider health 历史趋势初版
+- Adapter Export wizard：adapter bundle、merged / quantized export plan、model card draft
 
 Definition of done:
 
 - 项目“实验台”心智更加明确
+- 训练产物具备进入公开发布前检查的完整证据链
 
 ### Sprint 6 · 2026-07-22 to 2026-08-04
 
@@ -590,10 +891,12 @@ Deliverables:
 - docs route
 - demo capture pipeline
 - public roadmap / contributor flow
+- Distillation workflow v1：teacher data generation、quality gate、student adapter recipe
 
 Definition of done:
 
 - 项目不仅能用，而且能稳定迭代、稳定发布、稳定增长
+- 蒸馏生成数据不会绕过现有质量、来源、风险与证据链检查
 
 ## Prioritization matrix
 
