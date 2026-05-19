@@ -168,6 +168,8 @@ type TrainingChartPoint = AgentFineTuneCurvePoint & {
 type TrainingChartOverlaySeries = {
   jobId: string;
   label: string;
+  status: AgentFineTuneJob["status"];
+  latestStep?: number;
   trainPath: string;
   validPath: string;
   latestTrain?: TrainingChartPoint;
@@ -1295,6 +1297,8 @@ function buildTrainingChart(
       return {
         jobId: overlay.job.id,
         label: overlay.job.adapterName || overlay.job.id,
+        status: overlay.job.status,
+        latestStep: overlayEffectivePoints.at(-1)?.step,
         trainPath: toPath(trainOverlayPoints),
         validPath: toPath(validOverlayPoints),
         latestTrain: trainOverlayPoints.at(-1),
@@ -1601,6 +1605,8 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
         overlayRuns: "Same-adapter overlay",
         overlayRunsHint:
           "Faint lines show recent runs with the same adapter name, normalized per run.",
+        overlayRunTable: "Overlay summary",
+        currentRun: "Current run",
         chartStep: "Step",
         chartSplitTrain: "Train",
         chartSplitValid: "Val",
@@ -1672,6 +1678,8 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
         openReports: "Open reports dir",
         previewReport: "Preview report",
         downloadFullBundle: "Download full bundle",
+        completeBundleHint:
+          "Complete bundle includes the job config, split datasets, MLX config, metrics, worker log, adapter artifacts, reports, manifest, and inventory.",
         reportExportSuccess: "Fine-tune report exported.",
         reportCopySuccess: "Fine-tune report copied.",
         handoffBenchmarkSuccess: "Adapter benchmark handoff completed.",
@@ -1949,6 +1957,8 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
       overlayRuns: "同 adapter 叠加",
       overlayRunsHint:
         "淡线表示同名 adapter 的最近训练记录，每次 run 单独归一化。",
+      overlayRunTable: "叠加摘要",
+      currentRun: "当前 run",
       chartStep: "轮次",
       chartSplitTrain: "训练",
       chartSplitValid: "验证",
@@ -2019,6 +2029,8 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
       openReports: "打开报告目录",
       previewReport: "预览报告",
       downloadFullBundle: "下载完整 bundle",
+      completeBundleHint:
+        "完整 bundle 包含作业配置、切分数据集、MLX 配置、指标、worker 日志、adapter 产物、报告、manifest 和文件清单。",
       reportExportSuccess: "Fine-tune 报告已导出。",
       reportCopySuccess: "Fine-tune 报告已复制。",
       handoffBenchmarkSuccess: "Adapter benchmark handoff 已完成。",
@@ -6744,6 +6756,22 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
                                                       strokeDasharray="2 6"
                                                     />
                                                   ) : null}
+                                                  {series.latestTrain ? (
+                                                    <circle
+                                                      cx={series.latestTrain.x}
+                                                      cy={series.latestTrain.y}
+                                                      r="2.6"
+                                                      fill="rgb(34 211 238)"
+                                                    />
+                                                  ) : null}
+                                                  {series.latestValid ? (
+                                                    <circle
+                                                      cx={series.latestValid.x}
+                                                      cy={series.latestValid.y}
+                                                      r="2.6"
+                                                      fill="rgb(167 139 250)"
+                                                    />
+                                                  ) : null}
                                                 </g>
                                               ),
                                             )}
@@ -6934,6 +6962,106 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
                                               </span>
                                             </p>
                                           </div>
+                                          {chart.overlaySeries.length
+                                            ? (() => {
+                                                const overlayRows = [
+                                                  {
+                                                    id: job.id,
+                                                    label: text.currentRun,
+                                                    status: job.status,
+                                                    latestStep:
+                                                      chart.latestTrain
+                                                        ?.step ??
+                                                      chart.latestValid?.step,
+                                                    train: chart.latestTrain,
+                                                    valid: chart.latestValid,
+                                                    current: true,
+                                                  },
+                                                  ...chart.overlaySeries
+                                                    .slice(0, 4)
+                                                    .map((series) => ({
+                                                      id: series.jobId,
+                                                      label: series.label,
+                                                      status: series.status,
+                                                      latestStep:
+                                                        series.latestStep,
+                                                      train:
+                                                        series.latestTrain,
+                                                      valid:
+                                                        series.latestValid,
+                                                      current: false,
+                                                    })),
+                                                ];
+
+                                                return (
+                                                  <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.035] p-3">
+                                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                                      <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                                                        {text.overlayRunTable}
+                                                      </p>
+                                                      <span className="rounded-full border border-cyan-300/15 bg-cyan-300/[0.08] px-2 py-0.5 text-[10px] text-cyan-100">
+                                                        {overlayRows.length}{" "}
+                                                        {isEnglish
+                                                          ? "runs"
+                                                          : "次 run"}
+                                                      </span>
+                                                    </div>
+                                                    <div className="mt-2 overflow-x-auto">
+                                                      <div className="min-w-[520px] space-y-1 text-[11px]">
+                                                        {overlayRows.map(
+                                                          (row) => (
+                                                            <div
+                                                              key={`overlay-row:${row.id}`}
+                                                              className={`grid grid-cols-[1.4fr_.8fr_.8fr_.8fr_.8fr] items-center gap-2 rounded-xl border px-2.5 py-2 ${
+                                                                row.current
+                                                                  ? "border-cyan-300/18 bg-cyan-300/[0.07] text-cyan-50"
+                                                                  : "border-white/10 bg-black/20 text-slate-300"
+                                                              }`}
+                                                            >
+                                                              <span
+                                                                className="truncate font-semibold"
+                                                                title={
+                                                                  row.label
+                                                                }
+                                                              >
+                                                                {row.label}
+                                                              </span>
+                                                              <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-center text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                                                                {row.status}
+                                                              </span>
+                                                              <span className="text-slate-400">
+                                                                {text.chartStep}
+                                                                :{" "}
+                                                                {row.latestStep ??
+                                                                  "--"}
+                                                              </span>
+                                                              <span className="text-cyan-100">
+                                                                train{" "}
+                                                                {row.train
+                                                                  ? formatRatio(
+                                                                      row.train
+                                                                        .normalizedLoss,
+                                                                    )
+                                                                  : "--"}
+                                                              </span>
+                                                              <span className="text-violet-100">
+                                                                val{" "}
+                                                                {row.valid
+                                                                  ? formatRatio(
+                                                                      row.valid
+                                                                        .normalizedLoss,
+                                                                    )
+                                                                  : "--"}
+                                                              </span>
+                                                            </div>
+                                                          ),
+                                                        )}
+                                                      </div>
+                                                    </div>
+                                                  </div>
+                                                );
+                                              })()
+                                            : null}
                                         </div>
                                       </div>
                                     );
@@ -7202,6 +7330,7 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
                                 </a>
                                 <a
                                   href={`/api/admin/finetune?action=download-bundle&id=${encodeURIComponent(job.id)}`}
+                                  title={text.completeBundleHint}
                                   className="rounded-full border border-violet-300/25 bg-violet-300/10 px-3 py-1.5 text-[11px] font-semibold text-violet-100 transition hover:bg-violet-300/15"
                                 >
                                   {text.downloadFullBundle}
@@ -7228,6 +7357,9 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
                                   {text.exportMetricsCsv}
                                 </button>
                               </div>
+                              <p className="mt-2 rounded-2xl border border-violet-200/15 bg-violet-300/[0.06] px-3 py-2 text-[11px] leading-5 text-violet-50/75">
+                                {text.completeBundleHint}
+                              </p>
 
                               {latestReport ? (
                                 <div className="mt-3 rounded-2xl border border-emerald-400/20 bg-emerald-400/[0.08] px-3 py-3 text-[11px] leading-5 text-emerald-50">
@@ -7253,6 +7385,7 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
                                       </a>
                                       <a
                                         href={`/api/admin/finetune?action=download-bundle&id=${encodeURIComponent(job.id)}`}
+                                        title={text.completeBundleHint}
                                         className="rounded-full border border-violet-200/25 bg-violet-200/10 px-2.5 py-1 text-[10px] font-semibold text-violet-50 transition hover:bg-violet-200/15"
                                       >
                                         {text.downloadFullBundle}
@@ -7289,63 +7422,63 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
                                       </button>
                                     </div>
                                   </div>
-                                    <div className="mt-2 flex flex-wrap gap-2 text-[10px] uppercase tracking-[0.14em] text-emerald-50/70">
-                                      <span className="rounded-full border border-emerald-200/20 bg-emerald-200/10 px-2 py-0.5">
-                                        {text.reportPoints}:{" "}
+                                  <div className="mt-2 flex flex-wrap gap-2 text-[10px] uppercase tracking-[0.14em] text-emerald-50/70">
+                                    <span className="rounded-full border border-emerald-200/20 bg-emerald-200/10 px-2 py-0.5">
+                                      {text.reportPoints}:{" "}
                                       {latestReport.metricsSummary.pointCount}
                                     </span>
                                     <span className="rounded-full border border-emerald-200/20 bg-emerald-200/10 px-2 py-0.5">
                                       {text.reportLatestStep}:{" "}
                                       {latestReport.metricsSummary.latestStep ??
-                                          "--"}
-                                      </span>
-                                    </div>
-                                    {latestReport.runComparison ? (
-                                      <div className="mt-3 rounded-2xl border border-cyan-200/15 bg-cyan-300/[0.06] p-3">
-                                        <div className="flex flex-wrap items-center justify-between gap-2">
-                                          <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-cyan-50/70">
-                                            {text.runComparison}
+                                        "--"}
+                                    </span>
+                                  </div>
+                                  {latestReport.runComparison ? (
+                                    <div className="mt-3 rounded-2xl border border-cyan-200/15 bg-cyan-300/[0.06] p-3">
+                                      <div className="flex flex-wrap items-center justify-between gap-2">
+                                        <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-cyan-50/70">
+                                          {text.runComparison}
+                                        </p>
+                                        <span className="rounded-full border border-cyan-200/15 bg-cyan-200/10 px-2 py-0.5 text-[10px] text-cyan-50/70">
+                                          {latestReport.runComparison.adapterName}
+                                        </span>
+                                      </div>
+                                      <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                                        <div className="rounded-xl border border-cyan-200/15 bg-black/15 px-2 py-2">
+                                          <p className="text-[9px] uppercase tracking-[0.16em] text-cyan-50/50">
+                                            {text.runsCompared}
                                           </p>
-                                          <span className="rounded-full border border-cyan-200/15 bg-cyan-200/10 px-2 py-0.5 text-[10px] text-cyan-50/70">
-                                            {latestReport.runComparison.adapterName}
-                                          </span>
+                                          <p className="mt-1 text-sm font-semibold text-cyan-50">
+                                            {latestReport.runComparison.runCount}
+                                          </p>
                                         </div>
-                                        <div className="mt-2 grid gap-2 sm:grid-cols-3">
-                                          <div className="rounded-xl border border-cyan-200/15 bg-black/15 px-2 py-2">
-                                            <p className="text-[9px] uppercase tracking-[0.16em] text-cyan-50/50">
-                                              {text.runsCompared}
-                                            </p>
-                                            <p className="mt-1 text-sm font-semibold text-cyan-50">
-                                              {latestReport.runComparison.runCount}
-                                            </p>
-                                          </div>
-                                          <div className="rounded-xl border border-cyan-200/15 bg-black/15 px-2 py-2">
-                                            <p className="text-[9px] uppercase tracking-[0.16em] text-cyan-50/50">
-                                              {text.bestValLoss}
-                                            </p>
-                                            <p className="mt-1 text-sm font-semibold text-cyan-50">
-                                              {typeof latestReport.runComparison
-                                                .bestValidationLoss === "number"
-                                                ? latestReport.runComparison.bestValidationLoss.toFixed(
-                                                    4,
-                                                  )
-                                                : "--"}
-                                            </p>
-                                          </div>
-                                          <div className="rounded-xl border border-cyan-200/15 bg-black/15 px-2 py-2">
-                                            <p className="text-[9px] uppercase tracking-[0.16em] text-cyan-50/50">
-                                              {text.latestValLoss}
-                                            </p>
-                                            <p className="mt-1 text-sm font-semibold text-cyan-50">
-                                              {typeof latestReport.runComparison
-                                                .latestValidationLoss === "number"
-                                                ? latestReport.runComparison.latestValidationLoss.toFixed(
-                                                    4,
-                                                  )
-                                                : "--"}
-                                            </p>
-                                          </div>
+                                        <div className="rounded-xl border border-cyan-200/15 bg-black/15 px-2 py-2">
+                                          <p className="text-[9px] uppercase tracking-[0.16em] text-cyan-50/50">
+                                            {text.bestValLoss}
+                                          </p>
+                                          <p className="mt-1 text-sm font-semibold text-cyan-50">
+                                            {typeof latestReport.runComparison
+                                              .bestValidationLoss === "number"
+                                              ? latestReport.runComparison.bestValidationLoss.toFixed(
+                                                  4,
+                                                )
+                                              : "--"}
+                                          </p>
                                         </div>
+                                        <div className="rounded-xl border border-cyan-200/15 bg-black/15 px-2 py-2">
+                                          <p className="text-[9px] uppercase tracking-[0.16em] text-cyan-50/50">
+                                            {text.latestValLoss}
+                                          </p>
+                                          <p className="mt-1 text-sm font-semibold text-cyan-50">
+                                            {typeof latestReport.runComparison
+                                              .latestValidationLoss === "number"
+                                              ? latestReport.runComparison.latestValidationLoss.toFixed(
+                                                  4,
+                                                )
+                                              : "--"}
+                                          </p>
+                                        </div>
+                                      </div>
                                         {latestReport.runComparison
                                           .deltaToPrevious ? (
                                           <div className="mt-3 rounded-xl border border-cyan-200/15 bg-black/20 px-3 py-3">

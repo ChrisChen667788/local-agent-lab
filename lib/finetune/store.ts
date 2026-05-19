@@ -1683,6 +1683,128 @@ function listArtifactFiles(rootDir: string, maxFiles = 24) {
   return files.sort((left, right) => left.localeCompare(right));
 }
 
+function collectBundleInventory(rootDir: string, maxFiles = 5000) {
+  if (!existsSync(rootDir)) {
+    return {
+      files: [] as Array<{ path: string; sizeBytes: number }>,
+      totalBytes: 0,
+      truncated: false,
+    };
+  }
+
+  const files: Array<{ path: string; sizeBytes: number }> = [];
+  const stack = [rootDir];
+  let totalBytes = 0;
+  let truncated = false;
+
+  while (stack.length) {
+    const current = stack.pop();
+    if (!current) continue;
+    let entries: ReturnType<typeof readdirSync>;
+    try {
+      entries = readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(fullPath);
+        continue;
+      }
+      if (files.length >= maxFiles) {
+        truncated = true;
+        continue;
+      }
+      try {
+        const stats = statSync(fullPath);
+        const relativePath = path.relative(rootDir, fullPath) || entry.name;
+        totalBytes += stats.size;
+        files.push({
+          path: relativePath.split(path.sep).join("/"),
+          sizeBytes: stats.size,
+        });
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  return {
+    files: files.sort((left, right) => left.path.localeCompare(right.path)),
+    totalBytes,
+    truncated,
+  };
+}
+
+function writeFineTuneBundleArchiveManifest(input: {
+  job: AgentFineTuneJob;
+  paths: ReturnType<typeof getJobPaths>;
+  archiveFileName: string;
+  generatedAt: string;
+}) {
+  const { job, paths, archiveFileName, generatedAt } = input;
+  mkdirSync(paths.reportsDir, { recursive: true });
+  const inventory = collectBundleInventory(paths.bundlePath);
+  const manifestPath = path.join(paths.reportsDir, "bundle-manifest.json");
+  const inventoryPath = path.join(paths.reportsDir, "bundle-inventory.txt");
+  const manifest = {
+    kind: "first-llm-studio-finetune-full-bundle",
+    generatedAt,
+    jobId: job.id,
+    adapterName: job.adapterName,
+    archiveFileName,
+    bundlePath: paths.bundlePath,
+    includes: {
+      jobBundle: existsSync(paths.bundleFile),
+      readme: existsSync(paths.readmeFile),
+      config: existsSync(paths.configFile),
+      splitDatasetDir: existsSync(paths.datasetDir),
+      metrics: existsSync(paths.metricsFile),
+      workerLog: existsSync(paths.logFile),
+      runtimeState: existsSync(paths.stateFile),
+      adapterArtifacts: existsSync(paths.outputDir),
+      reports: existsSync(paths.reportsDir),
+    },
+    recommendedUse:
+      "Keep this archive with the release evidence. It contains the reproducible job bundle, split datasets, config, worker log, metrics, adapter artifacts, reports, and this inventory.",
+    inventory: {
+      fileCount: inventory.files.length,
+      totalUncompressedBytes: inventory.totalBytes,
+      truncated: inventory.truncated,
+      files: inventory.files,
+    },
+  };
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  writeFileSync(
+    inventoryPath,
+    [
+      `First LLM Studio fine-tune bundle inventory`,
+      `Generated at: ${generatedAt}`,
+      `Job ID: ${job.id}`,
+      `Adapter: ${job.adapterName}`,
+      `Archive: ${archiveFileName}`,
+      `Files: ${inventory.files.length}`,
+      `Total bytes: ${inventory.totalBytes}`,
+      inventory.truncated ? "Warning: inventory truncated." : "",
+      "",
+      ...inventory.files.map(
+        (file) => `${file.sizeBytes.toString().padStart(12, " ")}  ${file.path}`,
+      ),
+      "",
+    ]
+      .filter((line) => line !== "")
+      .join("\n"),
+    "utf8",
+  );
+  return {
+    manifestPath,
+    inventoryPath,
+    includedFileCount: inventory.files.length,
+    totalUncompressedBytes: inventory.totalBytes,
+  };
+}
+
 function countCheckpointFiles(rootDir: string) {
   return listArtifactFiles(rootDir, 200).filter(
     (file) =>
@@ -3840,6 +3962,12 @@ export function exportFineTuneJobBundleArchive(input: {
     normalizeRuntimeAliasSegment(job.adapterName) || "adapter";
   const fileName = `first-llm-studio-finetune-${safeAdapterName}-${job.id}.tgz`;
   const filePath = path.join(archiveDir, fileName);
+  const archiveManifest = writeFineTuneBundleArchiveManifest({
+    job,
+    paths,
+    archiveFileName: fileName,
+    generatedAt,
+  });
   const result = spawnSync(
     "tar",
     ["-czf", filePath, "-C", paths.bundlePath, "."],
@@ -3861,6 +3989,10 @@ export function exportFineTuneJobBundleArchive(input: {
     filePath,
     fileName,
     sizeBytes: stats.size,
+    manifestPath: archiveManifest.manifestPath,
+    inventoryPath: archiveManifest.inventoryPath,
+    includedFileCount: archiveManifest.includedFileCount,
+    totalUncompressedBytes: archiveManifest.totalUncompressedBytes,
     generatedAt,
   };
 }

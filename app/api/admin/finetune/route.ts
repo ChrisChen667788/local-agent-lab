@@ -149,6 +149,8 @@ function buildReportPreviewHtml(
     .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
     a { color: #a5f3fc; }
     .button { border: 1px solid rgba(34,211,238,.32); border-radius: 999px; padding: 9px 13px; background: rgba(34,211,238,.1); color: #cffafe; text-decoration: none; font-weight: 700; font-size: 12px; }
+    .bundle { border: 1px solid rgba(167,139,250,.2); border-radius: 22px; background: rgba(15,23,42,.72); padding: 16px 18px; margin: 18px 0; color: #cbd5e1; }
+    .bundle strong { color: #f8fafc; }
     pre { white-space: pre-wrap; word-break: break-word; border: 1px solid rgba(148,163,184,.22); border-radius: 24px; background: rgba(2,6,23,.72); padding: 22px; overflow: auto; box-shadow: 0 24px 80px rgba(0,0,0,.28); }
   </style>
 </head>
@@ -164,6 +166,10 @@ function buildReportPreviewHtml(
         <a class="button" href="/api/admin/finetune?action=download-bundle&id=${encodeURIComponent(report.jobId)}">Download full bundle</a>
       </div>
     </header>
+    <section class="bundle">
+      <strong>Complete bundle contents</strong><br />
+      Download includes the reproducible job bundle, split datasets, MLX config, metrics, worker log, adapter artifacts, report exports, bundle manifest, and file inventory.
+    </section>
     <pre>${escapeHtml(report.content)}</pre>
   </main>
 </body>
@@ -208,6 +214,12 @@ export async function GET(request: Request) {
         "content-disposition": `attachment; filename="${archive.fileName}"`,
         "cache-control": "no-store",
         "x-first-llm-studio-bundle-path": encodeURIComponent(archive.filePath),
+        "x-first-llm-studio-bundle-files": String(
+          archive.includedFileCount || 0,
+        ),
+        "x-first-llm-studio-bundle-uncompressed-bytes": String(
+          archive.totalUncompressedBytes || 0,
+        ),
       },
     });
   }

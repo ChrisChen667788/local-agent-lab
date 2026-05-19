@@ -1132,6 +1132,10 @@ export type AgentFineTuneBundleArchive = {
   filePath: string;
   fileName: string;
   sizeBytes: number;
+  manifestPath?: string;
+  inventoryPath?: string;
+  includedFileCount?: number;
+  totalUncompressedBytes?: number;
   generatedAt: string;
 };
 
