@@ -2161,6 +2161,10 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
     useState<AgentFineTuneDatasetValidation | null>(null);
   const [datasetValidationQuality, setDatasetValidationQuality] =
     useState<AgentFineTuneDatasetQuality | null>(null);
+  const [
+    datasetValidationQualityWarnings,
+    setDatasetValidationQualityWarnings,
+  ] = useState<string[]>([]);
   const [datasetWatchDrafts, setDatasetWatchDrafts] = useState<
     Record<string, { upstreamQuery: string; refreshCadenceHours: number }>
   >({});
@@ -2472,6 +2476,9 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
       }
       if (payload.dataset?.quality) {
         setDatasetValidationQuality(payload.dataset.quality);
+      }
+      if (payload.dataset?.qualityWarnings) {
+        setDatasetValidationQualityWarnings(payload.dataset.qualityWarnings);
       }
       setMessage(successMessage);
       setMessageTone("success");
@@ -3405,9 +3412,11 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
 
   const applyCommunityDatasetPreset = useCallback(
     (preset: CommunityDatasetPreset) => {
+      const presetMetadata = buildPresetDatasetSaveMetadata(preset);
       setDatasetSourceMode("community");
       setDatasetValidation(null);
-      setDatasetValidationQuality(buildPresetDatasetQuality(preset));
+      setDatasetValidationQuality(presetMetadata.quality);
+      setDatasetValidationQualityWarnings(presetMetadata.qualityWarnings);
       setDatasetForm({
         label: getPresetLabel(preset),
         sourcePath: preset.localPath,
@@ -3427,7 +3436,7 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
       setMessageTone("success");
     },
     [
-      buildPresetDatasetQuality,
+      buildPresetDatasetSaveMetadata,
       getPresetLabel,
       getPresetRecipeNotes,
       text.presetLoaded,
@@ -3459,6 +3468,9 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
         setDatasetSourceMode("community");
         setDatasetValidation(payload.dataset.validation);
         setDatasetValidationQuality(payload.dataset.quality || null);
+        setDatasetValidationQualityWarnings(
+          payload.dataset.qualityWarnings || [],
+        );
         setDatasetForm({
           label: payload.dataset.label,
           sourcePath: payload.dataset.sourcePath || "",
@@ -3485,6 +3497,7 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
     const actionKey = `dataset-preset-quickstart:${preset.id}`;
     const presetLabel = getPresetLabel(preset);
     const presetNotes = getPresetRecipeNotes(preset);
+    const presetMetadata = buildPresetDatasetSaveMetadata(preset);
     const nextDatasetForm = {
       label: presetLabel,
       sourcePath: preset.localPath,
@@ -3494,7 +3507,8 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
     };
     setDatasetSourceMode("community");
     setDatasetValidation(null);
-    setDatasetValidationQuality(buildPresetDatasetQuality(preset));
+    setDatasetValidationQuality(presetMetadata.quality);
+    setDatasetValidationQualityWarnings(presetMetadata.qualityWarnings);
     setDatasetForm(nextDatasetForm);
     setActionPending((current) => ({ ...current, [actionKey]: true }));
     try {
@@ -3508,7 +3522,7 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
         {
           action: "save-dataset",
           ...nextDatasetForm,
-          ...buildPresetDatasetSaveMetadata(preset),
+          ...presetMetadata,
         },
         text.saveSuccessDataset,
       );
@@ -5286,10 +5300,14 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
                       preset.localPath === datasetForm.sourcePath &&
                       preset.format === datasetForm.format,
                   );
+                  const presetMetadata = matchingPreset
+                    ? buildPresetDatasetSaveMetadata(matchingPreset)
+                    : null;
                   setDatasetValidationQuality(
-                    matchingPreset
-                      ? buildPresetDatasetQuality(matchingPreset)
-                      : null,
+                    presetMetadata?.quality || null,
+                  );
+                  setDatasetValidationQualityWarnings(
+                    presetMetadata?.qualityWarnings || [],
                   );
                   void postAction(
                     { action: "validate-dataset", ...datasetForm },
@@ -5309,15 +5327,21 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
                       preset.localPath === datasetForm.sourcePath &&
                       preset.format === datasetForm.format,
                   );
+                  const presetMetadata = matchingPreset
+                    ? buildPresetDatasetSaveMetadata(matchingPreset)
+                    : null;
                   const payload = await postAction(
                     {
                       action: "save-dataset",
                       ...datasetForm,
-                      ...(matchingPreset
-                        ? buildPresetDatasetSaveMetadata(matchingPreset)
-                        : {}),
+                      ...(presetMetadata || {}),
                     },
                     text.saveSuccessDataset,
+                  );
+                  setDatasetValidationQualityWarnings(
+                    payload?.dataset?.qualityWarnings ||
+                      presetMetadata?.qualityWarnings ||
+                      [],
                   );
                   if (payload?.summary?.datasets?.[0]) {
                     setRecipeForm((current) => ({
@@ -5420,6 +5444,18 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
                     <p className="sm:col-span-2 rounded-2xl border border-white/10 bg-white/[0.035] px-3 py-2 text-xs leading-5 text-slate-400">
                       {datasetValidationQuality.schemaConversion}
                     </p>
+                  ) : null}
+                  {datasetValidationQualityWarnings.length ? (
+                    <div className="sm:col-span-2 rounded-2xl border border-amber-300/15 bg-amber-300/[0.055] px-3 py-2">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-amber-100/70">
+                        {text.warnings}
+                      </p>
+                      <ul className="mt-1 space-y-1 text-xs leading-5 text-amber-100">
+                        {datasetValidationQualityWarnings.map((warning) => (
+                          <li key={warning}>- {warning}</li>
+                        ))}
+                      </ul>
+                    </div>
                   ) : null}
                   {datasetValidationQuality.piiRiskRows ||
                   datasetValidationQuality.duplicateRows ? (
@@ -5964,45 +6000,52 @@ export function AdminFineTunePanel({ locale }: FineTunePanelProps) {
                   className="rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-3 text-xs leading-6 text-slate-300"
                 >
                   <p className="font-semibold text-white">{dataset.label}</p>
-                    <p className="mt-1 text-slate-400">
-                      {dataset.format} · {dataset.sampleCount} samples
-                    </p>
-                    {dataset.quality ? (
-                      <div className="mt-2 grid gap-2 sm:grid-cols-3">
-                        <span className="rounded-2xl border border-cyan-300/15 bg-cyan-400/[0.06] px-3 py-2">
-                          {text.qualityScore}:{" "}
-                          <span className="font-semibold text-cyan-100">
-                            {formatQualityScore(dataset.quality.score)}
-                          </span>
+                  <p className="mt-1 text-slate-400">
+                    {dataset.format} · {dataset.sampleCount} samples
+                  </p>
+                  {dataset.quality ? (
+                    <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                      <span className="rounded-2xl border border-cyan-300/15 bg-cyan-400/[0.06] px-3 py-2">
+                        {text.qualityScore}:{" "}
+                        <span className="font-semibold text-cyan-100">
+                          {formatQualityScore(dataset.quality.score)}
                         </span>
-                        <span className="rounded-2xl border border-amber-300/15 bg-amber-300/[0.06] px-3 py-2">
-                          {text.licenseRisk}:{" "}
-                          <span className="font-semibold text-amber-100">
-                            {dataset.quality.licenseRisk}
-                          </span>
+                      </span>
+                      <span className="rounded-2xl border border-amber-300/15 bg-amber-300/[0.06] px-3 py-2">
+                        {text.licenseRisk}:{" "}
+                        <span className="font-semibold text-amber-100">
+                          {dataset.quality.licenseRisk}
                         </span>
-                        <span className="rounded-2xl border border-emerald-300/15 bg-emerald-400/[0.06] px-3 py-2">
-                          {text.recommendedSteps}:{" "}
-                          <span className="font-semibold text-emerald-100">
-                            {dataset.quality.recommendedSteps
-                              ? `${dataset.quality.recommendedSteps.min}-${dataset.quality.recommendedSteps.max}`
-                              : "--"}
-                          </span>
+                      </span>
+                      <span className="rounded-2xl border border-emerald-300/15 bg-emerald-400/[0.06] px-3 py-2">
+                        {text.recommendedSteps}:{" "}
+                        <span className="font-semibold text-emerald-100">
+                          {dataset.quality.recommendedSteps
+                            ? `${dataset.quality.recommendedSteps.min}-${dataset.quality.recommendedSteps.max}`
+                            : "--"}
                         </span>
-                        <span className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 sm:col-span-3">
-                          {text.convertedRows}:{" "}
-                          <span className="text-slate-200">
-                            {dataset.quality.convertedRows ?? "--"} /{" "}
-                            {dataset.quality.downloadedRows ?? "--"}
-                          </span>
-                          <span className="ml-2 text-slate-500">
-                            dup {dataset.quality.duplicateRows ?? 0} · pii{" "}
-                            {dataset.quality.piiRiskRows ?? 0}
-                          </span>
+                      </span>
+                      <span className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 sm:col-span-3">
+                        {text.convertedRows}:{" "}
+                        <span className="text-slate-200">
+                          {dataset.quality.convertedRows ?? "--"} /{" "}
+                          {dataset.quality.downloadedRows ?? "--"}
                         </span>
-                      </div>
-                    ) : null}
-                    <p>{dataset.sourcePath || "--"}</p>
+                        <span className="ml-2 text-slate-500">
+                          dup {dataset.quality.duplicateRows ?? 0} · pii{" "}
+                          {dataset.quality.piiRiskRows ?? 0}
+                        </span>
+                      </span>
+                    </div>
+                  ) : null}
+                  {dataset.qualityWarnings?.length ? (
+                    <ul className="mt-2 space-y-1 rounded-2xl border border-amber-300/15 bg-amber-300/[0.055] px-3 py-2 text-[11px] leading-5 text-amber-100">
+                      {dataset.qualityWarnings.map((warning) => (
+                        <li key={warning}>- {warning}</li>
+                      ))}
+                    </ul>
+                  ) : null}
+                  <p>{dataset.sourcePath || "--"}</p>
                   <p>{formatDateTime(dataset.updatedAt)}</p>
                   {dataset.sourcePath ? (
                     <div className="mt-3 flex flex-wrap gap-2">
